@@ -248,11 +248,14 @@ jobs:
           $releaseDir = (Resolve-Path "target/$env:PILOT_TARGET/release").Path
           New-Item -ItemType Directory -Force -Path $env:PILOT_ARTIFACT_DIR | Out-Null
           $cliZip = Join-Path $env:PILOT_ARTIFACT_DIR "solo-cli-$env:PILOT_VERSION-$env:PILOT_TARGET.zip"
-          $files = @((Join-Path $releaseDir 'solo.exe'), (Join-Path $releaseDir 'solo-tray.exe'), (Join-Path $releaseDir 'models'))
+          $files = @((Join-Path $releaseDir 'solo.exe'), (Join-Path $releaseDir 'solo-tray.exe'))
           $files += @(Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.dll' | ForEach-Object FullName)
           foreach ($file in $files) {
             if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "CLI package input is missing: $file" }
           }
+          $modelDir = Join-Path $releaseDir 'models'
+          if (!(Test-Path -LiteralPath $modelDir -PathType Container)) { throw "CLI model directory is missing: $modelDir" }
+          $files += $modelDir
           Compress-Archive -LiteralPath $files -DestinationPath $cliZip -CompressionLevel Optimal
           $extractDir = Join-Path $env:RUNNER_TEMP 'solo-cli-zip-smoke'
           Expand-Archive -LiteralPath $cliZip -DestinationPath $extractDir
