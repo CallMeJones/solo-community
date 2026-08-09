@@ -183,6 +183,7 @@ jobs:
       - name: Test workspace in both feature modes
         env:
           SOLO_PERF_CI_BUDGET: '1'
+          SOLO_PERF_CI_BUDGET_SECONDS: '120'
         shell: pwsh
         run: |
           cargo test --locked --workspace --exclude solo-storage --no-fail-fast --no-default-features

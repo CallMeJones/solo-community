@@ -53,8 +53,9 @@ fn rt_multi(threads: usize) -> tokio::runtime::Runtime {
 /// [`PERF_BUDGET_DEV_SECS`] (30s — restores ADR-0003's developer-target
 /// ceiling). When `SOLO_PERF_CI_BUDGET=1` (or any non-empty value), the
 /// budget bumps to [`PERF_BUDGET_CI_SECS`] (60s) to absorb GitHub-hosted
-/// runner variance. `publish.yml` + `ci.yml` set the env var on their
-/// `cargo test` invocations. This brings back the dev-target
+/// runner variance. Release workflows may also set the bounded
+/// `SOLO_PERF_CI_BUDGET_SECONDS` override for a demonstrably slower host.
+/// This brings back the dev-target
 /// regression-detection signal lost when commit `38b9d3e` blanket-bumped
 /// the budget to 60s — a developer-machine 2× slowdown will now fail
 /// locally instead of being absorbed by the CI-sized budget.
@@ -122,7 +123,7 @@ fn ten_thousand_pending_rows_replay_within_budget() {
     // by hnsw_rs's ~1 ms inserts (still well under the CI 60s budget
     // for 10k rows).
     //
-    // Two budgets:
+    // Three budget tiers:
     //   - 30s default (interactive `cargo test` on a workstation) —
     //     restores ADR-0003's original developer-hardware target.
     //     Observed dev-machine baselines: ~4s on a fast Linux box,
@@ -132,31 +133,39 @@ fn ten_thousand_pending_rows_replay_within_budget() {
     //     test fails locally. This is the regression-detection signal
     //     lost when commit `38b9d3e` blanket-bumped 30s → 60s for
     //     v0.10.2.
-    //   - 60s when `SOLO_PERF_CI_BUDGET` is set (publish.yml / ci.yml).
-    //     Same budget as the post-`38b9d3e` ceiling; covers GitHub-
+    //   - 60s when `SOLO_PERF_CI_BUDGET` is set for normal CI runs. This
+    //     is the post-`38b9d3e` ceiling and covers GitHub-
     //     hosted runner variance that already burned v0.10.2 (run
     //     26120153333 attempt 1 with the prior 30s budget — see dev
     //     log 0131).
+    //   - A bounded 60-300s override for unusually slow release runners;
+    //     the Windows release workflow uses 120s after observed runner
+    //     variance exceeded 60s without a code regression.
     //
-    // The 30 → 60s spread is the regression-detection signal: a real
-    // 10× slowdown trips the 30s dev budget immediately; the 60s CI
-    // budget keeps GHA from going red on shared-runner noise.
+    // The 30s developer ceiling remains the primary regression signal;
+    // larger budgets are explicitly CI-only and capped.
     let budget = perf_budget();
     assert!(
         elapsed < budget,
         "10k pending replay took {elapsed:?} (budget {budget:?}; \
-         set SOLO_PERF_CI_BUDGET=1 if you're on a slow CI runner)"
+         set SOLO_PERF_CI_BUDGET=1 and, if needed, a bounded \
+         SOLO_PERF_CI_BUDGET_SECONDS override on slow CI runners)"
     );
 }
 
 /// Env var name read by [`perf_budget`]. Any non-empty value selects
 /// the CI-sized budget; unset / empty selects the developer-target one.
 ///
-/// `publish.yml` and `ci.yml` set this on their `cargo test` step.
+/// Release workflows set this on their `cargo test` step.
 /// Local `cargo test` runs leave it unset so a 10× regression on dev
 /// hardware fails immediately instead of being absorbed by the
 /// CI-sized budget.
 const PERF_BUDGET_ENV: &str = "SOLO_PERF_CI_BUDGET";
+
+/// Optional numeric override for unusually slow CI hosts. This is honored
+/// only when [`PERF_BUDGET_ENV`] is also enabled and is deliberately bounded
+/// so a typo cannot silently disable the regression check.
+const PERF_BUDGET_SECONDS_ENV: &str = "SOLO_PERF_CI_BUDGET_SECONDS";
 
 /// Budget when [`PERF_BUDGET_ENV`] is unset. Restores ADR-0003's
 /// original developer-hardware target (which the v0.10.2 incident
@@ -170,14 +179,65 @@ const PERF_BUDGET_DEV_SECS: u64 = 30;
 /// runner variance (see dev log 0131).
 const PERF_BUDGET_CI_SECS: u64 = 60;
 
+const PERF_BUDGET_OVERRIDE_MIN_SECS: u64 = PERF_BUDGET_CI_SECS;
+const PERF_BUDGET_OVERRIDE_MAX_SECS: u64 = 300;
+
 /// Resolve the active perf budget. Read on each call (rather than
 /// cached) so tests can set/unset the env var in-process if needed in
 /// a future tweak.
 fn perf_budget() -> Duration {
-    match std::env::var(PERF_BUDGET_ENV) {
-        Ok(s) if !s.trim().is_empty() => Duration::from_secs(PERF_BUDGET_CI_SECS),
-        _ => Duration::from_secs(PERF_BUDGET_DEV_SECS),
+    let ci_enabled = std::env::var(PERF_BUDGET_ENV).is_ok_and(|value| !value.trim().is_empty());
+    let seconds_override = std::env::var(PERF_BUDGET_SECONDS_ENV).ok();
+    resolve_perf_budget(ci_enabled, seconds_override.as_deref())
+}
+
+fn resolve_perf_budget(ci_enabled: bool, seconds_override: Option<&str>) -> Duration {
+    let seconds_override = seconds_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(value) = seconds_override {
+        assert!(
+            ci_enabled,
+            "{PERF_BUDGET_SECONDS_ENV} requires {PERF_BUDGET_ENV}"
+        );
+        let seconds = value.parse::<u64>().unwrap_or_else(|_| {
+            panic!("{PERF_BUDGET_SECONDS_ENV} must be an integer number of seconds")
+        });
+        assert!(
+            (PERF_BUDGET_OVERRIDE_MIN_SECS..=PERF_BUDGET_OVERRIDE_MAX_SECS).contains(&seconds),
+            "{PERF_BUDGET_SECONDS_ENV} must be between \
+             {PERF_BUDGET_OVERRIDE_MIN_SECS} and {PERF_BUDGET_OVERRIDE_MAX_SECS}"
+        );
+        return Duration::from_secs(seconds);
     }
+
+    Duration::from_secs(if ci_enabled {
+        PERF_BUDGET_CI_SECS
+    } else {
+        PERF_BUDGET_DEV_SECS
+    })
+}
+
+#[test]
+fn perf_budget_resolution_preserves_dev_ci_and_bounded_override_tiers() {
+    assert_eq!(resolve_perf_budget(false, None), Duration::from_secs(30));
+    assert_eq!(resolve_perf_budget(true, None), Duration::from_secs(60));
+    assert_eq!(
+        resolve_perf_budget(true, Some(" 120 ")),
+        Duration::from_secs(120)
+    );
+}
+
+#[test]
+#[should_panic(expected = "SOLO_PERF_CI_BUDGET_SECONDS requires SOLO_PERF_CI_BUDGET")]
+fn perf_budget_override_requires_ci_mode() {
+    let _ = resolve_perf_budget(false, Some("120"));
+}
+
+#[test]
+#[should_panic(expected = "must be between 60 and 300")]
+fn perf_budget_override_is_bounded() {
+    let _ = resolve_perf_budget(true, Some("301"));
 }
 
 /// ADR-0003 #19: snapshot save failure (mock `hnsw.save` to return Err);
