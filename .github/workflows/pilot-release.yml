@@ -209,20 +209,7 @@ jobs:
 
       - name: Bundle MSVC runtime
         shell: pwsh
-        run: |
-          $releaseDir = (Resolve-Path "target/$env:PILOT_TARGET/release").Path
-          $searchRoots = @(
-            "${env:ProgramFiles}\Microsoft Visual Studio",
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
-          ) | Where-Object { Test-Path $_ }
-          $crtDirs = foreach ($root in $searchRoots) {
-            Get-ChildItem -Path $root -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '\\VC\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC\d+\.CRT\\vcruntime140\.dll$' } |
-              ForEach-Object { $_.Directory }
-          }
-          $crtDir = $crtDirs | Sort-Object FullName -Descending | Select-Object -First 1
-          if ($null -eq $crtDir) { throw 'MSVC x64 redistributable CRT directory not found' }
-          Copy-Item -Path (Join-Path $crtDir.FullName '*.dll') -Destination $releaseDir -Force
+        run: ./scripts/bundle_msvc_runtime.ps1 -ReleaseDir "target/$env:PILOT_TARGET/release"
 
       - name: Install pinned Inno Setup
         shell: pwsh

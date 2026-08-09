@@ -408,26 +408,7 @@ jobs:
       - name: Bundle MSVC runtime DLLs (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: |
-          $releaseDir = Resolve-Path "target/${{ matrix.target }}/release"
-          $searchRoots = @(
-            "${env:ProgramFiles}\Microsoft Visual Studio",
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
-          ) | Where-Object { Test-Path $_ }
-          $crtDirs = @()
-          foreach ($root in $searchRoots) {
-            $crtDirs += Get-ChildItem -Path $root -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '\\VC\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC\d+\.CRT\\vcruntime140\.dll$' } |
-              ForEach-Object { $_.Directory }
-          }
-          $crtDir = $crtDirs | Sort-Object FullName -Descending | Select-Object -First 1
-          if ($null -eq $crtDir) {
-            throw "MSVC x64 redistributable CRT directory not found"
-          }
-          Copy-Item -Path (Join-Path $crtDir.FullName "*.dll") -Destination $releaseDir -Force
-          Get-ChildItem -Path $releaseDir -Filter "*.dll" | ForEach-Object {
-            Write-Host "Bundled $($_.Name)"
-          }
+        run: ./scripts/bundle_msvc_runtime.ps1 -ReleaseDir "target/${{ matrix.target }}/release"
 
       # Defensive smoke before packaging: catches the rare case where
       # `cargo build` returns 0 but the resulting binary panics at startup
