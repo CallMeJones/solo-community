@@ -1,0 +1,28 @@
+[package]
+name = "solo-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: vector indexing (HNSW sidecar, future RaBitQ cold tier)"
+publish = false  # stub crate; HNSW lives in solo-storage::vector_index for v0.x.
+
+[dependencies]
+solo-core = { workspace = true }
+hnsw_rs = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+test-log = { workspace = true }
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

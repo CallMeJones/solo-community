@@ -1,0 +1,65 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Per-developer Cargo config — used to override target-dir, registry,
+# linker, etc. for a single checkout without affecting CI or other
+# contributors. Common use case: relocate target/ to a different drive
+# via `[build] target-dir = "D:/somewhere"` so debug build artifacts
+# (which can grow to ~100 GB) don't sit on the system drive.
+.cargo/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Solo runtime files (should never be checked in)
+*.db
+*.db-wal
+*.db-shm
+hnsw_*.bin
+hnsw_*.bin.tmp
+hnsw_*.bin.bak
+solo.db*
+solo-data/
+
+# Logs
+*.log
+logs/
+
+# Local config / secrets
+.env
+.env.local
+*.pem
+*.key
+*.cdx.json
+
+# Test artifacts
+coverage/
+*.profraw
+*.profdata
+__pycache__/
+*.py[cod]
+.dev-session/
+.smoke/
+
+# Generated Windows release artifacts
+installer/windows/SoloSetup-*.exe
+installer/windows/SoloSetup-*.zip
+installer/windows/soloLatest.zip
+
+# v0.9.0 P3: fastembed-rs's hf-hub model cache. fastembed downloads
+# all-MiniLM-L6-v2 weights (~22 MB) on first use and caches them
+# under `.fastembed_cache/` (in CWD) when running tests. The cache is
+# transient build state — keep it out of git history.
+.fastembed_cache/
+**/.fastembed_cache/

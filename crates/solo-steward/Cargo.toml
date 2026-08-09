@@ -1,0 +1,40 @@
+[package]
+name = "solo-steward"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: consolidation pass (SWS dedup, REM integration, decay)"
+
+[dependencies]
+solo-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+parking_lot = { workspace = true, optional = true }
+
+[dev-dependencies]
+test-log = { workspace = true }
+proptest = { workspace = true }
+parking_lot = { workspace = true }
+
+[features]
+# Mirrors the solo-storage pattern: when `test-support` is enabled,
+# the public `test_support` module compiles. dev-dependencies don't
+# propagate to downstream crates, so making this a regular optional
+# dep gated by the feature lets solo-storage / solo-cli depend on
+# `solo-steward/test-support` for their own tests.
+test-support = ["dep:parking_lot"]
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

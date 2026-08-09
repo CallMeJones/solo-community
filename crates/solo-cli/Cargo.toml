@@ -1,0 +1,109 @@
+[package]
+name = "solo-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: command-line interface and `solo` binary"
+
+# `cargo binstall solo-cli` URL convention. Matches the archive naming
+# in `.github/workflows/publish.yml`'s `release-binaries` job:
+#   solo-cli-<VERSION>-x86_64-unknown-linux-gnu.tgz     (Linux x86_64)
+#   solo-cli-<VERSION>-aarch64-unknown-linux-gnu.tgz    (Linux aarch64)
+#   solo-cli-<VERSION>-x86_64-pc-windows-msvc.zip       (Windows)
+# `bin-dir` says the `solo` binary sits at the archive root (no nested
+# directory), matching how `tar -C target/<triple>/release` packs it.
+# This metadata takes effect for the FIRST published version that
+# carries it (i.e. the next bump after this commit lands); v0.3.4 and
+# earlier had no pre-built binaries on the release page anyway.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[lib]
+name = "solo_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "solo"
+path = "src/main.rs"
+
+[dependencies]
+solo-core = { workspace = true }
+# v0.9.0 P3: solo-storage's workspace entry sets default-features =
+# false, so solo-cli's default-features pulls in NO solo-storage
+# features by default. The [features] block below re-enables
+# bundled-embedder on solo-cli's own `default` feature → `cargo build
+# -p solo-cli` (no flags) gets the bundled embedder. Official Windows and
+# GNU/Linux release artifacts always use this default feature set.
+solo-storage = { workspace = true }
+solo-steward = { workspace = true }
+solo-query = { workspace = true }
+solo-api = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+toml_edit = "0.25.11"
+rpassword = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+sysinfo = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+# `ureq` drives the daemon's HTTP transport from
+# `tests/process_lifecycle.rs::mid_write_kill9_recovery`. Synchronous +
+# self-contained (no async runtime / hyper) — the integration test is
+# itself synchronous and doesn't need tokio in its own process.
+ureq = { version = "2.10", features = ["json"] }
+serde_json = { workspace = true }
+# `wiremock` drives the doctor's Ollama latency-probe tests
+# (`solo doctor --with-stats` calls `OllamaEmbedder::probe_dim()` —
+# v0.5.1 sub-step 6E). Workspace-pinned in v0.8.0 P3 so solo-api's
+# fake-IdP fixture, the doctor probe, and the embedder mocks all
+# resolve a single wiremock version.
+wiremock = { workspace = true }
+
+# `nix` is the safe Signal enum + kill() wrapper used by the SIGTERM
+# graceful-shutdown test. Unix-only; the test file gates it behind
+# `#[cfg(unix)]`.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+# v0.9.0 P3: feature passthrough for solo-storage's bundled-embedder.
+#
+# `cargo build -p solo-cli` (no flags) → default features on → bundled
+# embedder linked in. `cargo build -p solo-cli --no-default-features`
+# → bundled embedder skipped, fastembed/ort transitives never compile. That
+# opt-out remains available for unsupported developer targets such as musl,
+# but it is not used for official Community packages.
+#
+# Without the `default-features = false` on the solo-storage dep
+# entry above + this passthrough, `--no-default-features` on solo-cli
+# would NOT propagate down to solo-storage; solo-storage's own
+# `default = ["bundled-embedder"]` would still apply, pulling in
+# fastembed via the unconditional transitive dep edge.
+[features]
+default = ["bundled-embedder"]
+bundled-embedder = ["solo-storage/bundled-embedder"]
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

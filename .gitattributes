@@ -1,0 +1,8 @@
+# Embedded production assets are byte-for-byte release inputs. Never let a
+# platform checkout rewrite their line endings after provenance is recorded.
+crates/solo-api/assets/solo-web/** -text
+crates/solo-api/assets/solo-web.provenance.json text eol=lf
+
+# Shell entry points must remain executable by Bash even when checked out on
+# Windows for WSL packaging and release qualification.
+*.sh text eol=lf

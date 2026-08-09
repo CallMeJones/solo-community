@@ -1,0 +1,113 @@
+[package]
+name = "solo-tray"
+version.workspace = true
+edition.workspace = true
+# Deliberately above the workspace MSRV. solo-tray uses `if let` guards,
+# stabilized in Rust 1.95, and does not compile on 1.88 (E0658). Verified by
+# bisection: 1.88-1.94 reject the feature, 1.95 is the first to build the
+# crate. This crate is `publish = false`, so the higher floor does not
+# constrain the six crates.io packages, which stay on the workspace MSRV.
+rust-version = "1.95"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: tray + log-viewer companion app for `solo daemon` (Windows/Linux/macOS)"
+publish = false  # opt-in via local cargo install; not on crates.io initially
+
+[[bin]]
+name = "solo-tray"
+path = "src/main.rs"
+
+[dependencies]
+# Tray + UI
+# `tray-icon` provides a cross-platform tray API (Win32 / NSStatusItem /
+# AppIndicator). `eframe` wraps egui + winit for the log-viewer window;
+# `egui` is the immediate-mode UI we draw with.
+tray-icon = "0.20"
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.31"
+# Tao gives Wry a GTK-backed container on Linux, which keeps the owned
+# Solo Desktop webview usable on both X11 and Wayland.
+tao = "0.35"
+wry = "0.55"
+
+# HTTP poller for /v1/status (uses workspace reqwest)
+solo-core = { workspace = true }
+solo-storage = { workspace = true, features = ["bundled-embedder"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { workspace = true }
+
+# Settings persistence (~/.solo/tray.toml)
+toml = { workspace = true }
+
+# OS keychain / credential-manager storage for optional daemon passphrase recall.
+keyring = { workspace = true }
+
+# OS-native notification toasts on health transitions
+notify-rust = { workspace = true }
+
+# Secret zeroing for the passphrase captured by the in-window unlock prompt.
+zeroize = { workspace = true }
+
+# Cross-platform lockfile support for the non-Windows single-instance guard.
+fs2 = "0.4"
+
+# Async runtime + child process management
+tokio = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging (shared with the rest of the workspace)
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Open URLs / data dir in OS file manager / browser
+open = "5"
+
+# Image loader for the tray icon assets
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Platform-specific bits for signal handling (graceful daemon shutdown)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
+
+# `tray-icon` is GTK-backed on Linux and requires `gtk::init()` plus a GTK
+# event loop on the thread that owns the tray. eframe wraps winit, which
+# talks to X11/Wayland directly and never initializes GTK, so the tray has
+# to do it itself. Pinned to the single `gtk 0.18.2` already resolved in
+# Cargo.lock via muda, so both share one instance and one set of globals.
+# See docs/adr/0016-linux-gtk-initialization.md.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Console",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_Foundation",
+    "Win32_Security",
+    # Job Object APIs so the daemon child dies with the tray (any
+    # exit path: clean Quit, crash, Task Manager kill, parent shell
+    # close). See `daemon::assign_to_kill_on_close_job`.
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    # Window APIs for the tray watcher's direct-dispatch SHOW_LOGS
+    # path. Minimised windows don't get WM_PAINT, so eframe's
+    # update() stops ticking and the forwarded-event queue stalls;
+    # we use EnumWindows + ShowWindow(SW_RESTORE) + SetForegroundWindow
+    # to bring the eframe window back without depending on update().
+    # See `tray::restore_main_window_via_win32`.
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# Workspace lint config (same as every other crate)
+[lints]
+workspace = true

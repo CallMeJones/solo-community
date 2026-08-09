@@ -1,0 +1,23 @@
+[package]
+name = "solo-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: shared types and traits for the memory daemon"
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+bytemuck = { workspace = true }
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration so the
+# pre-existing-warning suppressions apply when CI runs `clippy -D warnings`.
+[lints]
+workspace = true

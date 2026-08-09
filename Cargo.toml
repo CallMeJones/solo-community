@@ -1,0 +1,275 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/solo-core",
+    "crates/solo-storage",
+    "crates/solo-index",
+    "crates/solo-query",
+    "crates/solo-api",
+    "crates/solo-cli",
+    "crates/solo-steward",
+    "crates/solo-bench",
+    "crates/solo-tray",
+]
+
+# v0.8.0 P4: workspace-level lint configuration. Suppresses pre-existing
+# clippy lints that were not enforced before -D warnings was made the
+# CI gate. Each `allow` here is a known cleanup target for a later
+# refactor; do NOT add new ones without first attempting to fix the
+# offending code. Removing entries is the long-term direction.
+[workspace.lints.clippy]
+collapsible_if              = "allow"
+doc_lazy_continuation       = "allow"
+doc_overindented_list_items = "allow"
+large_enum_variant          = "allow"
+manual_repeat_n             = "allow"
+needless_pass_by_ref_mut    = "allow"
+question_mark               = "allow"
+redundant_closure_for_method_calls = "allow"
+redundant_clone             = "allow"
+single_char_add_str         = "allow"
+stable_sort_primitive       = "allow"
+too_many_arguments          = "allow"
+useless_format              = "allow"
+useless_vec                 = "allow"
+manual_strip                = "allow"
+clone_on_copy               = "allow"
+write_with_newline          = "allow"
+explicit_auto_deref         = "allow"
+const_is_empty              = "allow"
+await_holding_lock          = "allow"
+needless_borrows_for_generic_args = "allow"
+unnecessary_mut_passed      = "allow"
+assertions_on_constants     = "allow"
+unnecessary_sort_by         = "allow"
+manual_str_repeat           = "allow"
+print_literal               = "allow"
+
+[workspace.package]
+version = "0.12.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Solo project"]
+repository = "https://github.com/CallMeJones/solo-community"
+homepage = "https://solo.dev"
+description = "Local-first personal memory for AI assistants — MCP/HTTP server, SQLCipher + HNSW, LLM-driven consolidation"
+keywords = ["memory", "mcp", "llm", "embedding", "vector-search"]
+categories = ["database", "command-line-utilities", "science"]
+readme = "README.md"
+
+[workspace.dependencies]
+# Internal crates
+# All six publishable crates bumped uniformly each release. v0.3.3 was
+# the first uniform-bump release; the discipline keeps publish.yml's
+# leaf-up walk working, aligns `solo --version` with the storage-layer
+# version users install, and keeps local Cargo.lock + published
+# manifests in sync (every Solo crate locally at the workspace.package
+# .version via inheritance). solo-bench and solo-index are
+# publish=false; their workspace dep entries don't reach crates.io.
+solo-core    = { path = "crates/solo-core",    version = "0.12.0" }
+# `default-features = false` on the workspace entry lets per-crate
+# consumers opt in OR opt out of `solo-storage`'s default features
+# (`bundled-embedder`, v0.9.0 P3). The workspace entry holds the
+# minimal feature surface; downstream crates explicitly re-enable
+# `bundled-embedder` if they want it. solo-cli's [features.default]
+# passthrough turns it back on for the standard `cargo build` path.
+solo-storage = { path = "crates/solo-storage", version = "0.12.0", default-features = false }
+solo-index   = { path = "crates/solo-index",   version = "0.12.0" }
+solo-query   = { path = "crates/solo-query",   version = "0.12.0" }
+solo-api     = { path = "crates/solo-api",     version = "0.12.0" }
+solo-cli     = { path = "crates/solo-cli",     version = "0.12.0" }
+solo-steward = { path = "crates/solo-steward", version = "0.12.0" }
+solo-bench   = { path = "crates/solo-bench",   version = "0.12.0" }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+async-trait = "0.1.83"
+futures = "0.3.31"
+
+# Errors
+anyhow = "1.0.95"
+thiserror = "2.0.9"
+
+# Serialization
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.135"
+toml = "0.8"
+notify-rust = "4"
+
+# Logging / tracing / observability
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2.3"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Identifiers / time
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4.39", features = ["serde"] }
+
+# Storage — SQLite + SQLCipher with vendored OpenSSL.
+# `vendored-openssl` builds OpenSSL inline (no system OPENSSL_DIR needed) but
+# requires Perl in PATH at build time (Strawberry Perl on Windows). End users
+# don't see this — the resulting binary has no runtime OpenSSL dependency.
+rusqlite = { version = "0.38", features = ["bundled-sqlcipher-vendored-openssl", "blob", "functions", "array", "backup"] }
+
+# Vector index — hnsw_rs is the chosen sidecar (per ADR-0002 §3 "vector
+# index" risk-1 mitigation). sqlite-vec was previously a workspace dep
+# as a future swap candidate but never wired into any code path; dropped
+# in v0.3.7 because its C source uses BSD-style typedefs (`u_int8_t`)
+# that musl libc doesn't expose, breaking the new musl release shards.
+hnsw_rs = "0.3"
+
+# Compression
+zstd = { version = "0.13", features = ["zdict_builder"] }
+lz4_flex = "0.11"
+flate2 = "1"
+
+# Sync (Litestream + Iroh + Automerge — wired in week 4)
+iroh = "0.30"
+iroh-docs = "0.30"
+automerge = "0.5"
+redb = "2.4"
+
+# Crypto / key wrap (OS keychain integration + argon2 fallback)
+keyring = { version = "3", features = ["windows-native"] }
+argon2 = "0.5"
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+blake3 = "1.5"
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+hex = "0.4"
+getrandom = "0.2"
+
+# Connection pool — async-native; pinned to 0.13 per ADR-0003 P8-A
+deadpool-sqlite = { version = "0.13", features = ["bundled-sqlcipher-vendored-openssl"] }
+
+# Concurrency primitives — used by hnsw_rs and our test stubs.
+parking_lot = "0.12"
+
+# v0.11.0 P1: MCP session store. `DashMap` gives lock-free per-session
+# reads on the `/mcp` dispatch hot path (Decision A in
+# `docs/dev-log/0132-v0.11.0-implementation-plan.md`). Pinned to the
+# 6.x line — 7.0.0 is currently `-rc2` (per `cargo search dashmap` on
+# 2026-05-19), and Solo's policy is latest stable not pre-release
+# (lesson #14 / #21).
+dashmap = "6"
+
+# Cross-platform process introspection (PID-alive checks for stale lockfile
+# recovery). Workspace pin keeps versions consistent if more crates need it.
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+
+# HTTP / MCP
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "validate-request", "auth"] }
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
+# `reqwest` for the Anthropic LLM HTTP backend (Y.3.b). rustls-tls
+# rather than native-tls so we don't pull in OpenSSL twice (rusqlite
+# already bundles it). `json` enables `.json()` serializers/parsers.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+# JWT / OIDC validation (v0.8.0 P3). jsonwebtoken 10.x split crypto into
+# pluggable backends — we pick `rust_crypto` over `aws_lc_rs` because
+# Solo is a pure-Rust shop (lesson #19: no C transitives reach musl
+# release shards). `use_pem` is enabled by default and we don't need to
+# disable it. Algorithms supported: HS256/384/512, RS256/384/512,
+# PS256/384/512, ES256/384, EdDSA — covers every common OIDC provider.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+# Base64-URL no-pad encoding for JWKS test fixtures (the `k` field of an
+# `oct` JWK is base64url-no-pad per RFC 7518 §6.4.1).
+base64 = "0.22"
+
+# PII redaction patterns (v0.8.0 P5). `regex` is pure-Rust + no C
+# transitives (lesson #19). 1.12 is latest stable as of 2026-05.
+regex = "1.12"
+
+# CLI — passphrase prompt + paths
+clap = { version = "4.5", features = ["derive", "env"] }
+rpassword = "7.3"
+dirs = "5"
+
+# Test / bench
+tempfile = "3.14"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.6"
+insta = { version = "1.41", features = ["yaml"] }
+test-log = "0.2"
+# In-process HTTP mock used by Ollama embedder tests (v0.5.1 6A), Solo
+# CLI doctor tests, and v0.8.0 P3 auth tests (fake OIDC IdP fixture).
+# Pinned in the workspace so the same version drives every crate.
+wiremock = "0.6"
+
+# Utility
+bytemuck = { version = "1.21", features = ["derive"] }
+# Unicode normalization (NFKC) for path validation — catches
+# full-width Latin / ligature confusables (e.g., U+FF44 → 'd'),
+# does NOT catch script-mixed confusables (Cyrillic 'о' ≠ Latin 'o').
+unicode-normalization = "0.1"
+
+# Document parsing. `pdf-extract`, `html2text`, `csv`, and `calamine` are
+# pure-Rust. Calamine's MSRV is 1.83, below Solo's workspace MSRV 1.88.
+pdf-extract = "0.10"
+html2text = "0.13"
+csv = "1.4"
+calamine = "0.35"
+zip = { version = "7.2", default-features = false }
+quick-xml = "0.39"
+
+# v0.9.0 P3: bundled CPU sentence-transformer embedder.
+#
+# `fastembed` 5.x wraps `pykeio/ort` (ONNX Runtime) and ships a registry
+# of known models (`EmbeddingModel::AllMiniLML6V2`) plus hf-hub download
+# caching at `~/.fastembed_cache`. First-use on a fresh install pulls
+# ~22 MB from HuggingFace + caches; subsequent runs load from disk.
+#
+# `default-features = false` is mandatory: fastembed's defaults include
+# `image-models` (pulls `image` 0.25.x for vision models we don't use)
+# and `hf-hub-native-tls`. We re-enable only what we need below.
+#
+# Features re-enabled:
+#
+#   * `ort-download-binaries-rustls-tls` — uses pyke's CDN at ort build
+#     time + rustls for the HTTPS handshake (matching Solo's pure-Rust
+#     transitive policy from lesson #19 — no system OpenSSL pulled in
+#     twice; rusqlite already bundles its own).
+#   * `hf-hub-rustls-tls` — runtime hf-hub download cache also via
+#     rustls. fastembed's `try_new(InitOptions::new(model))` path uses
+#     this to fetch model files on first use.
+#
+# The `optional = true` flag lives on solo-storage's per-crate dep
+# entry (workspace.dependencies inheritance + per-crate `optional` is
+# the standard Cargo pattern for feature-gated workspace deps; see
+# tempfile above for precedent).
+#
+# ort itself transitively pulls a prebuilt `libonnxruntime` from pyke's
+# CDN at build time. The download is cached in `~/.cache/ort` (or the
+# platform-equivalent). Supported targets: x86_64-unknown-linux-gnu,
+# aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, x86_64-apple-darwin,
+# aarch64-apple-darwin. NO musl support — feature gate handles this.
+fastembed = { version = "5.13", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+# `debug = "line-tables-only"` keeps source-line backtraces (so panics
+# still print useful file:line locations) but drops the full DWARF
+# variable / type / scope debug-info that normally bloats every debug
+# binary by ~30-50 %. The dev-cycle UX cost is that an interactive
+# debugger (gdb / lldb / rust-lldb attached to a debug build) sees
+# fewer locals + can't resolve some types. Solo's testing discipline
+# is per-commit `cargo test` and println-style debugging, not
+# interactive debuggers, so the trade is one-sided.
+#
+# Workspace-wide impact: solo-cli's debug binaries shrink ~30-50 %,
+# `cargo test` link times speed up, target-dir grows more slowly.
+# Stable since Rust 1.71 (`line-tables-only` value); workspace MSRV
+# is 1.88 so safe.
+debug = "line-tables-only"

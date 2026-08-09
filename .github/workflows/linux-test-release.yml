@@ -1,0 +1,228 @@
+# Build and publish an Ubuntu package for hands-on testing without invoking
+# the production crates.io publisher. Only explicit linux-test SemVer tags
+# enter this workflow.
+
+name: Linux test release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-linux-test.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-test-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ubuntu-package:
+    name: Ubuntu 24.04 test package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      release_notes: ${{ steps.validate.outputs.release_notes }}
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate test tag and release notes
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-linux-test\.[0-9]+$ ]]; then
+            echo "::error::unexpected Linux test version: $VERSION"
+            exit 1
+          fi
+          BASE_VERSION="${VERSION%%-linux-test.*}"
+          WORKSPACE_VERSION="$(
+            cargo metadata --format-version 1 --no-deps |
+              jq -r '.packages[] | select(.name == "solo-core") | .version'
+          )"
+          if [[ "$BASE_VERSION" != "$WORKSPACE_VERSION" ]]; then
+            echo "::error::tag base $BASE_VERSION does not match workspace $WORKSPACE_VERSION"
+            exit 1
+          fi
+          NOTES="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$NOTES" ]]; then
+            echo "::error::release notes file is missing: $NOTES"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES=$NOTES" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_notes=$NOTES" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+          components: clippy
+
+      - name: Install Ubuntu desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            pkg-config \
+            xvfb \
+            dbus-x11
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-test-release-ubuntu24.04-amd64
+
+      - name: Verify Community boundary
+        run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
+
+      - name: Deny Rust warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test Linux tray and autostart behavior
+        run: cargo test --locked -p solo-tray
+
+      - name: Build Solo Community Desktop
+        run: >-
+          cargo build --locked --release --target x86_64-unknown-linux-gnu
+          -p solo-cli -p solo-tray
+
+      - name: Fetch pinned offline embedding model
+        run: >-
+          bash scripts/fetch_embedding_model.sh
+          target/x86_64-unknown-linux-gnu/release/models/all-MiniLM-L6-v2
+
+      - name: Smoke Linux binaries and desktop entry
+        run: |
+          set -euo pipefail
+          target/x86_64-unknown-linux-gnu/release/solo --version
+          target/x86_64-unknown-linux-gnu/release/solo-tray --version
+          desktop-file-validate installer/linux/solo.desktop
+
+      - name: Package and inspect Ubuntu deb
+        run: |
+          set -euo pipefail
+          bash scripts/package_ubuntu_deb.sh \
+            "$VERSION" \
+            target/x86_64-unknown-linux-gnu/release \
+            dist
+          DEB="dist/solo-${VERSION}-ubuntu24.04-amd64.deb"
+          test -s "$DEB"
+          dpkg-deb --info "$DEB"
+          dpkg-deb --contents "$DEB"
+          (
+            cd dist
+            sha256sum "$(basename "$DEB")" > "$(basename "$DEB").sha256"
+          )
+          echo "UBUNTU_DEB=$DEB" >> "$GITHUB_ENV"
+
+      - name: Install packaged Ubuntu Community release
+        run: sudo apt install -y "./$UBUNTU_DEB"
+
+      - name: Smoke installed Ubuntu Community workflows
+        run: >-
+          bash scripts/linux_installed_smoke.sh
+          /usr/bin/solo
+          "${{ runner.temp }}/solo-installed-community-smoke"
+          /usr/share/solo/models/all-MiniLM-L6-v2
+
+      - name: Smoke installed Ubuntu tray GUI
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: >-
+          xvfb-run -a --server-args="-screen 0 1280x1024x24"
+          dbus-run-session --
+          bash scripts/linux_tray_gui_smoke.sh
+          /usr/bin/solo-tray
+          /usr/bin/solo
+          15
+
+      - name: Verify installed package
+        run: |
+          set -euo pipefail
+          dpkg-query --show --showformat='${Package} ${Version} ${Architecture}\n' solo-memory
+          test "$(/usr/bin/solo --version | cut -d' ' -f1)" = "solo"
+          test "$(/usr/bin/solo-tray --version | cut -d' ' -f1)" = "solo-tray"
+
+      - name: Retain package in the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: solo-${{ env.VERSION }}-ubuntu24.04-amd64
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-prerelease:
+    name: Publish private GitHub prerelease
+    needs: ubuntu-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.ubuntu-package.outputs.version }}
+      RELEASE_NOTES: ${{ needs.ubuntu-package.outputs.release_notes }}
+
+    steps:
+      - name: Checkout tagged release notes
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download certified Ubuntu package
+        uses: actions/download-artifact@v5
+        with:
+          name: solo-${{ needs.ubuntu-package.outputs.version }}-ubuntu24.04-amd64
+          path: dist
+
+      - name: Verify downloaded package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check \
+            "solo-${VERSION}-ubuntu24.04-amd64.deb.sha256"
+
+      - name: Publish private GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          UBUNTU_DEB="dist/solo-${VERSION}-ubuntu24.04-amd64.deb"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+            if [[ "$IS_PRERELEASE" != "true" ]]; then
+              echo "::error::refusing to overwrite non-prerelease release $TAG"
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --verify-tag \
+              --prerelease \
+              --title "Solo ${VERSION} - Ubuntu test" \
+              --notes-file "$RELEASE_NOTES"
+          fi
+          gh release upload "$TAG" "$UBUNTU_DEB" "$UBUNTU_DEB.sha256" --clobber
+          gh release view "$TAG" --json isPrerelease,assets,url

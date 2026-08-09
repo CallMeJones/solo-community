@@ -1,0 +1,95 @@
+{
+  "name": "memory-baseline",
+  "description": "Core preference, project, and entity recall cases for the offline lexical baseline.",
+  "passing_score": 1.0,
+  "cases": [
+    {
+      "id": "preference_lookup",
+      "query": "What editor theme does Ada prefer for late-night work?",
+      "max_results": 3,
+      "expected_memory_ids": ["pref-editor-theme"],
+      "memories": [
+        {
+          "id": "pref-editor-theme",
+          "text": "Ada prefers a dark editor theme for late-night coding sessions.",
+          "tier": "preference",
+          "importance": 0.9,
+          "status": "active"
+        },
+        {
+          "id": "pref-coffee",
+          "text": "Ada likes dark roast coffee before morning planning.",
+          "tier": "preference",
+          "importance": 0.4,
+          "status": "active"
+        },
+        {
+          "id": "editor-font",
+          "text": "Ada changed the editor font to Berkeley Mono for demos.",
+          "tier": "episodic",
+          "importance": 0.4,
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "roadmap_next_slice",
+      "query": "What should ship after the tray, inbox, setup wizard, importers, and policy pack?",
+      "max_results": 3,
+      "expected_memory_ids": ["roadmap-eval-harness"],
+      "memories": [
+        {
+          "id": "roadmap-eval-harness",
+          "text": "After desktop tray, inbox, setup wizard, importers, and the policy pack, Solo needs a minimal eval harness for memory quality regression checks.",
+          "tier": "decision",
+          "importance": 1.0,
+          "status": "active"
+        },
+        {
+          "id": "policy-pack-docs",
+          "text": "The memory policy pack documents client rules for retrieval, durable writes, corrections, and contradiction resolution.",
+          "tier": "semantic",
+          "importance": 0.7,
+          "status": "active"
+        },
+        {
+          "id": "tray-followup",
+          "text": "The Windows tray follow-up improved supervision, logging, and autostart handling.",
+          "tier": "episodic",
+          "importance": 0.6,
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "entity_disambiguation",
+      "query": "Which Jordan prefers morning calls for contract reviews?",
+      "max_results": 2,
+      "expected_memory_ids": ["jordan-client-calls"],
+      "forbidden_memory_ids": ["jordan-city-trip"],
+      "memories": [
+        {
+          "id": "jordan-client-calls",
+          "text": "Jordan Lee from the Acme contract team prefers morning calls for review sessions.",
+          "tier": "semantic",
+          "importance": 0.8,
+          "status": "active"
+        },
+        {
+          "id": "jordan-city-trip",
+          "text": "Jordan is also a country Ada wants to visit during a history-focused trip.",
+          "tier": "episodic",
+          "importance": 0.3,
+          "status": "active"
+        },
+        {
+          "id": "review-template",
+          "text": "Contract review templates should include renewal date, owner, and risk notes.",
+          "tier": "semantic",
+          "importance": 0.5,
+          "status": "active"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+[package]
+name = "solo-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: benchmark harness and golden datasets (LongMemEval, MemoryAgentBench, p99 budgets)"
+publish = false
+
+[dependencies]
+solo-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tempfile = { workspace = true }
+test-log = { workspace = true }
+
+[[bench]]
+name = "recall_p99"
+harness = false
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Solo
+GenericName=Private memory
+Comment=Private local memory and project context
+Exec=solo-tray
+Icon=solo
+Terminal=false
+Categories=Utility;Office;
+Keywords=memory;notes;projects;MCP;
+StartupNotify=true

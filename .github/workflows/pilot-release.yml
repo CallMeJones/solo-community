@@ -1,0 +1,471 @@
+name: Community Windows release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      solo_web_commit:
+        description: 'Exact lowercase 40-character Solo Web commit embedded in Core'
+        required: true
+        type: string
+      allow_unsigned_installer:
+        description: 'Allow an unsigned invite-only candidate when signing secrets are not configured'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: community-windows-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-candidate:
+    name: Windows Community candidate
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      PILOT_VERSION: '0.12.0'
+      PILOT_TARGET: x86_64-pc-windows-msvc
+      PILOT_ARTIFACT_DIR: ${{ github.workspace }}/pilot-artifacts
+      EXPECTED_WEB_COMMIT: ${{ inputs.solo_web_commit }}
+
+    steps:
+      - name: Checkout pinned Core candidate
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate Core candidate and release inputs
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_name }}' -ne 'main') {
+            throw "Community candidates must run from main; got '${{ github.ref_name }}'"
+          }
+          $coreCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $coreCommit -ne $env:GITHUB_SHA) {
+            throw "Checked-out Core commit $coreCommit does not equal workflow commit $env:GITHUB_SHA"
+          }
+          $dirty = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) {
+            throw "Core candidate checkout is not clean:`n$($dirty -join [Environment]::NewLine)"
+          }
+          foreach ($required in @(
+            'docs/releases/v0.12.0.md',
+            'crates/solo-api/assets/solo-web/index.html'
+          )) {
+            if (!(Test-Path -LiteralPath $required)) { throw "Required candidate input is missing: $required" }
+          }
+          if ($env:EXPECTED_WEB_COMMIT -notmatch '^[0-9a-f]{40}$') {
+            throw 'solo_web_commit must be an exact lowercase full Git commit SHA'
+          }
+
+      - name: Checkout exact Solo Web source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: CallMeJones/solo-web-community
+          ref: ${{ inputs.solo_web_commit }}
+          path: _pilot-sources/solo-web
+          persist-credentials: false
+
+      - name: Install exact Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: _pilot-sources/solo-web/package-lock.json
+
+      - name: Rebuild and verify exact Solo Web candidate
+        shell: pwsh
+        working-directory: _pilot-sources/solo-web
+        run: |
+          $actualCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $env:EXPECTED_WEB_COMMIT) {
+            throw "Solo Web checkout $actualCommit does not equal $env:EXPECTED_WEB_COMMIT"
+          }
+          $dirty = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) {
+            throw "Solo Web candidate checkout is not clean:`n$($dirty -join [Environment]::NewLine)"
+          }
+          if ((node --version).Trim() -ne 'v22.14.0') {
+            throw "Unexpected Node version: $(node --version)"
+          }
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw "Web typecheck failed with exit code $LASTEXITCODE" }
+          npm run lint
+          if ($LASTEXITCODE -ne 0) { throw "Web lint failed with exit code $LASTEXITCODE" }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw "Web tests failed with exit code $LASTEXITCODE" }
+          npm run build:pilot
+          if ($LASTEXITCODE -ne 0) { throw "Web pilot build failed with exit code $LASTEXITCODE" }
+          $dirtyAfterBuild = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $dirtyAfterBuild.Count -ne 0) {
+            throw "Solo Web build mutated the clean candidate checkout:`n$($dirtyAfterBuild -join [Environment]::NewLine)"
+          }
+
+      - name: Cryptographically compare rebuilt and embedded Web assets
+        shell: pwsh
+        run: |
+          function Get-TreeDigest([string]$Root) {
+            $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\', '/')
+            $lines = New-Object System.Collections.Generic.List[string]
+            foreach ($file in Get-ChildItem -LiteralPath $resolvedRoot -File -Recurse | Sort-Object FullName) {
+              $relative = $file.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/') -replace '\\', '/'
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $lines.Add("${relative}:${hash}") | Out-Null
+            }
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+              return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+            }
+            finally { $sha.Dispose() }
+          }
+          $candidateRoot = '_pilot-sources/solo-web/dist'
+          $embeddedRoot = 'crates/solo-api/assets/solo-web'
+          $provenancePath = 'crates/solo-api/assets/solo-web.provenance.json'
+          foreach ($required in @((Join-Path $candidateRoot 'index.html'), (Join-Path $embeddedRoot 'index.html'), $provenancePath)) {
+            if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required Web artifact is missing: $required" }
+          }
+          $candidateDigest = Get-TreeDigest $candidateRoot
+          $embeddedDigest = Get-TreeDigest $embeddedRoot
+          $provenance = Get-Content -Raw -LiteralPath $provenancePath | ConvertFrom-Json
+          $lockDigest = (Get-FileHash -LiteralPath '_pilot-sources/solo-web/package-lock.json' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($provenance.schema_version -ne 2) { throw 'Embedded Web provenance schema must be 2' }
+          if ($provenance.source_commit -ne $env:EXPECTED_WEB_COMMIT) {
+            throw "Embedded Web provenance commit $($provenance.source_commit) does not equal $env:EXPECTED_WEB_COMMIT"
+          }
+          if ($provenance.source_dirty -ne $false) { throw 'Embedded Web provenance records a dirty source tree' }
+          if ($provenance.package_lock_sha256 -ne $lockDigest) { throw 'Embedded Web provenance has the wrong package-lock digest' }
+          if ($provenance.dist_tree_sha256 -ne $candidateDigest -or $embeddedDigest -ne $candidateDigest) {
+            throw "Web artifact mismatch: rebuilt=$candidateDigest embedded=$embeddedDigest provenance=$($provenance.dist_tree_sha256)"
+          }
+          if ([string]::IsNullOrWhiteSpace($provenance.build_invocation_id)) {
+            throw 'Embedded Web provenance lacks a same-invocation build identifier'
+          }
+          "PILOT_EMBEDDED_WEB_SHA256=$embeddedDigest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_WEB_PACKAGE_LOCK_SHA256=$lockDigest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo outputs
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: pilot-windows-rust-1.95.0
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Core release surface
+        run: cargo clippy --locked --workspace --exclude solo-tray --all-targets -- -D warnings
+
+      - name: Check and test tray
+        shell: pwsh
+        run: |
+          cargo check --locked -p solo-tray --all-targets
+          if ($LASTEXITCODE -ne 0) { throw "tray check failed with exit code $LASTEXITCODE" }
+          cargo test --locked -p solo-tray
+          if ($LASTEXITCODE -ne 0) { throw "tray tests failed with exit code $LASTEXITCODE" }
+          cargo clippy --locked -p solo-tray --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "tray clippy failed with exit code $LASTEXITCODE" }
+
+      - name: Test workspace in both feature modes
+        shell: pwsh
+        run: |
+          cargo test --locked --workspace --no-fail-fast --no-default-features
+          if ($LASTEXITCODE -ne 0) { throw "minimal-feature workspace tests failed with exit code $LASTEXITCODE" }
+          cargo test --locked -p solo-storage --features bundled-embedder --no-fail-fast
+          if ($LASTEXITCODE -ne 0) { throw "bundled embedder tests failed with exit code $LASTEXITCODE" }
+
+      - name: Run evaluation fixtures
+        run: cargo run --locked -p solo-cli -- eval run --all --json
+
+      - name: Build Solo and tray
+        env:
+          SOLO_CI_BUILD_NUMBER: ${{ github.run_number }}
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc -p solo-cli -p solo-tray
+
+      - name: Fetch pinned offline embedding model
+        shell: pwsh
+        run: >-
+          ./scripts/fetch_embedding_model.ps1
+          -Destination target/$env:PILOT_TARGET/release/models/all-MiniLM-L6-v2
+
+      - name: Bundle MSVC runtime
+        shell: pwsh
+        run: |
+          $releaseDir = (Resolve-Path "target/$env:PILOT_TARGET/release").Path
+          $searchRoots = @(
+            "${env:ProgramFiles}\Microsoft Visual Studio",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+          ) | Where-Object { Test-Path $_ }
+          $crtDirs = foreach ($root in $searchRoots) {
+            Get-ChildItem -Path $root -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\VC\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC\d+\.CRT\\vcruntime140\.dll$' } |
+              ForEach-Object { $_.Directory }
+          }
+          $crtDir = $crtDirs | Sort-Object FullName -Descending | Select-Object -First 1
+          if ($null -eq $crtDir) { throw 'MSVC x64 redistributable CRT directory not found' }
+          Copy-Item -Path (Join-Path $crtDir.FullName '*.dll') -Destination $releaseDir -Force
+
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.1 --allow-downgrade --no-progress -y
+          if ($LASTEXITCODE -notin @(0, 1641, 3010)) { throw "Chocolatey exited with code $LASTEXITCODE" }
+          $isccCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($iscc)) { throw 'ISCC.exe not found' }
+          $installedPackage = @(& choco list --exact innosetup --limit-output 2>&1)
+          if ($LASTEXITCODE -ne 0 -or !($installedPackage | Where-Object { $_ -eq 'innosetup|6.7.1' })) {
+            throw "Expected Chocolatey innosetup package 6.7.1, found: $($installedPackage -join ' ')"
+          }
+          "PILOT_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_INNO_VERSION=6.7.1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package CLI ZIP and Windows installer
+        shell: pwsh
+        run: |
+          $releaseDir = (Resolve-Path "target/$env:PILOT_TARGET/release").Path
+          New-Item -ItemType Directory -Force -Path $env:PILOT_ARTIFACT_DIR | Out-Null
+          $cliZip = Join-Path $env:PILOT_ARTIFACT_DIR "solo-cli-$env:PILOT_VERSION-$env:PILOT_TARGET.zip"
+          $files = @((Join-Path $releaseDir 'solo.exe'), (Join-Path $releaseDir 'solo-tray.exe'), (Join-Path $releaseDir 'models'))
+          $files += @(Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.dll' | ForEach-Object FullName)
+          foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "CLI package input is missing: $file" }
+          }
+          Compress-Archive -LiteralPath $files -DestinationPath $cliZip -CompressionLevel Optimal
+          $extractDir = Join-Path $env:RUNNER_TEMP 'solo-cli-zip-smoke'
+          Expand-Archive -LiteralPath $cliZip -DestinationPath $extractDir
+          $zipVersion = (& (Join-Path $extractDir 'solo.exe') --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $zipVersion -notmatch '^solo 0\.12\.0(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Packaged CLI has the wrong version: $zipVersion"
+          }
+          & $env:PILOT_ISCC "/DAppVersion=$env:PILOT_VERSION" "/DSourceDir=$releaseDir" "/DOutputDir=$env:PILOT_ARTIFACT_DIR" 'installer/windows/SoloSetup.iss'
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $installer = Join-Path $env:PILOT_ARTIFACT_DIR "SoloSetup-$env:PILOT_VERSION-x86_64.exe"
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Expected installer not found: $installer" }
+          "PILOT_CLI_ZIP=$cliZip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Optionally sign installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
+            Write-Warning 'Signing certificate is not configured; candidate remains unsigned.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'solo-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+          try {
+            $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+            & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERT_PASSWORD $env:PILOT_INSTALLER
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+          }
+          finally { Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue }
+
+      - name: Enforce installer signature policy
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath $env:PILOT_INSTALLER
+          Write-Host "signature status: $($signature.Status)"
+          if ($signature.Status -eq 'Valid') {
+            Write-Host 'Installer Authenticode signature is valid.'
+          }
+          elseif ($signature.Status -eq 'NotSigned' -and '${{ inputs.allow_unsigned_installer }}' -eq 'true') {
+            Write-Warning 'Installer is unsigned; the invite-only unsigned-candidate exception was explicitly enabled.'
+          }
+          else {
+            throw "Installer Authenticode status '$($signature.Status)' is not releasable. The pilot exception permits only NotSigned artifacts, never invalid signatures."
+          }
+
+      - name: Silent install and packaged smoke
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath $env:PILOT_INSTALLER -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Solo'
+          $smokeDataDir = Join-Path $env:RUNNER_TEMP "solo-installed-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $smokeDataDir) { throw "Disposable smoke directory unexpectedly exists: $smokeDataDir" }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows_installed_smoke.ps1 -InstallDir $installDir -DataDir $smokeDataDir
+          if ($LASTEXITCODE -ne 0) { throw "Installed smoke failed with exit code $LASTEXITCODE" }
+          "PILOT_INSTALL_DIR=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_SMOKE_DATA_DIR=$smokeDataDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Silent uninstall and prove residue policy
+        shell: pwsh
+        run: |
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-Item -Path $runKey -Force | Out-Null
+          Set-ItemProperty -Path $runKey -Name 'Solo Controls' -Value "`"$env:PILOT_INSTALL_DIR\solo-tray.exe`""
+          Set-ItemProperty -Path $runKey -Name 'Solo Tray' -Value "`"$env:PILOT_INSTALL_DIR\solo-tray.exe`""
+          $userDataDir = Join-Path $env:USERPROFILE '.solo'
+          New-Item -ItemType Directory -Force -Path $userDataDir | Out-Null
+          $preservationMarker = Join-Path $userDataDir "pilot-uninstall-preserve-$env:GITHUB_RUN_ID.txt"
+          $markerValue = "preserve-$([guid]::NewGuid().ToString('N'))"
+          [IO.File]::WriteAllText($preservationMarker, $markerValue, [Text.UTF8Encoding]::new($false))
+          $uninstaller = Join-Path $env:PILOT_INSTALL_DIR 'unins000.exe'
+          if (!(Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw "Uninstaller not found: $uninstaller" }
+          $process = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Uninstaller exited with code $($process.ExitCode)" }
+          foreach ($binary in @('solo.exe', 'solo-tray.exe')) {
+            if (Test-Path -LiteralPath (Join-Path $env:PILOT_INSTALL_DIR $binary)) { throw "$binary remains after uninstall" }
+          }
+          $runProperties = Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
+          foreach ($name in @('Solo Controls', 'Solo Tray')) {
+            if ($null -ne $runProperties -and $runProperties.PSObject.Properties.Name -contains $name) {
+              throw "HKCU Run value '$name' remains after uninstall"
+            }
+          }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          foreach ($entry in @($userPath -split ';' | Where-Object { ![string]::IsNullOrWhiteSpace($_) })) {
+            if ([string]::Equals($entry.Trim().TrimEnd('\'), $env:PILOT_INSTALL_DIR.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Solo install directory remains in the user PATH: $entry"
+            }
+          }
+          if (!(Test-Path -LiteralPath $preservationMarker -PathType Leaf) -or
+              (Get-Content -Raw -LiteralPath $preservationMarker) -ne $markerValue) {
+            throw 'Uninstall removed or changed existing user data'
+          }
+          $evidence = [ordered]@{
+            checked_at_utc = [DateTime]::UtcNow.ToString('o')
+            binaries_removed = $true
+            current_run_value_removed = $true
+            legacy_run_value_removed = $true
+            user_path_removed = $true
+            user_data_preserved = $true
+          }
+          [IO.File]::WriteAllText((Join-Path $env:PILOT_ARTIFACT_DIR 'uninstall-evidence.json'), ($evidence | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+
+      - name: Generate pinned Rust CycloneDX SBOMs
+        shell: pwsh
+        run: |
+          cargo install cargo-cyclonedx --locked --version 0.5.9
+          if ($LASTEXITCODE -ne 0) { throw "cargo-cyclonedx install failed with exit code $LASTEXITCODE" }
+          cargo cyclonedx --format json --describe binaries --target $env:PILOT_TARGET --target-in-filename
+          if ($LASTEXITCODE -ne 0) { throw "cargo cyclonedx failed with exit code $LASTEXITCODE" }
+          $sbomDir = Join-Path $env:PILOT_ARTIFACT_DIR 'sbom'
+          New-Item -ItemType Directory -Force -Path $sbomDir | Out-Null
+          $boms = @(Get-ChildItem -Path . -Recurse -File -Filter 'bom*.json' | Where-Object { $_.FullName -notlike '*\target\*' -and $_.FullName -notlike '*\_pilot-sources\*' })
+          if ($boms.Count -eq 0) { throw 'cargo-cyclonedx produced no JSON SBOM files' }
+          foreach ($bom in $boms) {
+            $relative = $bom.FullName.Substring($env:GITHUB_WORKSPACE.Length).TrimStart('\') -replace '[\\/]', '-'
+            Copy-Item -LiteralPath $bom.FullName -Destination (Join-Path $sbomDir $relative)
+          }
+
+      - name: Record release manifest and build tools
+        shell: pwsh
+        run: |
+          cargo metadata --locked --format-version 1 | Set-Content -LiteralPath (Join-Path $env:PILOT_ARTIFACT_DIR 'cargo-metadata.json') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with exit code $LASTEXITCODE" }
+          $installer = Get-Item -LiteralPath $env:PILOT_INSTALLER
+          $cliZip = Get-Item -LiteralPath $env:PILOT_CLI_ZIP
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          $manifest = [ordered]@{
+            schema_version = 2
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            scope = 'windows-community-core-web'
+            core = [ordered]@{
+              repository = '${{ github.repository }}'
+              commit = $env:GITHUB_SHA
+              ref = '${{ github.ref }}'
+              version = $env:PILOT_VERSION
+              clean_checkout_verified = $true
+            }
+            web = [ordered]@{
+              repository = 'CallMeJones/solo-web-community'
+              commit = $env:EXPECTED_WEB_COMMIT
+              clean_checkout_verified = $true
+              rebuilt_tree_sha256 = $env:PILOT_EMBEDDED_WEB_SHA256
+              embedded_tree_sha256 = $env:PILOT_EMBEDDED_WEB_SHA256
+              package_lock_sha256 = $env:PILOT_WEB_PACKAGE_LOCK_SHA256
+            }
+            artifacts = [ordered]@{
+              installer = [ordered]@{
+                name = $installer.Name
+                bytes = $installer.Length
+                sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                signature_status = [string]$signature.Status
+                signer_subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+              }
+              cli_zip = [ordered]@{
+                name = $cliZip.Name
+                bytes = $cliZip.Length
+                sha256 = (Get-FileHash -LiteralPath $cliZip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              }
+            }
+            tools = [ordered]@{
+              runner_os = $env:RUNNER_OS
+              runner_arch = $env:RUNNER_ARCH
+              runner_image_os = $env:ImageOS
+              runner_image_version = $env:ImageVersion
+              powershell = [string]$PSVersionTable.PSVersion
+              git = (git --version).Trim()
+              rustc = ((rustc -Vv) -join "`n")
+              cargo = (cargo --version).Trim()
+              node = (node --version).Trim()
+              npm = (npm --version).Trim()
+              chocolatey = (choco --version).Trim()
+              inno_setup = $env:PILOT_INNO_VERSION
+              cargo_cyclonedx = ((cargo cyclonedx --version) -join "`n").Trim()
+            }
+            github_run = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          }
+          [IO.File]::WriteAllText((Join-Path $env:PILOT_ARTIFACT_DIR 'pilot-release-manifest.json'), ($manifest | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+
+      - name: Attest installer and CLI ZIP provenance
+        id: attest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            ${{ github.workspace }}/pilot-artifacts/SoloSetup-0.12.0-x86_64.exe
+            ${{ github.workspace }}/pilot-artifacts/solo-cli-0.12.0-x86_64-pc-windows-msvc.zip
+
+      - name: Save attestation bundle and final checksums
+        shell: pwsh
+        env:
+          ATTESTATION_BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          if (!(Test-Path -LiteralPath $env:ATTESTATION_BUNDLE_PATH -PathType Leaf)) { throw 'GitHub attestation bundle was not created' }
+          Copy-Item -LiteralPath $env:ATTESTATION_BUNDLE_PATH -Destination (Join-Path $env:PILOT_ARTIFACT_DIR 'github-provenance-attestation.json')
+          [IO.File]::WriteAllText((Join-Path $env:PILOT_ARTIFACT_DIR 'github-provenance-attestation.url.txt'), $env:ATTESTATION_URL, [Text.UTF8Encoding]::new($false))
+          $checksumPath = Join-Path $env:PILOT_ARTIFACT_DIR 'SHA256SUMS.txt'
+          $checksumLines = foreach ($file in Get-ChildItem -LiteralPath $env:PILOT_ARTIFACT_DIR -File -Recurse | Where-Object FullName -ne $checksumPath | Sort-Object FullName) {
+            $relative = $file.FullName.Substring($env:PILOT_ARTIFACT_DIR.Length).TrimStart('\') -replace '\\', '/'
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $relative"
+          }
+          $checksumLines | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          foreach ($requiredName in @(
+            "SoloSetup-$env:PILOT_VERSION-x86_64.exe",
+            "solo-cli-$env:PILOT_VERSION-$env:PILOT_TARGET.zip"
+          )) {
+            if (!($checksumLines | Where-Object { $_ -like "*  $requiredName" })) { throw "SHA256SUMS omits $requiredName" }
+          }
+
+      - name: Upload immutable candidate bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: solo-pilot-${{ github.sha }}
+          path: ${{ github.workspace }}/pilot-artifacts
+          if-no-files-found: error
+          retention-days: 30

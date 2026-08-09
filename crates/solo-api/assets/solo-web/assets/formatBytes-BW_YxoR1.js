@@ -1,0 +1,1 @@
+function e(e,{nullValue:t=`none`,undefinedValue:n=`pending`,precision:r=`compact`}={}){if(e===null)return t;if(e===void 0)return n;if(e<1024)return`${e} B`;let i=[`KB`,`MB`,`GB`,`TB`],a=e/1024,o=0;for(;a>=1024&&o<i.length-1;)a/=1024,o+=1;let s=+(r===`fixed1`||a<10);return`${a.toFixed(s)} ${i[o]}`}export{e as t};

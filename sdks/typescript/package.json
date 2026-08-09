@@ -1,0 +1,20 @@
+{
+  "name": "@solo-memory/sdk-starter",
+  "private": true,
+  "version": "0.12.0",
+  "description": "Repo-local copy-in starter for calling a local Solo daemon from TypeScript.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": "./solo-client.js",
+  "types": "./solo-client.d.ts",
+  "files": [
+    "README.md",
+    "solo-client.js",
+    "solo-client.d.ts",
+    "smoke-test.mjs"
+  ],
+  "scripts": {
+    "smoke": "node --test ./smoke-test.mjs"
+  },
+  "dependencies": {}
+}

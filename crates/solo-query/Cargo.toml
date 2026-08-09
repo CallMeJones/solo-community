@@ -1,0 +1,35 @@
+[package]
+name = "solo-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: query planner and high-level Memory API"
+
+[dependencies]
+solo-core = { workspace = true }
+solo-storage = { workspace = true }
+solo-steward = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+# `chrono` for now-ms timestamps in the derived `themes` window filter.
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+test-log = { workspace = true }
+solo-storage = { workspace = true, features = ["test-support"] }
+parking_lot = { workspace = true }
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

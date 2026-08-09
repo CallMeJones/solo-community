@@ -1,0 +1,539 @@
+# CI workflow: build + test on every PR and on pushes to main/pilot.
+#
+# Complements `.github/workflows/publish.yml` (tag-triggered release
+# publish). publish.yml gates on `cargo test --workspace` already, so
+# tests have always blocked releases — but until v0.9.0 nothing ran
+# tests on PRs, which meant a `git merge` to main could land
+# regressions silently. The `test` job below closes that gap; it
+# mirrors publish.yml's two-pass test split so the SAME class of
+# failure (Linux glibc) surfaces at PR-time, not tag-push-time.
+#
+# Scope:
+#   - `test` job — pre-publish glibc Linux gate; the v0.9.1 P2
+#     hardening response to v0.9.0's publish-time ort SIGSEGV (see
+#     keep release-only dependency paths covered on pull requests).
+#     Runs the same two-pass `cargo test` split publish.yml uses, so
+#     PRs that would have failed at tag-push time fail at merge time
+#     instead. Adds `cargo clippy -D warnings` as a regression gate
+#     (publish.yml doesn't run clippy; making PRs fail-on-clippy
+#     prevents per-call-site allow-list drift — see lesson #31).
+#   - `book` job — mdbook source validation.
+#   - `ollama-smoke` job — end-to-end Ollama LLM round-trip.
+#
+# Concurrency:
+#   - `cancel-in-progress` keyed by `${{ github.workflow }}-${{ github.ref }}`
+#     so a follow-up push on the same PR / branch supersedes the
+#     in-flight run. Saves runner minutes on rapid push storms; the
+#     stale run's result wouldn't have been actionable anyway.
+#
+# What this does NOT do (potential follow-ups):
+#   - Run rustfmt. The repo doesn't have a `rustfmt.toml` configured.
+#     Adding formatting enforcement is a separate scope conversation.
+#   - Build the release profile or run benchmarks. PRs ship debug-
+#     build correctness; release-build perf belongs in a separate
+#     scheduled workflow if/when wanted.
+#   - Gate publish.yml on this workflow's success. publish.yml has
+#     its own test gate (which itself mirrors this job's two-pass
+#     split). Making one workflow depend on the other adds brittleness
+#     without adding signal — both gates close the same window from
+#     different ends.
+#   - Deploy the rendered book. The `book` job validates the mdbook
+#     source can build; publishing the built HTML to GitHub Pages is
+#     a separate workflow (`book-deploy.yml`) that hasn't landed yet.
+
+name: ci
+
+on:
+  push:
+    branches: [main, pilot]
+  pull_request:
+    branches: [main, pilot]
+  workflow_dispatch:
+
+# Same PR / branch — cancel the older run when a new push arrives.
+# `github.ref` resolves to `refs/pull/<n>/merge` on PRs and to the
+# branch name (e.g. `refs/heads/main`) on direct pushes, so a PR
+# fire-storm cancels its own predecessors but doesn't interfere with
+# concurrent main-pushes from other PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only is enough — no asset uploads or release writes here.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: cargo test (linux glibc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Exercise the declared minimum supported Rust version on every PR.
+          # Windows and release jobs separately exercise current stable.
+          toolchain: 1.88.0
+          # `clippy` is the only non-default component used below;
+          # `dtolnay/rust-toolchain@stable` ships rustc + cargo by
+          # default. List explicitly for the file to be self-documenting.
+          components: clippy
+
+      # Workspace pulls SQLCipher via rusqlite's
+      # bundled-sqlcipher-vendored-openssl feature. The vendored
+      # OpenSSL build script needs Perl. Linux runners ship Perl by
+      # default — `which perl` no-ops in practice — but install
+      # explicitly so the dependency is documented in this file.
+      - name: Ensure Perl is installed
+        run: which perl || (sudo apt-get update && sudo apt-get install -y perl)
+
+      # Speeds up subsequent runs by caching ~/.cargo/registry,
+      # ~/.cargo/git, and the target directory. The `rust-cache`
+      # action is the Rust ecosystem's standard for this — handles
+      # toolchain-version-keyed cache invalidation correctly so a
+      # stable-toolchain bump doesn't reuse incompatible artefacts.
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        # `solo-tray` has native desktop dependencies checked by the
+        # dedicated `tray-native` job below. Keep this core gate focused
+        # on publishable/server crates so missing GTK/WebKitGTK packages
+        # cannot mask storage/API regressions.
+        run: cargo build --workspace --exclude solo-tray --all-targets
+
+      - name: Enforce Community release boundary (Ubuntu)
+        run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
+
+      # Two-pass test split — must mirror publish.yml. v0.9.0's first
+      # publish.yml run SIGSEGV'd at the test gate because the single
+      # `cargo test --workspace` invocation loaded ort (via
+      # bundled-embedder default-on) and its C++ static destructors
+      # raced during process exit on Linux glibc. The fix isolates
+      # ort to a single solo-storage test binary; the workspace-wide
+      # pass runs with the feature OFF.
+      #
+      # Keep the release-only feature graph covered on pull requests.
+      # If you find yourself collapsing these two steps back into one
+      # `cargo test --workspace`, re-read that dev log first — you
+      # will rediscover the SIGSEGV the slow way.
+      - name: Test pass 1 — workspace minus bundled-embedder
+        run: cargo test --workspace --exclude solo-tray --no-fail-fast --no-default-features
+
+      - name: Fetch pinned embedding model for bundled tests
+        run: >-
+          bash scripts/fetch_embedding_model.sh
+          "${{ runner.temp }}/solo-embedding-model"
+
+      - name: Test pass 2 — bundled-embedder isolated
+        env:
+          SOLO_EMBEDDING_MODEL_DIR: ${{ runner.temp }}/solo-embedding-model
+        run: cargo test -p solo-storage --features bundled-embedder --no-fail-fast
+
+      - name: Eval suite (bundled fixtures)
+        run: cargo run --locked -p solo-cli --no-default-features -- eval run --all --json
+
+      # Clippy gate. publish.yml does NOT run clippy (the release
+      # path is gated only on tests). Running clippy here catches
+      # `#[allow(clippy::...)]` drift at PR-time instead of tag-push
+      # time. `-D warnings` promotes lints into hard errors — same
+      # treatment the workspace toolchain config gives them locally.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --exclude solo-tray --all-targets -- -D warnings
+
+  community-windows:
+    name: Community certification (Windows)
+    runs-on: windows-latest
+    # First completion on main took 85 minutes fully cold (run 30852779263),
+    # which also seeded the `community-windows` cache for the first time.
+    # Warm runs are substantially cheaper; this leaves headroom for a cache
+    # miss without letting a wedged job sit for hours.
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: community-windows
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Enforce Community release boundary
+        run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
+
+      - name: Test Community API
+        run: cargo test --locked -p solo-api
+
+      - name: Test and lint Windows tray
+        shell: pwsh
+        run: |
+          # `cargo clippy --all-targets` below compiles everything
+          # `cargo check --all-targets` would, so a separate check pass is
+          # duplicate work on the slowest runner in the matrix.
+          cargo test --locked -p solo-tray
+          if ($LASTEXITCODE -ne 0) { throw "tray tests failed with exit code $LASTEXITCODE" }
+          cargo clippy --locked -p solo-tray --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "tray clippy failed with exit code $LASTEXITCODE" }
+
+      - name: Build Windows Community binaries
+        run: cargo build --locked --release -p solo-cli -p solo-tray
+
+      - name: Fetch pinned offline embedding model
+        shell: pwsh
+        run: >-
+          ./scripts/fetch_embedding_model.ps1
+          -Destination target/release/models/all-MiniLM-L6-v2
+
+      - name: Smoke release CLI surface
+        shell: pwsh
+        run: |
+          $help = (& .\target\release\solo.exe --help) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'release solo.exe --help failed' }
+          foreach ($forbidden in @('/v1/tenants', '/v1/settings/relay', 'X-Solo-Tenant', '--tenant', 'relay_public', 'jarvis')) {
+            if ($help.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              throw "Community release help contains forbidden term: $forbidden"
+            }
+          }
+
+      - name: Smoke installed Community workflows
+        shell: pwsh
+        run: >-
+          ./scripts/windows_installed_smoke.ps1
+          -InstallDir target/release
+          -DataDir "${{ runner.temp }}\solo-community-smoke"
+          -TimeoutSeconds 60
+
+  community-ubuntu:
+    name: Community certification (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: community-ubuntu
+
+      - name: Enforce Community release boundary
+        run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
+
+      - name: Build Ubuntu Community CLI
+        run: cargo build --locked --release -p solo-cli
+
+      - name: Fetch pinned offline embedding model
+        run: >-
+          bash scripts/fetch_embedding_model.sh
+          target/release/models/all-MiniLM-L6-v2
+
+      - name: Smoke Linux Community workflows
+        run: >-
+          bash scripts/linux_installed_smoke.sh
+          target/release/solo
+          "${{ runner.temp }}/solo-community-smoke"
+          target/release/models/all-MiniLM-L6-v2
+
+  # Every other Linux job is headless, so none of them can tell whether the
+  # tray actually starts on a desktop. solo-tray once built, linked, passed
+  # clippy and every unit test, and still aborted on launch for every Ubuntu
+  # user because GTK was never initialized. This job is the regression guard
+  # for that class of defect. See docs/adr/0016-linux-gtk-initialization.md.
+  tray-gui-linux:
+    name: solo-tray GUI smoke (Xvfb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install desktop, tray, and virtual-display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libssl-dev \
+            xvfb \
+            dbus-x11
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: tray-gui-linux
+
+      - name: Build the tray and CLI
+        run: cargo build --locked --release -p solo-cli -p solo-tray
+
+      # `xvfb-run` supplies DISPLAY; `dbus-run-session` supplies the session
+      # bus the AppIndicator needs. Software rendering keeps the run
+      # independent of whatever GPU the runner does or does not expose.
+      - name: Tray GUI smoke
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: >-
+          xvfb-run -a --server-args="-screen 0 1280x1024x24"
+          dbus-run-session --
+          bash scripts/linux_tray_gui_smoke.sh
+          target/release/solo-tray
+          target/release/solo
+          15
+
+  tray-native:
+    name: solo-tray native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: solo-tray-${{ matrix.os }}
+
+      - name: Check solo-tray
+        run: cargo check --locked -p solo-tray --all-targets
+
+      - name: Test solo-tray
+        run: cargo test --locked -p solo-tray
+
+      - name: Clippy solo-tray (deny warnings)
+        run: cargo clippy --locked -p solo-tray --all-targets -- -D warnings
+
+  sdk-smoke:
+    name: SDK smoke matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run SDK smoke matrix
+        run: python sdks/smoke_matrix.py
+
+  # mdbook build is the source-of-truth integrity check for the user
+  # guide at docs/book/. Catches:
+  #   - SUMMARY.md syntax errors.
+  #   - Chapter files referenced from SUMMARY.md that no longer exist.
+  #   - book.toml schema drift across mdbook versions.
+  # Pinned to a known-good mdbook minor version. Bumping is a deliberate
+  # PR (mdbook 0.5.x has been stable but the schema hasn't always been —
+  # 0044 hit a `multilingual` field rejection on 0.5.2).
+  book:
+    name: mdbook build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install mdbook
+        # cargo-binstall would be faster but adds a dep just to install
+        # mdbook. The release tarball is ~5 MB and a curl + tar
+        # finishes in <2 sec. Installs into $HOME/.local/bin which
+        # ubuntu-latest puts on PATH for runner steps.
+        run: |
+          MDBOOK_VERSION=v0.5.2
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/mdbook" --version
+
+      - name: Build the user guide
+        working-directory: docs/book
+        run: mdbook build
+
+  # End-to-end smoke for the `--ollama-model` flag (Phase 3 of the
+  # v0.3.7 Ollama-first plan). Phase 1 surfaced Ollama in the docs;
+  # Phase 2 added the CLI shorthand + 6 unit tests for the env-var
+  # injection helper; Phase 3 (this) closes the loop by actually
+  # round-tripping a `solo consolidate --ollama-model <MODEL>` call
+  # through a real Ollama daemon on the runner.
+  #
+  # What this proves:
+  #   - `apply_ollama_overrides` injects env vars correctly under
+  #     real conditions (not just the unit-test mock).
+  #   - `OpenAIClient` reaches `http://localhost:11434/v1` without
+  #     URL-shape issues (trailing slash handling, etc.).
+  #   - The wire format Ollama exposes still matches what
+  #     `OpenAIClient` expects (catches Ollama-side regressions).
+  #   - The full data path works end-to-end: init, remember,
+  #     consolidate-with-LLM-call, no panic.
+  #
+  # What this does NOT prove: abstraction quality. qwen2.5:0.5b is
+  # ~400 MB and produces structurally-correct but semantically-weak
+  # JSON; we don't assert on `abstractions_built` count, only that
+  # the consolidate command exits 0.
+  ollama-smoke:
+    name: ollama smoke (--ollama-model end-to-end)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure Perl is installed
+        run: which perl || (sudo apt-get update && sudo apt-get install -y perl)
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      # Official Ollama install script. Drops `ollama` into /usr/local/bin
+      # and (on systemd hosts) installs a service unit. Ubuntu GHA runners
+      # have systemd but the install script doesn't auto-start the service
+      # in non-interactive mode, so we start `ollama serve` ourselves
+      # below.
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama --version
+
+      # Start the daemon in the background and wait for /api/version to
+      # respond on :11434. Bounded poll so a hung daemon fails fast
+      # instead of consuming the 15-min job timeout.
+      - name: Start Ollama daemon
+        run: |
+          set -euo pipefail
+          nohup ollama serve > "${RUNNER_TEMP}/ollama.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/version >/dev/null; then
+              echo "ollama up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::ollama did not respond on :11434 after 30s"
+          cat "${RUNNER_TEMP}/ollama.log" || true
+          exit 1
+
+      # qwen2.5:0.5b — ~400 MB, ~30 sec pull on a GHA runner. The
+      # smoke verifies the HTTP plumbing not the abstraction quality;
+      # any model that exposes the OpenAI-compatible shape would do,
+      # and the smallest available is the cheapest choice.
+      - name: Pull tiny model (qwen2.5:0.5b)
+        run: ollama pull qwen2.5:0.5b
+
+      # Use cargo build (debug profile) — faster than --release for a
+      # smoke test and the runtime is dominated by Ollama inference,
+      # not Solo's own code. The binary lands at target/debug/solo.
+      - name: Build solo binary
+        run: cargo build -p solo-cli
+
+      # The actual smoke. `set -euo pipefail` so any failed step
+      # propagates. RUST_LOG=info surfaces the "Ollama backend
+      # configured via --ollama-model" tracing event from
+      # apply_ollama_overrides — visible confirmation the env-var
+      # injection fired before build_llm_client_from_env ran.
+      - name: Smoke `solo consolidate --ollama-model`
+        env:
+          SOLO_PASSPHRASE: ci-ollama-smoke
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          DATA_DIR="${RUNNER_TEMP}/solo-ollama-smoke"
+          rm -rf "${DATA_DIR}"
+          BIN="./target/debug/solo"
+
+          "${BIN}" init --data-dir "${DATA_DIR}"
+          "${BIN}" remember --data-dir "${DATA_DIR}" \
+            "Sam moved to Berlin in May 2025 to take the SRE role at Stripe"
+          "${BIN}" remember --data-dir "${DATA_DIR}" \
+            "Sam mentioned the team uses k8s + ArgoCD"
+          "${BIN}" remember --data-dir "${DATA_DIR}" \
+            "Sam said the on-call rotation is every 6 weeks"
+
+          # The end-to-end smoke. Exits non-zero if Ollama isn't
+          # reachable, the model isn't pulled, OPENAI_BASE_URL isn't
+          # honoured, or the OpenAI-compatible transport breaks.
+          "${BIN}" consolidate --data-dir "${DATA_DIR}" \
+            --ollama-model qwen2.5:0.5b
+
+          echo "::notice title=Ollama smoke OK::Round-trip via --ollama-model qwen2.5:0.5b succeeded."
+
+      # On failure, surface the Ollama daemon log so the failure
+      # mode is debuggable from the run page without re-running.
+      - name: Show Ollama log on failure
+        if: failure()
+        run: |
+          echo "===== ${RUNNER_TEMP}/ollama.log ====="
+          cat "${RUNNER_TEMP}/ollama.log" || true

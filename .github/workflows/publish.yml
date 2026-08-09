@@ -1,0 +1,678 @@
+# Publish workflow: ship the 6 publishable crates to crates.io in
+# leaf-up dependency order on tag push, then create a GitHub Release
+# with pre-built binaries attached for `cargo binstall solo-cli`.
+#
+# Triggered by:
+#   - `git push origin v<MAJOR>.<MINOR>.<PATCH>` (tag push), OR
+#   - manual `workflow_dispatch` from the Actions UI (for partial re-runs
+#     after a transient failure mid-publish; pick `start_at` to skip
+#     crates that already published).
+#
+# Pre-requisites (one-time setup, NOT in this workflow):
+#   1. Create a crates.io API token with `publish-update` scope (and
+#      `publish-new` if any of the 6 names are not yet on crates.io).
+#      https://crates.io/settings/tokens
+#   2. Add it as a repo secret named `CARGO_REGISTRY_TOKEN` at
+#      Settings → Secrets and variables → Actions.
+#   3. Maintain `docs/releases/v<x.y.z>.md` as part of release prep
+#      BEFORE pushing the tag. The publish job's first checks fail
+#      fast if the notes file is missing.
+#
+# Tag-push runtime overview:
+#   - publish job:        ~10 min tests + ~10 min cargo publish leaf-up.
+#                         Final step creates the GitHub Release with
+#                         notes from docs/releases/v<x.y.z>.md.
+#   - release-binaries:   ~5 min matrix (Linux + Windows in parallel),
+#                         uploads Linux .tgz archives, the Windows
+#                         binstall .zip, and the Windows Setup .exe to
+#                         the release.
+#   - release-sdk-starters:
+#                         ~1 min, builds the dependency-free TypeScript
+#                         and Python starter zips and uploads them to
+#                         the release.
+#   - workflow_dispatch:  release-binaries skipped (only runs on
+#                         tag-push); publish job's release-create step
+#                         is idempotent for partial-run resumes.
+#
+# What this workflow does NOT do:
+#   - Recover automatically from crates.io's new-crate rate limit
+#     (5 new crates / hour). That cap only bites the FIRST publish run
+#     of a fresh crate name. For ongoing version bumps (the common
+#     path), updates to existing crates use a separate, much more
+#     lenient bucket. If a 429 hits anyway, re-trigger via
+#     workflow_dispatch with `start_at` set to the first unpublished
+#     crate, after the window passes.
+#   - Push the git tag. You push the tag locally; GitHub fires the
+#     workflow on the tag-push event.
+#   - Build binaries for macOS targets. Linux + Windows on x86_64 plus
+#     Linux on aarch64 cover the documented support matrix; macOS is a
+#     follow-up (paid runner cost; no signal yet from the user base).
+#   - Publish reduced-function musl binaries. ONNX Runtime has no supported
+#     musl distribution, so those artifacts silently used a hash embedder.
+#     Community releases now target native GNU/Linux and carry the pinned
+#     semantic model. Ubuntu 24.04 is the certified desktop distribution;
+#     source builds remain available for other libc/platform combinations.
+#   - aarch64 builds use the GitHub-hosted `ubuntu-24.04-arm` native
+#     runner (free for public repos since 2025-Q1) so we don't need a
+#     cross-compile toolchain.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      # Defense in depth: test prereleases have their own workflow and
+      # must never enter this crates.io production publisher.
+      - '!v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      start_at:
+        description: 'Crate to start at (resume after a partial failure)'
+        required: false
+        default: 'solo-core'
+        type: choice
+        options:
+          - solo-core
+          - solo-steward
+          - solo-storage
+          - solo-query
+          - solo-api
+          - solo-cli
+
+# `gh release create` and `gh release upload` need write access to
+# the Releases API; the rest of the workflow only reads.
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: cargo publish (leaf-up)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Release on current stable; the PR Linux job separately enforces the
+          # declared Rust 1.88 minimum.
+          toolchain: stable
+
+      # SQLCipher is built via the bundled-vendored-openssl feature on
+      # rusqlite. The vendored OpenSSL build script needs Perl. Linux
+      # runners ship Perl by default but we install explicitly so the
+      # dependency is obvious to anyone reading this file.
+      - name: Ensure Perl is installed
+        run: which perl || (sudo apt-get update && sudo apt-get install -y perl)
+
+      - name: Verify SDK starter bundles
+        run: python sdks/package_starters.py --out "${RUNNER_TEMP}/sdk-starters" --check
+
+      - name: Verify tag matches workspace version
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          WS_VERSION=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name=="solo-core") | .version')
+          echo "tag=$TAG ws_version=$WS_VERSION"
+          if [ "$TAG" != "$WS_VERSION" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $WS_VERSION"
+            exit 1
+          fi
+
+      # Fail at minute 1 instead of minute 30: the release-create step
+      # below and the release-binaries job both need this file. Better to
+      # error here than after a 10-minute test gate + 10-minute publish.
+      - name: Verify release notes file exists
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES="docs/releases/${TAG}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::release notes file $NOTES not found; create it before pushing the tag"
+            exit 1
+          fi
+          echo "release notes: $NOTES"
+
+      - name: Run tests (gate publish on green) — pass 1, no embedder
+        # Workspace-wide test pass with `bundled-embedder` Cargo feature OFF.
+        # The bundled embedder pulls in fastembed-rs → ort (ONNX Runtime, C++).
+        # ort has documented static-destructor ordering issues on Linux glibc:
+        # all tests pass, then the test binary SIGSEGVs during process exit
+        # while ort's C++ destructors tear down. Splitting the workspace test
+        # run into two cargo invocations isolates the ort cleanup to ONE
+        # process (the solo-storage feature pass), which exits cleanly because
+        # ort's lifecycle is contained to that single binary. The
+        # workspace-wide pass below covers everything EXCEPT the bundled
+        # embedder code paths.
+        # First surfaced: v0.9.0 publish.yml run 26020182800.
+        #
+        # v0.11.8: `--exclude solo-tray` because the tray crate's
+        # eframe → egui-winit → ashpd/atspi dependency chain pulls in
+        # `glib-sys`, which requires `libglib-2.0-dev` system packages
+        # the default Ubuntu runner doesn't have. Tray is Windows-first
+        # in its release-binary path (Linux/macOS users opt in via
+        # `cargo install --path crates/solo-tray` and bring their own
+        # GTK/AppIndicator deps). The publish gate's job is to catch
+        # core-crate regressions, not GUI deps. solo-tray's own tests
+        # (`cargo test -p solo-tray`) cover its logic; the Windows
+        # publish path builds + smokes the release binary.
+        run: cargo test --workspace --exclude solo-tray --no-fail-fast --no-default-features
+
+      - name: Run tests (gate publish on green) — pass 2, bundled-embedder isolated
+        # Isolates the ort-backed BundledEmbedder tests in a single
+        # solo-storage test binary so the C++ teardown doesn't poison a
+        # cross-workspace SIGSEGV. See the comment on pass 1 for context.
+        run: cargo test -p solo-storage --features bundled-embedder --no-fail-fast
+
+      - name: Eval suite (gate publish on bundled fixtures)
+        run: cargo run --locked -p solo-cli --no-default-features -- eval run --all --json
+
+      - name: Publish all 6 crates leaf-up
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # Default for tag-push runs; overridden by workflow_dispatch input.
+          START_AT: ${{ github.event.inputs.start_at || 'solo-core' }}
+        run: |
+          set -euo pipefail
+
+          # Incident history (do not strip the sparse-index logic below
+          # without re-reading the linked dev logs):
+          #   - v0.6.0 (run 25958945150) hit a crates.io indexing race
+          #     during the cargo-publish leaf-up walk. cargo's built-in
+          #     wait-for-index emitted a WARNING (not an ERROR) after
+          #     60 s, the workflow's fixed 90 s sleep ran, and the next
+          #     crate's `cargo publish` still couldn't resolve the
+          #     just-published version against the stale index. 2 of 6
+          #     crates shipped at 0.6.0 (solo-core, solo-steward); the
+          #     other 4 stayed at 0.5.1.
+          #   - v0.6.1 (run 25960073900) attempted a recovery via
+          #     `cargo publish --skip-existing` — but that flag does
+          #     NOT exist on `cargo publish` (it's a `cargo install`
+          #     flag). The workflow errored on the very first crate.
+          #   - v0.6.2 (run 25960559804) replaced the fixed sleep with
+          #     a poll against the crates.io HTTP API at
+          #     `/api/v1/crates/$CRATE/$VERSION`. The post-publish
+          #     poll timed out after 5 min because the HTTP API is a
+          #     web-service mirror that can lag the sparse index by
+          #     minutes-to-hours on busy days. Worse, when the workflow
+          #     was rerun, cargo's own dep resolution (which reads the
+          #     sparse index, not the HTTP API) correctly saw
+          #     solo-core@0.6.2 as already published, errored, and the
+          #     outer pre-flight skip never fired because it was
+          #     querying the still-404 HTTP API.
+          #   - v0.6.3 (this version) switches both the pre-flight
+          #     skip check and the post-publish poll to the sparse
+          #     index at `https://index.crates.io/{2}/{2}/$CRATE`.
+          #     The sparse index is what cargo reads for dep
+          #     resolution and updates within seconds of upload — so
+          #     once it shows the new version, downstream crates can
+          #     publish. This is the source-of-truth indicator.
+          # Each published crate is checked before advancing to the next one.
+
+          # Crates in dependency order. Order matters: each must be on
+          # crates.io before downstream crates resolve it as a dep.
+          ORDER=(solo-core solo-steward solo-storage solo-query solo-api solo-cli)
+
+          # Find the index where START_AT sits.
+          START_IDX=-1
+          for i in "${!ORDER[@]}"; do
+            if [ "${ORDER[$i]}" = "$START_AT" ]; then
+              START_IDX=$i
+              break
+            fi
+          done
+          if [ "$START_IDX" -lt 0 ]; then
+            echo "::error::unknown start_at value: $START_AT"
+            exit 1
+          fi
+
+          # Version under publish — used for pre-flight skip checks and
+          # post-publish index polling. On tag-push runs GITHUB_REF is
+          # `refs/tags/v<X.Y.Z>`; on workflow_dispatch resumes the
+          # workflow runs against a tagged commit so the same prefix
+          # strip yields the workspace version.
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Publishing version: $VERSION"
+
+          for i in "${!ORDER[@]}"; do
+            CRATE="${ORDER[$i]}"
+            if [ "$i" -lt "$START_IDX" ]; then
+              echo "::group::skipping $CRATE (before start_at=$START_AT)"
+              echo "(already published in a prior run)"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Compute sparse-index path for this crate. crates.io's
+            # sparse index uses a prefix layout
+            # `https://index.crates.io/{2chars}/{2chars}/{crate}` for
+            # crate names of length 4+. All Solo crate names are 8+
+            # chars so we never hit the 1/2/3-char special paths.
+            SPARSE_URL="https://index.crates.io/${CRATE:0:2}/${CRATE:2:2}/$CRATE"
+
+            echo "::group::publish $CRATE@$VERSION"
+            # Pre-flight: skip cargo publish if this version is already
+            # in the sparse index. The sparse index returns line-
+            # delimited JSON per version; grep for the exact
+            # `"vers":"$VERSION"` substring (the closing quote prevents
+            # 0.6.2 matching 0.6.20). This handles partial-publish
+            # recovery (e.g., v0.6.0 left solo-core and solo-steward
+            # at 0.6.0; a re-run with the same tag would otherwise
+            # error on the first `cargo publish`) and any future
+            # workflow_dispatch resume cleanly.
+            if curl -sf "$SPARSE_URL" 2>/dev/null | grep -q "\"vers\":\"$VERSION\""; then
+              echo "Skipping $CRATE@$VERSION: already in sparse index"
+            else
+              echo "Publishing $CRATE@$VERSION"
+              cargo publish -p "$CRATE"
+            fi
+            echo "::endgroup::"
+
+            # Post-publish: poll the sparse index until the version
+            # appears. The sparse index updates within seconds of
+            # upload (vs minutes-to-hours for the HTTP API mirror).
+            # crates.io's eventual-consistency lag is between cargo
+            # upload and sparse-index propagation; the sparse index
+            # is the FIRST thing cargo dep resolution reads, so once
+            # it shows the version, downstream `cargo publish` can
+            # resolve it.
+            #
+            # v0.10.2 bump: the poll budget was 6 attempts × 5 s = 30 s
+            # through v0.10.1. v0.10.1's publish run (26109878939) hit
+            # a >30 s outlier on `solo-storage@0.10.1` and the job
+            # failed at the polling loop. Recovery required `gh run
+            # rerun`, which cost ~30 minutes of wall and an operator
+            # context switch. Bumping to 6 × 10 s = 60 s absorbs that
+            # outlier class without changing happy-path latency
+            # materially (most propagations land in 1-2 attempts). See
+            # Preserve sparse-index recovery behavior across release builds.
+            echo "Polling sparse index for $CRATE@$VERSION..."
+            for attempt in $(seq 1 6); do
+              if curl -sf "$SPARSE_URL" 2>/dev/null | grep -q "\"vers\":\"$VERSION\""; then
+                echo "  in sparse index after ${attempt}x10s"
+                break
+              fi
+              if [ "$attempt" -eq 6 ]; then
+                echo "::error::$CRATE@$VERSION not in sparse index after 60s"
+                exit 1
+              fi
+              sleep 10
+            done
+          done
+
+          echo "All target crates published."
+
+      # Create the GitHub Release with notes from docs/releases/.
+      # Idempotent: if the release already exists (workflow_dispatch
+      # resume after a partial publish), the create step is skipped
+      # and the existing release is reused. release-binaries uploads
+      # to whichever of the two paths produced it.
+      - name: Create GitHub release
+        if: success() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES="docs/releases/${TAG}.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; skipping create"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+            echo "::notice title=Released::Created GitHub release $TAG with notes from $NOTES."
+          fi
+
+  # Build pre-built binaries and attach them to the release page so
+  # `cargo binstall solo-cli` resolves without recompiling. Native
+  # builds on each host (no cross-compilation toolchain needed).
+  # Skipped on workflow_dispatch — those resumes target an already-
+  # released version whose binaries are already on the release page.
+  release-binaries:
+    name: release binary (${{ matrix.target }})
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Don't cancel the Linux build if Windows fails or vice versa —
+      # a single-platform binary release is still better than none, and
+      # surfaces both failures together for triage.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: solo
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary_name: solo
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: solo.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # SQLCipher's vendored-openssl build needs Perl. ubuntu-latest ships
+      # Perl by default; windows-latest ships Strawberry Perl pre-installed
+      # at C:\Strawberry and on PATH. No extra setup needed on either host.
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Official Community artifacts use supported native targets and always
+      # include the semantic embedder. We do not publish a reduced-function
+      # musl binary that silently falls back to hash-based vectors.
+      - name: Build Solo Community release binary
+        run: cargo build --release --target ${{ matrix.target }} -p solo-cli
+
+      - name: Fetch pinned offline embedding model
+        shell: bash
+        run: >-
+          bash scripts/fetch_embedding_model.sh
+          target/${{ matrix.target }}/release/models/all-MiniLM-L6-v2
+
+      # v0.11.7: build solo-tray on Windows too. Lands beside solo.exe
+      # in the release dir; the Inno script picks it up via its
+      # `#if HasTray` compile-time gate, and the ZIP packaging step
+      # globs all release-dir .exes. Skipped on non-Windows because
+      # the tray ships only via Windows installer for now (Linux /
+      # macOS users `cargo install --path crates/solo-tray`).
+      - name: Build solo-tray release binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --target ${{ matrix.target }} -p solo-tray
+
+      # Windows' bundled embedder depends on ONNX Runtime, which is built
+      # against the dynamic MSVC CRT. Package the redistributable DLLs
+      # app-local beside solo.exe so users do not need a separate Visual C++
+      # Redistributable install. Source builds still need link.exe from
+      # Visual Studio Build Tools.
+      - name: Bundle MSVC runtime DLLs (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $releaseDir = Resolve-Path "target/${{ matrix.target }}/release"
+          $searchRoots = @(
+            "${env:ProgramFiles}\Microsoft Visual Studio",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+          ) | Where-Object { Test-Path $_ }
+          $crtDirs = @()
+          foreach ($root in $searchRoots) {
+            $crtDirs += Get-ChildItem -Path $root -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\VC\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC\d+\.CRT\\vcruntime140\.dll$' } |
+              ForEach-Object { $_.Directory }
+          }
+          $crtDir = $crtDirs | Sort-Object FullName -Descending | Select-Object -First 1
+          if ($null -eq $crtDir) {
+            throw "MSVC x64 redistributable CRT directory not found"
+          }
+          Copy-Item -Path (Join-Path $crtDir.FullName "*.dll") -Destination $releaseDir -Force
+          Get-ChildItem -Path $releaseDir -Filter "*.dll" | ForEach-Object {
+            Write-Host "Bundled $($_.Name)"
+          }
+
+      # Defensive smoke before packaging: catches the rare case where
+      # `cargo build` returns 0 but the resulting binary panics at startup
+      # (initializer crash, missing system lib). ~5 sec; fails fast before
+      # tar / zip / upload waste another minute and produce a broken
+      # asset that binstall users would download. `shell: bash` works on
+      # both ubuntu and windows runners (Git Bash handles forward-slash
+      # paths and .exe invocation transparently).
+      - name: Smoke binary boots
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(./target/${{ matrix.target }}/release/${{ matrix.binary_name }} --version)"
+          echo "$output"
+          if [[ "$output" != *"+"*"ci${GITHUB_RUN_NUMBER}"* ]]; then
+            echo "::error::release binary version must include SemVer build metadata with CI run number; got: $output"
+            exit 1
+          fi
+
+      # v0.11.7: same defensive smoke for solo-tray.exe on Windows.
+      # The tray's main() has a --version short-circuit that exits
+      # without starting the eframe / tray-icon event loop, so this
+      # is safe on the headless GitHub runner.
+      - name: Smoke solo-tray boots (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(./target/${{ matrix.target }}/release/solo-tray.exe --version)"
+          echo "$output"
+          if [[ "$output" != *"+"*"ci${GITHUB_RUN_NUMBER}"* ]]; then
+            echo "::error::solo-tray version must include SemVer build metadata with CI run number; got: $output"
+            exit 1
+          fi
+
+      - name: Package (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          ARCHIVE="solo-cli-${VERSION}-${{ matrix.target }}.tgz"
+          tar -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" \
+            -C "target/${{ matrix.target }}/release" \
+            "${{ matrix.binary_name }}" models
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF}".Replace("refs/tags/v", "")
+          $archive = "solo-cli-$version-${{ matrix.target }}.zip"
+          $releaseDir = Resolve-Path "target/${{ matrix.target }}/release"
+          $files = @((Join-Path $releaseDir "${{ matrix.binary_name }}"))
+          # v0.11.7: include solo-tray.exe alongside solo.exe in the
+          # ZIP when present. Defensive Test-Path so the step still
+          # works if a future build dropped the tray.
+          $trayExe = Join-Path $releaseDir "solo-tray.exe"
+          if (Test-Path $trayExe) {
+            $files += $trayExe
+          }
+          $files += Get-ChildItem -Path $releaseDir -Filter "*.dll" | ForEach-Object { $_.FullName }
+          $files += Join-Path $releaseDir "models"
+          Compress-Archive `
+            -Path $files `
+            -DestinationPath "${env:GITHUB_WORKSPACE}\$archive"
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Inno Setup (Windows installer)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Package Windows setup exe
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF}".Replace("refs/tags/v", "")
+          $sourceDir = (Resolve-Path "target/${{ matrix.target }}/release").Path
+          $outputDir = "${env:GITHUB_WORKSPACE}"
+          $installer = "SoloSetup-$version-x86_64.exe"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (!(Test-Path $iscc)) {
+            $iscc = "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+          }
+          if (!(Test-Path $iscc)) {
+            throw "ISCC.exe not found after installing Inno Setup"
+          }
+          & $iscc `
+            "/DAppVersion=$version" `
+            "/DSourceDir=$sourceDir" `
+            "/DOutputDir=$outputDir" `
+            "installer\windows\SoloSetup.iss"
+          if (!(Test-Path "${env:GITHUB_WORKSPACE}\$installer")) {
+            throw "expected installer not found: $installer"
+          }
+          "WINDOWS_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The publish job's "Create GitHub release" step ran before this
+      # job (needs: publish), so the release page exists. `gh release
+      # upload --clobber` is idempotent — re-running the workflow
+      # replaces assets rather than failing on duplicates.
+      - name: Upload to GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" "$ARCHIVE" --clobber
+          echo "::notice title=Uploaded::$ARCHIVE attached to release $TAG."
+          if [ -n "${WINDOWS_INSTALLER:-}" ]; then
+            gh release upload "$TAG" "$WINDOWS_INSTALLER" --clobber
+            echo "::notice title=Uploaded::$WINDOWS_INSTALLER attached to release $TAG."
+          fi
+
+  release-ubuntu-deb:
+    name: Ubuntu 24.04 Desktop package
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Ubuntu desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-desktop-amd64
+
+      - name: Test Linux tray and autostart behavior
+        run: cargo test --locked -p solo-tray
+
+      - name: Build Solo Community Desktop
+        run: >-
+          cargo build --locked --release --target x86_64-unknown-linux-gnu
+          -p solo-cli -p solo-tray
+
+      - name: Fetch pinned offline embedding model
+        run: >-
+          bash scripts/fetch_embedding_model.sh
+          target/x86_64-unknown-linux-gnu/release/models/all-MiniLM-L6-v2
+
+      - name: Smoke Linux binaries and desktop entry
+        run: |
+          set -euo pipefail
+          target/x86_64-unknown-linux-gnu/release/solo --version
+          target/x86_64-unknown-linux-gnu/release/solo-tray --version
+          desktop-file-validate installer/linux/solo.desktop
+
+      - name: Package Ubuntu deb
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          bash scripts/package_ubuntu_deb.sh \
+            "$VERSION" \
+            target/x86_64-unknown-linux-gnu/release \
+            dist
+          DEB="dist/solo-${VERSION}-ubuntu24.04-amd64.deb"
+          dpkg-deb --info "$DEB"
+          dpkg-deb --contents "$DEB"
+          echo "UBUNTU_DEB=$DEB" >> "$GITHUB_ENV"
+
+      - name: Install packaged Ubuntu Community release
+        run: sudo apt install -y "./$UBUNTU_DEB"
+
+      - name: Smoke installed Ubuntu Community workflows
+        run: >-
+          bash scripts/linux_installed_smoke.sh
+          /usr/bin/solo
+          "${{ runner.temp }}/solo-installed-community-smoke"
+          /usr/share/solo/models/all-MiniLM-L6-v2
+
+      - name: Upload Ubuntu package to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" "$UBUNTU_DEB" --clobber
+          echo "::notice title=Uploaded::$UBUNTU_DEB attached to release $TAG."
+
+  release-sdk-starters:
+    name: release SDK starter bundles
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run SDK smoke matrix
+        run: python sdks/smoke_matrix.py
+
+      - name: Build release SDK starter bundles
+        run: python sdks/package_starters.py --out dist/sdk-starters --check
+
+      # The publish job creates the release first. Uploading from a separate
+      # job keeps the starter bundles out of the binary matrix and makes
+      # re-running this job idempotent via --clobber.
+      - name: Upload SDK starter bundles to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          mapfile -t BUNDLES < <(find dist/sdk-starters -maxdepth 1 -name 'solo-*.zip' -type f | sort)
+          if [ "${#BUNDLES[@]}" -eq 0 ]; then
+            echo "::error::no SDK starter bundles were built"
+            exit 1
+          fi
+          gh release upload "$TAG" "${BUNDLES[@]}" --clobber
+          printf 'uploaded SDK starter bundle: %s\n' "${BUNDLES[@]}"

@@ -1,0 +1,5 @@
+# Prompt-body fixtures are byte-compared against raw string literals
+# in src/abstraction.rs. Force LF-only line endings so the snapshot
+# test stays consistent across Windows / Unix checkouts regardless of
+# the repo's core.autocrlf setting.
+*.txt text eol=lf

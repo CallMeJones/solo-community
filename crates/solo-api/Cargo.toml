@@ -1,0 +1,94 @@
+[package]
+name = "solo-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: MCP and HTTP transports"
+
+[dependencies]
+solo-core = { workspace = true }
+solo-query = { workspace = true }
+solo-storage = { workspace = true }
+solo-steward = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+fs2 = "0.4"
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+rmcp = { workspace = true }
+# v0.8.0 P3: OIDC validation via JWKS + reqwest. Pure-Rust crypto backend
+# (rust_crypto) so we don't pull C transitives into the musl release shards.
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+# v0.10.0: opaque pagination cursors for /v1/graph/nodes + /v1/graph/edges.
+# Caller round-trips the cursor verbatim; we encode (ts_ms, id) tuples /
+# numeric edge cursors as base64-URL-no-pad JSON payloads. Crate is already
+# pulled in via the dev-dep OIDC fixture; promoting to a normal dep so the
+# pagination helpers don't need `cfg(test)` gating.
+base64 = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+# v0.11.0 P1: MCP `Mcp-Session-Id` store. Lock-free concurrent map keyed
+# by session id; the `/mcp` route reads on every request (hot path).
+# See `docs/dev-log/0132-v0.11.0-implementation-plan.md` §3 Decision A
+# for the storage rationale.
+dashmap = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Storage_FileSystem",
+] }
+
+[features]
+default = []
+# v0.9.0 P2: gates `crates/solo-api/src/test_support/`, which exposes
+# `FakeMcpClient` for cross-crate tests. P4's `SamplingCoordinator`
+# batching tests reuse this fixture. Always available in this crate's
+# own `cfg(test)` builds; downstream crates opt in via
+# `solo-api = { features = ["test-support"] }`.
+test-support = []
+
+[dev-dependencies]
+tempfile = { workspace = true }
+test-log = { workspace = true }
+parking_lot = { workspace = true }
+solo-storage = { workspace = true, features = ["test-support"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+zip = { workspace = true }
+zstd = { workspace = true }
+# v0.8.0 P3 fake-IdP fixture: wiremock + base64-url encoder.
+wiremock = { workspace = true }
+base64 = { workspace = true }
+# v0.9.0 P2: `Zeroizing<String>` for the test passphrase in the
+# SamplingLlmClient harness.
+zeroize = { workspace = true }
+# v0.10.1 F3: rmcp `Peer<RoleServer>` concurrency integration test
+# (`llm::peer_concurrency`). The non-dev `rmcp` dep only enables
+# `["server", "transport-io"]` because the production daemon never plays
+# the MCP-client role. The F3 test drives BOTH sides through
+# `tokio::io::duplex` — the test fixture impls `ClientHandler` and
+# answers the `sampling/createMessage` request our `Peer<RoleServer>`
+# dispatches. `ClientHandler` only exists behind the `client` cargo
+# feature, so we promote it here as a dev-dep override. Effect: only
+# this crate's test build pulls `tokio-stream` through rmcp; the
+# production binary is unchanged.
+rmcp = { workspace = true, features = ["client"] }
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

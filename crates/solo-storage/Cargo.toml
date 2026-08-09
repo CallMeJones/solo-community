@@ -1,0 +1,106 @@
+[package]
+name = "solo-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solo: SQLite + SQLCipher persistence layer"
+
+[dependencies]
+solo-core = { workspace = true }
+solo-steward = { workspace = true }
+rusqlite = { workspace = true }
+deadpool-sqlite = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+keyring = { workspace = true }
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+zstd = { workspace = true }
+lz4_flex = { workspace = true }
+flate2 = { workspace = true }
+blake3 = { workspace = true }
+bytemuck = { workspace = true }
+dirs = { workspace = true }
+parking_lot = { workspace = true }
+hnsw_rs = { workspace = true }
+sysinfo = { workspace = true }
+reqwest = { workspace = true }
+unicode-normalization = { workspace = true }
+# Document parsing (v0.7.0). See workspace Cargo.toml for version rationale.
+pdf-extract = { workspace = true }
+html2text = { workspace = true }
+csv = { workspace = true }
+calamine = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
+# Content-hash dedup for ingested documents (v0.7.0 P3).
+sha2 = { workspace = true }
+# PII redaction (v0.8.0 P5). Pattern engine for the built-in detectors
+# (email/SSN/phone/CC/AWS access key/GH PAT) plus operator-supplied
+# custom patterns from the [redaction.custom] config block.
+regex = { workspace = true }
+# Optional: when `test-support` is enabled, the public `test_support`
+# module (which uses tempfile internally) compiles. dev-dependencies
+# don't propagate to downstream crates, so we make this a regular
+# optional dep gated by the feature.
+tempfile = { workspace = true, optional = true }
+# v0.9.0 P3: bundled CPU sentence-transformer embedder via fastembed +
+# ort. Gated behind the `bundled-embedder` Cargo feature (default-on
+# for Windows / macOS / glibc Linux; the musl release shards disable
+# this feature explicitly via `cargo build --no-default-features`
+# because Microsoft/pyke do not publish musl-targeted ONNX Runtime
+# prebuilts — see plan §3 Decision 1 BLOCKER 1 strategy c). Workspace
+# pin in the root Cargo.toml notes the rustls TLS choices + the
+# `default-features = false` invariant.
+fastembed = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+test-log = { workspace = true }
+# Need the StubLlmClient for `handle_consolidate` integration tests
+# that exercise the abstraction step.
+solo-steward = { workspace = true, features = ["test-support"] }
+# In-process HTTP mock for testing `embedder::ollama::OllamaEmbedder`
+# against simulated Ollama responses (happy / 5xx / retry / malformed)
+# without requiring a live Ollama daemon. Added in v0.5.1 sub-step 6A;
+# expected to also serve the LLM HTTP-retry path tests flagged as a
+# follow-up in `docs/dev-log/0028-llm-retry-backoff.md`.
+wiremock = { workspace = true }
+
+[features]
+# Defaults: bundled-embedder is on. The two musl release shards in
+# .github/workflows/publish.yml explicitly pass `--no-default-features`
+# to skip the fastembed/ort transitives (BLOCKER 1 strategy c).
+default = ["bundled-embedder"]
+test-support = ["dep:tempfile"]
+# v0.9.0 P3: bundled CPU sentence-transformer embedder. Enabling this
+# pulls fastembed-rs + pykeio/ort. ort downloads a prebuilt
+# `libonnxruntime` at BUILD time from pyke's CDN (cached under
+# ~/.cache/ort or the platform equivalent) for supported targets:
+# x86_64/aarch64-unknown-linux-gnu, x86_64/aarch64-apple-darwin,
+# x86_64-pc-windows-msvc. musl Linux is NOT supported by the prebuilt
+# CDN — the publish.yml musl legs disable this feature to keep the
+# release shards green. solo init falls back to StubEmbedder when this
+# feature is off; runtime config that requests a `bundled:*` embedder
+# on a feature-off build is rejected with a structured error pointing
+# at the release notes.
+bundled-embedder = ["dep:fastembed"]
+
+# v0.8.0 P4: inherit the workspace's clippy lint configuration.
+[lints]
+workspace = true

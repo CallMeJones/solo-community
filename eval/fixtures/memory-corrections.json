@@ -1,0 +1,67 @@
+{
+  "name": "memory-corrections",
+  "description": "Correction and deletion cases that ensure stale memories do not win the offline baseline.",
+  "passing_score": 1.0,
+  "cases": [
+    {
+      "id": "superseded_storage_choice",
+      "query": "Where should invoice archives be stored?",
+      "max_results": 2,
+      "expected_memory_ids": ["invoice-storage-current"],
+      "forbidden_memory_ids": ["invoice-storage-old"],
+      "memories": [
+        {
+          "id": "invoice-storage-old",
+          "text": "Invoice archives should be stored in S3.",
+          "tier": "decision",
+          "importance": 0.9,
+          "status": "superseded"
+        },
+        {
+          "id": "invoice-storage-current",
+          "text": "Invoice archives should be stored in local encrypted storage; S3 was rejected for this workflow.",
+          "tier": "decision",
+          "importance": 1.0,
+          "status": "active"
+        },
+        {
+          "id": "receipt-storage",
+          "text": "Receipt screenshots are kept with expense notes until monthly close.",
+          "tier": "episodic",
+          "importance": 0.4,
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "forgotten_secret_is_ignored",
+      "query": "What deployment channel should the finance bot use?",
+      "max_results": 2,
+      "expected_memory_ids": ["finance-bot-channel"],
+      "forbidden_memory_ids": ["finance-bot-secret"],
+      "memories": [
+        {
+          "id": "finance-bot-secret",
+          "text": "The finance bot uses a private deployment token from a pasted debug log.",
+          "tier": "episodic",
+          "importance": 0.8,
+          "status": "forgotten"
+        },
+        {
+          "id": "finance-bot-channel",
+          "text": "The finance bot should deploy through the stable channel after policy review.",
+          "tier": "decision",
+          "importance": 0.9,
+          "status": "active"
+        },
+        {
+          "id": "support-bot-channel",
+          "text": "The support bot can deploy through beta when a rollback owner is assigned.",
+          "tier": "decision",
+          "importance": 0.5,
+          "status": "active"
+        }
+      ]
+    }
+  ]
+}

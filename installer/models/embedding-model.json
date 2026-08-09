@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "model": "all-MiniLM-L6-v2",
+  "solo_embedder_version": "v2",
+  "license": "Apache-2.0",
+  "source_repository": "Xenova/all-MiniLM-L6-v2",
+  "revision": "751bff37182d3f1213fa05d7196b954e230abad9",
+  "files": [
+    {
+      "source": "onnx/model_quantized.onnx",
+      "target": "model.onnx",
+      "sha256": "afdb6f1a0e45b715d0bb9b11772f032c399babd23bfc31fed1c170afc848bdb1"
+    },
+    {
+      "source": "tokenizer.json",
+      "target": "tokenizer.json",
+      "sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+    },
+    {
+      "source": "config.json",
+      "target": "config.json",
+      "sha256": "7135149f7cffa1a573466c6e4d8423ed73b62fd2332c575bf738a0d033f70df7"
+    },
+    {
+      "source": "special_tokens_map.json",
+      "target": "special_tokens_map.json",
+      "sha256": "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3"
+    },
+    {
+      "source": "tokenizer_config.json",
+      "target": "tokenizer_config.json",
+      "sha256": "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3"
+    }
+  ]
+}
