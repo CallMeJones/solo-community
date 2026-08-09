@@ -71,16 +71,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
         with:
           # Exercise the declared minimum supported Rust version on every PR.
           # Windows and release jobs separately exercise current stable.
           toolchain: 1.88.0
           # `clippy` is the only non-default component used below;
-          # `dtolnay/rust-toolchain@stable` ships rustc + cargo by
+          # The pinned rust-toolchain action ships rustc + cargo by
           # default. List explicitly for the file to be self-documenting.
           components: clippy
 
@@ -98,14 +98,14 @@ jobs:
       # toolchain-version-keyed cache invalidation correctly so a
       # stable-toolchain bump doesn't reuse incompatible artefacts.
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build
         # `solo-tray` has native desktop dependencies checked by the
         # dedicated `tray-native` job below. Keep this core gate focused
         # on publishable/server crates so missing GTK/WebKitGTK packages
         # cannot mask storage/API regressions.
-        run: cargo build --workspace --exclude solo-tray --all-targets
+        run: cargo build --locked --workspace --exclude solo-tray --all-targets
 
       - name: Enforce Community release boundary (Ubuntu)
         run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
@@ -123,7 +123,7 @@ jobs:
       # `cargo test --workspace`, re-read that dev log first — you
       # will rediscover the SIGSEGV the slow way.
       - name: Test pass 1 — workspace minus bundled-embedder
-        run: cargo test --workspace --exclude solo-tray --no-fail-fast --no-default-features
+        run: cargo test --locked --workspace --exclude solo-tray --no-fail-fast --no-default-features
 
       - name: Fetch pinned embedding model for bundled tests
         run: >-
@@ -133,7 +133,7 @@ jobs:
       - name: Test pass 2 — bundled-embedder isolated
         env:
           SOLO_EMBEDDING_MODEL_DIR: ${{ runner.temp }}/solo-embedding-model
-        run: cargo test -p solo-storage --features bundled-embedder --no-fail-fast
+        run: cargo test --locked -p solo-storage --features bundled-embedder --no-fail-fast
 
       - name: Eval suite (bundled fixtures)
         run: cargo run --locked -p solo-cli --no-default-features -- eval run --all --json
@@ -144,7 +144,7 @@ jobs:
       # time. `-D warnings` promotes lints into hard errors — same
       # treatment the workspace toolchain config gives them locally.
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --exclude solo-tray --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude solo-tray --all-targets -- -D warnings
 
   community-windows:
     name: Community certification (Windows)
@@ -157,16 +157,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
         with:
           toolchain: stable
           components: rustfmt, clippy
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: community-windows
 
@@ -225,15 +225,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
         with:
           toolchain: stable
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: community-ubuntu
 
@@ -267,10 +267,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
         with:
           toolchain: stable
 
@@ -293,7 +293,7 @@ jobs:
             dbus-x11
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: tray-gui-linux
 
@@ -326,10 +326,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
         with:
           toolchain: stable
           components: clippy
@@ -351,7 +351,7 @@ jobs:
             libssl-dev
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: solo-tray-${{ matrix.os }}
 
@@ -371,15 +371,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -400,7 +400,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install mdbook
         # cargo-binstall would be faster but adds a dep just to install
@@ -447,16 +447,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
 
       - name: Ensure Perl is installed
         run: which perl || (sudo apt-get update && sudo apt-get install -y perl)
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Official Ollama install script. Drops `ollama` into /usr/local/bin
       # and (on systemd hosts) installs a service unit. Ubuntu GHA runners
@@ -497,7 +497,7 @@ jobs:
       # smoke test and the runtime is dominated by Ollama inference,
       # not Solo's own code. The binary lands at target/debug/solo.
       - name: Build solo binary
-        run: cargo build -p solo-cli
+        run: cargo build --locked -p solo-cli
 
       # The actual smoke. `set -euo pipefail` so any failed step
       # propagates. RUST_LOG=info surfaces the "Ollama backend
