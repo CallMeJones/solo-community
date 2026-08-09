@@ -38,6 +38,7 @@ use std::{
 
 use calamine::Reader;
 use quick_xml::{
+    XmlVersion,
     escape::unescape,
     events::{BytesRef, BytesText, Event},
 };
@@ -2070,7 +2071,7 @@ fn pptx_presentation_slide_relationship_ids(xml: &str) -> Result<Vec<String>, Pa
                     })?;
                     if attr.key.as_ref().ends_with(b":id") {
                         let value = attr
-                            .decode_and_unescape_value(reader.decoder())
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                             .map_err(|e| {
                                 ParseError::Presentation(format!(
                                     "presentation slide relationship id: {e}"
@@ -2126,7 +2127,7 @@ fn pptx_slide_relationship_targets(
                         ))
                     })?;
                     let value = attr
-                        .decode_and_unescape_value(reader.decoder())
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                         .map_err(|e| {
                             ParseError::Presentation(format!("presentation relationship: {e}"))
                         })?

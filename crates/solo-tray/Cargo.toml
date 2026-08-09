@@ -45,9 +45,6 @@ toml = { workspace = true }
 # OS keychain / credential-manager storage for optional daemon passphrase recall.
 keyring = { workspace = true }
 
-# OS-native notification toasts on health transitions
-notify-rust = { workspace = true }
-
 # Secret zeroing for the passphrase captured by the in-window unlock prompt.
 zeroize = { workspace = true }
 
@@ -80,8 +77,17 @@ nix = { version = "0.29", features = ["signal"] }
 # See docs/adr/0016-linux-gtk-initialization.md.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# Use the freedesktop notification service directly so Windows-only XML
+# parsing dependencies are not pulled into the cross-platform lockfile.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6.15"
 
 [target.'cfg(windows)'.dependencies]
+# Direct WinRT backend; 0.8 removed the vulnerable XML serializer inherited
+# through the older cross-platform notification wrapper.
+winrt-notification = { package = "tauri-winrt-notification", version = "0.8.1" }
 windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_Storage_FileSystem",

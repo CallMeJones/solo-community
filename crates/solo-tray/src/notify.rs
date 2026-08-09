@@ -9,6 +9,26 @@
 use crate::status::DaemonHealth;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+#[zbus::proxy(
+    interface = "org.freedesktop.Notifications",
+    default_service = "org.freedesktop.Notifications",
+    default_path = "/org/freedesktop/Notifications"
+)]
+trait DesktopNotifications {
+    fn notify(
+        &self,
+        app_name: &str,
+        replaces_id: u32,
+        app_icon: &str,
+        summary: &str,
+        body: &str,
+        actions: &[&str],
+        hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>>,
+        expire_timeout: i32,
+    ) -> zbus::Result<u32>;
+}
+
 const MIN_TOAST_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default)]
@@ -90,23 +110,65 @@ impl Notifier {
             ),
         };
 
-        match notify_rust::Notification::new()
-            .summary(summary)
-            .body(body)
-            .appname("Solo")
-            .timeout(notify_rust::Timeout::Milliseconds(8000))
-            .show()
-        {
+        match show_native_notification(summary, body) {
             Ok(_) => {
                 self.last_toast_at = Some(Instant::now());
                 true
             }
             Err(e) => {
-                tracing::debug!(error = %e, "notify-rust toast failed (no-op)");
+                tracing::debug!(error = %e, "native toast failed (no-op)");
                 false
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn show_native_notification(summary: &str, body: &str) -> Result<(), String> {
+    use winrt_notification::{Duration, Toast};
+
+    Toast::new(Toast::POWERSHELL_APP_ID)
+        .title(summary)
+        .text1(body)
+        .duration(Duration::Short)
+        .show()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn show_native_notification(summary: &str, body: &str) -> Result<(), String> {
+    let connection = zbus::blocking::Connection::session().map_err(|error| error.to_string())?;
+    let proxy =
+        DesktopNotificationsProxyBlocking::new(&connection).map_err(|error| error.to_string())?;
+    proxy
+        .notify(
+            "Solo",
+            0,
+            "",
+            summary,
+            body,
+            &[],
+            std::collections::HashMap::new(),
+            8_000,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn show_native_notification(summary: &str, body: &str) -> Result<(), String> {
+    let mut notification = mac_notification_sys::Notification::default();
+    notification.title(summary).message(body).asynchronous(true);
+    notification
+        .send()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn show_native_notification(_summary: &str, _body: &str) -> Result<(), String> {
+    Err("desktop notifications are unsupported on this platform".to_owned())
 }
 
 #[cfg(test)]
