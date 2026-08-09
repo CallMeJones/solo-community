@@ -25,7 +25,23 @@ while IFS=$'\t' read -r source target expected; do
   partial="$destination.partial"
   rm -f -- "$partial"
   echo "fetching embedding asset: $target"
-  curl --fail --location --retry 3 --output "$partial" "$BASE_URL/$source?download=true"
+  if curl \
+    --fail \
+    --location \
+    --retry 8 \
+    --retry-all-errors \
+    --retry-connrefused \
+    --retry-max-time 600 \
+    --connect-timeout 30 \
+    --user-agent "Solo-Community/0.12 embedding-model-fetch" \
+    --output "$partial" \
+    "$BASE_URL/$source?download=true"; then
+    :
+  else
+    status=$?
+    rm -f -- "$partial"
+    exit "$status"
+  fi
   echo "$expected  $partial" | sha256sum --check --status
   mv -f -- "$partial" "$destination"
 done < <(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); [print("{}\t{}\t{}".format(item["source"], item["target"], item["sha256"])) for item in data["files"]]' "$MANIFEST")

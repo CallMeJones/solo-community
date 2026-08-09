@@ -232,3 +232,18 @@ fn ubuntu_package_declares_the_tray_xkb_runtime() {
         "Linux release workflow must exercise the installed tray under a virtual desktop"
     );
 }
+
+#[test]
+fn embedding_model_fetch_retries_transient_failures_on_both_platforms() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let shell = fs::read_to_string(repo_root.join("scripts/fetch_embedding_model.sh"))
+        .expect("read POSIX model fetch helper");
+    assert!(shell.contains("--retry 8"));
+    assert!(shell.contains("--retry-all-errors"));
+    assert!(shell.contains("--retry-max-time 600"));
+
+    let powershell = fs::read_to_string(repo_root.join("scripts/fetch_embedding_model.ps1"))
+        .expect("read PowerShell model fetch helper");
+    assert!(powershell.contains("$maxAttempts = 8"));
+    assert!(powershell.contains("Start-Sleep -Seconds $delaySeconds"));
+}
