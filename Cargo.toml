@@ -95,7 +95,6 @@ thiserror = "2.0.9"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.135"
 toml = "0.8"
-notify-rust = "4"
 
 # Logging / tracing / observability
 tracing = "0.1.41"
@@ -171,13 +170,10 @@ rmcp = { version = "1.7", features = ["server", "transport-io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
-# JWT / OIDC validation (v0.8.0 P3). jsonwebtoken 10.x split crypto into
-# pluggable backends — we pick `rust_crypto` over `aws_lc_rs` because
-# Solo is a pure-Rust shop (lesson #19: no C transitives reach musl
-# release shards). `use_pem` is enabled by default and we don't need to
-# disable it. Algorithms supported: HS256/384/512, RS256/384/512,
-# PS256/384/512, ES256/384, EdDSA — covers every common OIDC provider.
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+# JWT / OIDC validation. jsonwebtoken requires exactly one crypto backend;
+# `aws_lc_rs` avoids the unfixed timing advisory in the RustCrypto `rsa`
+# dependency while preserving PEM/JWK verification for common OIDC algorithms.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 # Base64-URL no-pad encoding for JWKS test fixtures (the `k` field of an
 # `oct` JWK is base64url-no-pad per RFC 7518 §6.4.1).
 base64 = "0.22"
@@ -210,13 +206,13 @@ bytemuck = { version = "1.21", features = ["derive"] }
 unicode-normalization = "0.1"
 
 # Document parsing. `pdf-extract`, `html2text`, `csv`, and `calamine` are
-# pure-Rust. Calamine's MSRV is 1.83, below Solo's workspace MSRV 1.88.
-pdf-extract = "0.10"
+# pure-Rust. Calamine's MSRV matches Solo's workspace MSRV 1.88.
+pdf-extract = "0.12"
 html2text = "0.13"
 csv = "1.4"
-calamine = "0.35"
+calamine = "0.36"
 zip = { version = "7.2", default-features = false }
-quick-xml = "0.39"
+quick-xml = "0.41"
 
 # v0.9.0 P3: bundled CPU sentence-transformer embedder.
 #
