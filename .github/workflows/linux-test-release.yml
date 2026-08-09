@@ -43,7 +43,7 @@ jobs:
           fi
           BASE_VERSION="${VERSION%%-linux-test.*}"
           WORKSPACE_VERSION="$(
-            cargo metadata --format-version 1 --no-deps |
+            cargo metadata --locked --format-version 1 --no-deps |
               jq -r '.packages[] | select(.name == "solo-core") | .version'
           )"
           if [[ "$BASE_VERSION" != "$WORKSPACE_VERSION" ]]; then

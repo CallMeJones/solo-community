@@ -144,7 +144,7 @@ jobs:
             exit 1
           fi
           TAG="${GITHUB_REF#refs/tags/v}"
-          WS_VERSION=$(cargo metadata --format-version 1 --no-deps \
+          WS_VERSION=$(cargo metadata --locked --format-version 1 --no-deps \
             | jq -r '.packages[] | select(.name=="solo-core") | .version')
           echo "tag=$TAG ws_version=$WS_VERSION"
           if [ "$TAG" != "$WS_VERSION" ]; then
