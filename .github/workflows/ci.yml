@@ -486,21 +486,20 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      # Pin and authenticate the official release installer before executing
-      # it. This keeps the integration smoke reproducible and prevents a
-      # mutable https://ollama.com/install.sh response from becoming code in
-      # our CI runner.
+      # Download the exact official release artifact and authenticate the
+      # payload itself. Verifying only install.sh is insufficient because that
+      # script downloads a second, otherwise unauthenticated, binary archive.
       - name: Install pinned Ollama
         run: |
           set -euo pipefail
           OLLAMA_VERSION=0.32.6
-          INSTALLER="${RUNNER_TEMP}/ollama-install-${OLLAMA_VERSION}.sh"
+          ARCHIVE="${RUNNER_TEMP}/ollama-linux-amd64-${OLLAMA_VERSION}.tar.zst"
           curl --fail --location --retry 3 --retry-all-errors \
-            --output "${INSTALLER}" \
-            "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/install.sh"
-          echo "25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f  ${INSTALLER}" \
+            --output "${ARCHIVE}" \
+            "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst"
+          echo "dec2fa50d24e6868ca3c4c977d69d059399372105f951a9acc320a5a79aadcfc  ${ARCHIVE}" \
             | sha256sum --check --strict
-          OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${INSTALLER}"
+          sudo tar --zstd -xf "${ARCHIVE}" -C /usr
           ollama --version
 
       # Start the daemon in the background and wait for /api/version to
