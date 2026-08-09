@@ -181,11 +181,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "tray clippy failed with exit code $LASTEXITCODE" }
 
       - name: Test workspace in both feature modes
+        env:
+          SOLO_PERF_CI_BUDGET: '1'
         shell: pwsh
         run: |
-          cargo test --locked --workspace --no-fail-fast --no-default-features
-          if ($LASTEXITCODE -ne 0) { throw "minimal-feature workspace tests failed with exit code $LASTEXITCODE" }
-          cargo test --locked -p solo-storage --features bundled-embedder --no-fail-fast
+          cargo test --locked --workspace --exclude solo-storage --no-fail-fast --no-default-features
+          if ($LASTEXITCODE -ne 0) { throw "minimal-feature non-storage workspace tests failed with exit code $LASTEXITCODE" }
+          cargo test --locked -p solo-storage --no-default-features --no-fail-fast -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "minimal-feature storage tests failed with exit code $LASTEXITCODE" }
+          cargo test --locked -p solo-storage --features bundled-embedder --no-fail-fast -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "bundled embedder tests failed with exit code $LASTEXITCODE" }
 
       - name: Run evaluation fixtures
