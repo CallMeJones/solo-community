@@ -425,10 +425,16 @@ jobs:
         # finishes in <2 sec. Installs into $HOME/.local/bin which
         # ubuntu-latest puts on PATH for runner steps.
         run: |
+          set -euo pipefail
           MDBOOK_VERSION=v0.5.2
+          ARCHIVE="${RUNNER_TEMP}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "${ARCHIVE}" \
+            "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "084e4342ba564db270108763e404a7d1f309d932651a22484e93c0dc1a071f6d  ${ARCHIVE}" \
+            | sha256sum --check --strict
+          tar -xzf "${ARCHIVE}" -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/mdbook" --version
 
@@ -475,14 +481,21 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      # Official Ollama install script. Drops `ollama` into /usr/local/bin
-      # and (on systemd hosts) installs a service unit. Ubuntu GHA runners
-      # have systemd but the install script doesn't auto-start the service
-      # in non-interactive mode, so we start `ollama serve` ourselves
-      # below.
-      - name: Install Ollama
+      # Pin and authenticate the official release installer before executing
+      # it. This keeps the integration smoke reproducible and prevents a
+      # mutable https://ollama.com/install.sh response from becoming code in
+      # our CI runner.
+      - name: Install pinned Ollama
         run: |
-          curl -fsSL https://ollama.com/install.sh | sh
+          set -euo pipefail
+          OLLAMA_VERSION=0.32.6
+          INSTALLER="${RUNNER_TEMP}/ollama-install-${OLLAMA_VERSION}.sh"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "${INSTALLER}" \
+            "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/install.sh"
+          echo "25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f  ${INSTALLER}" \
+            | sha256sum --check --strict
+          OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${INSTALLER}"
           ollama --version
 
       # Start the daemon in the background and wait for /api/version to
