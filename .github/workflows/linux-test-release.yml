@@ -224,5 +224,52 @@ jobs:
               --title "Solo ${VERSION} - Ubuntu test" \
               --notes-file "$RELEASE_NOTES"
           fi
-          gh release upload "$TAG" "$UBUNTU_DEB" "$UBUNTU_DEB.sha256" --clobber
+
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          UPLOADS=()
+          for ASSET in "$UBUNTU_DEB" "$UBUNTU_DEB.sha256"; do
+            NAME="$(basename "$ASSET")"
+            EXPECTED="sha256:$(sha256sum "$ASSET" | cut -d' ' -f1)"
+            EXISTING_COUNT="$(
+              jq -r --arg name "$NAME" \
+                '[.assets[] | select(.name == $name)] | length' \
+                <<<"$RELEASE_JSON"
+            )"
+            if [[ "$EXISTING_COUNT" == "0" ]]; then
+              UPLOADS+=("$ASSET")
+              continue
+            fi
+            if [[ "$EXISTING_COUNT" != "1" ]]; then
+              echo "::error::release $TAG has duplicate asset name $NAME"
+              exit 1
+            fi
+            EXISTING_DIGEST="$(
+              jq -r --arg name "$NAME" \
+                '.assets[] | select(.name == $name) | .digest // empty' \
+                <<<"$RELEASE_JSON"
+            )"
+            if [[ -z "$EXISTING_DIGEST" || "$EXISTING_DIGEST" != "$EXPECTED" ]]; then
+              echo "::error::refusing to replace release asset $NAME: expected $EXPECTED, found ${EXISTING_DIGEST:-no digest}"
+              exit 1
+            fi
+            echo "release asset already matches: $NAME ($EXPECTED)"
+          done
+          if (( ${#UPLOADS[@]} > 0 )); then
+            gh release upload "$TAG" "${UPLOADS[@]}"
+          fi
+
+          FINAL_RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          for ASSET in "$UBUNTU_DEB" "$UBUNTU_DEB.sha256"; do
+            NAME="$(basename "$ASSET")"
+            EXPECTED="sha256:$(sha256sum "$ASSET" | cut -d' ' -f1)"
+            ACTUAL="$(
+              jq -r --arg name "$NAME" \
+                '[.assets[] | select(.name == $name)] | if length == 1 then .[0].digest // empty else empty end' \
+                <<<"$FINAL_RELEASE_JSON"
+            )"
+            if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+              echo "::error::published release asset $NAME has digest ${ACTUAL:-missing}, expected $EXPECTED"
+              exit 1
+            fi
+          done
           gh release view "$TAG" --json isPrerelease,assets,url
