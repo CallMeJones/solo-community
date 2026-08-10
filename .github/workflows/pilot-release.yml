@@ -359,8 +359,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "cargo cyclonedx failed with exit code $LASTEXITCODE" }
           $sbomDir = Join-Path $env:PILOT_ARTIFACT_DIR 'sbom'
           New-Item -ItemType Directory -Force -Path $sbomDir | Out-Null
-          $boms = @(Get-ChildItem -Path . -Recurse -File -Filter 'bom*.json' | Where-Object { $_.FullName -notlike '*\target\*' -and $_.FullName -notlike '*\_pilot-sources\*' })
-          if ($boms.Count -eq 0) { throw 'cargo-cyclonedx produced no JSON SBOM files' }
+          $boms = @(Get-ChildItem -Path . -Recurse -File -Filter '*.cdx.json' | Where-Object { $_.FullName -notlike '*\target\*' -and $_.FullName -notlike '*\_pilot-sources\*' -and $_.FullName -notlike "$env:PILOT_ARTIFACT_DIR*" })
+          if ($boms.Count -eq 0) { throw 'cargo-cyclonedx produced no .cdx.json SBOM files' }
           foreach ($bom in $boms) {
             $relative = $bom.FullName.Substring($env:GITHUB_WORKSPACE.Length).TrimStart('\') -replace '[\\/]', '-'
             Copy-Item -LiteralPath $bom.FullName -Destination (Join-Path $sbomDir $relative)
