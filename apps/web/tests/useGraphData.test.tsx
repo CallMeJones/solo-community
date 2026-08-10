@@ -97,8 +97,8 @@ describe('useGraphData (live path)', () => {
       return headers;
     });
     expect(requestHeaders).toStrictEqual([
-      { Accept: 'application/json' },
-      { Accept: 'application/json' },
+      { Accept: 'application/json', Authorization: 'Bearer first-secret' },
+      { Accept: 'application/json', Authorization: 'Bearer first-secret' },
     ]);
   });
 
