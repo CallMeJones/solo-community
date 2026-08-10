@@ -247,6 +247,12 @@ quick-xml = "0.41"
 # aarch64-apple-darwin. NO musl support — feature gate handles this.
 fastembed = { version = "5.13", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
+[patch.crates-io]
+# GTK3 is pinned transitively to glib 0.18 and upstream will not publish a
+# patched 0.18.x release. Keep the byte-identical upstream soundness fix local
+# until the tray stack can move to GTK4. See vendor/glib-0.18.5-solo/SOLO-PATCH.md.
+glib = { path = "vendor/glib-0.18.5-solo" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
