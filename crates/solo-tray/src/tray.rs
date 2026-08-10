@@ -43,7 +43,6 @@ pub const MENU_QUIT: &str = "solo.quit";
 /// swapping the embedded asset for a differently-sized PNG fails fast
 /// rather than producing a stretched icon.
 const SOLO_ICON_SIZE: u32 = 32;
-const SOLO_WEB_PROJECT: &str = "solo-web";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -950,7 +949,7 @@ fn stop_launched_helper(slot: &'static OnceLock<Mutex<Option<Child>>>, service: 
 }
 
 fn resolve_solo_web_command(web_url: &str) -> Option<LaunchCommand> {
-    let dir = find_sibling_node_project(SOLO_WEB_PROJECT)?;
+    let dir = find_monorepo_web_project()?;
     let vite = dir
         .join("node_modules")
         .join("vite")
@@ -959,7 +958,7 @@ fn resolve_solo_web_command(web_url: &str) -> Option<LaunchCommand> {
     if !vite.is_file() {
         tracing::info!(
             dir = %dir.display(),
-            "solo-web checkout found but Vite entrypoint is missing"
+            "apps/web source found but Vite entrypoint is missing"
         );
         return None;
     }
@@ -1004,34 +1003,26 @@ fn open_url_command(url: &str) -> LaunchCommand {
     LaunchCommand::new(OsString::from("explorer.exe"), [OsString::from(url)], None)
 }
 
-fn find_sibling_node_project(project: &str) -> Option<PathBuf> {
+fn find_monorepo_web_project() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
-        && let Some(found) = find_sibling_node_project_from(parent, project)
+        && let Some(found) = find_monorepo_web_project_from(parent)
     {
         return Some(found);
     }
     std::env::current_dir()
         .ok()
-        .and_then(|dir| find_sibling_node_project_from(&dir, project))
+        .and_then(|dir| find_monorepo_web_project_from(&dir))
 }
 
-fn find_sibling_node_project_from(start: &Path, project: &str) -> Option<PathBuf> {
+fn find_monorepo_web_project_from(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
-        let candidate = ancestor.join(project);
-        if is_node_project(&candidate, project) {
+        let candidate = ancestor.join("apps").join("web");
+        if candidate.join("package.json").is_file() {
             return Some(candidate);
         }
     }
     None
-}
-
-fn is_node_project(path: &Path, project: &str) -> bool {
-    path.join("package.json").is_file()
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.eq_ignore_ascii_case(project))
 }
 
 fn port_from_url(url: &str) -> Option<u16> {
@@ -1198,7 +1189,7 @@ mod tests {
 
     #[test]
     fn solo_web_dev_command_uses_node_entrypoint_and_url_port() {
-        let project_dir = PathBuf::from(r"C:\dev\solo-web");
+        let project_dir = PathBuf::from(r"C:\dev\solo-community\apps\web");
         let command = solo_web_dev_command(project_dir.clone(), "http://localhost:5179");
 
         assert_eq!(command.program, node_program());
@@ -1222,35 +1213,29 @@ mod tests {
     }
 
     #[test]
-    fn sibling_project_search_climbs_out_of_repo_target_dir() {
+    fn monorepo_web_search_climbs_out_of_target_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
         let nested = root.join("repo").join("target").join("debug");
-        let web = root.join("solo-web");
+        let web = root.join("repo").join("apps").join("web");
         std::fs::create_dir_all(&nested).expect("nested");
         std::fs::create_dir_all(&web).expect("web");
         std::fs::write(web.join("package.json"), "{}").expect("package");
 
-        assert_eq!(
-            find_sibling_node_project_from(&nested, SOLO_WEB_PROJECT),
-            Some(web)
-        );
+        assert_eq!(find_monorepo_web_project_from(&nested), Some(web));
     }
 
     #[test]
-    fn sibling_project_search_ignores_wrong_directory_name() {
+    fn monorepo_web_search_ignores_sibling_checkout() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
         let nested = root.join("repo").join("target").join("debug");
-        let wrong = root.join("not-solo-web");
+        let wrong = root.join("solo-web");
         std::fs::create_dir_all(&nested).expect("nested");
         std::fs::create_dir_all(&wrong).expect("wrong");
         std::fs::write(wrong.join("package.json"), "{}").expect("package");
 
-        assert_eq!(
-            find_sibling_node_project_from(&nested, SOLO_WEB_PROJECT),
-            None
-        );
+        assert_eq!(find_monorepo_web_project_from(&nested), None);
     }
 
     #[test]

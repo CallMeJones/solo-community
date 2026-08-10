@@ -1,0 +1,164 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    sans-serif;
+  background-color: #080604;
+  color: #f7ead1;
+  overflow: hidden;
+}
+
+@layer components {
+  .dune-theme {
+    --dune-void: #080604;
+    --dune-night: #120d09;
+    --dune-stone: #1d150f;
+    --dune-panel: rgba(32, 22, 14, 0.84);
+    --dune-panel-soft: rgba(45, 31, 19, 0.56);
+    --dune-border: rgba(181, 123, 57, 0.34);
+    --dune-border-strong: rgba(226, 164, 83, 0.58);
+    --dune-sand: #f7ead1;
+    --dune-muted: #bfa98a;
+    --dune-dim: #8e7658;
+    --dune-spice: #c96f32;
+    --dune-spice-bright: #f2b35d;
+    --dune-arcane: #a78bfa;
+    background:
+      radial-gradient(circle at 18% 10%, rgba(201, 111, 50, 0.2), transparent 28rem),
+      radial-gradient(circle at 78% 18%, rgba(167, 139, 250, 0.16), transparent 24rem),
+      linear-gradient(135deg, rgba(247, 234, 209, 0.035) 0 1px, transparent 1px 22px),
+      linear-gradient(180deg, #080604 0%, #120d09 48%, #1d1209 100%);
+    color: var(--dune-sand);
+  }
+
+  .dune-theme .bg-slate-950,
+  .dune-theme .bg-slate-950\/95,
+  .dune-theme.bg-slate-950 {
+    background-color: rgba(8, 6, 4, 0.96);
+  }
+
+  .dune-theme .bg-slate-950\/60 {
+    background-color: rgba(18, 13, 9, 0.72);
+  }
+
+  .dune-theme .bg-slate-900,
+  .dune-theme .bg-slate-900\/70 {
+    background-color: rgba(29, 21, 15, 0.86);
+  }
+
+  .dune-theme .bg-slate-900\/60,
+  .dune-theme .bg-slate-900\/45 {
+    background-color: var(--dune-panel-soft);
+    box-shadow: inset 0 1px 0 rgba(247, 234, 209, 0.04);
+  }
+
+  .dune-theme .bg-slate-800,
+  .dune-theme .hover\:bg-slate-800:hover,
+  .dune-theme .hover\:bg-slate-900:hover {
+    background-color: rgba(92, 56, 28, 0.74);
+  }
+
+  .dune-theme .bg-sky-700,
+  .dune-theme .hover\:bg-sky-600:hover,
+  .dune-theme .bg-indigo-600,
+  .dune-theme .hover\:bg-indigo-500:hover {
+    background: linear-gradient(135deg, #9f4f25, #d28a3a 58%, #f2b35d);
+    color: #140d07;
+  }
+
+  .dune-theme .border-slate-900 {
+    border-color: rgba(8, 6, 4, 0.85);
+  }
+
+  .dune-theme .border-slate-800,
+  .dune-theme .border-slate-700 {
+    border-color: var(--dune-border);
+  }
+
+  .dune-theme .hover\:border-slate-600:hover,
+  .dune-theme .hover\:border-slate-500:hover,
+  .dune-theme .focus\:border-sky-500:focus,
+  .dune-theme .focus\:border-sky-600:focus {
+    border-color: var(--dune-border-strong);
+  }
+
+  .dune-theme .text-slate-100,
+  .dune-theme .text-slate-200,
+  .dune-theme .hover\:text-slate-100:hover,
+  .dune-theme.text-slate-100 {
+    color: var(--dune-sand);
+  }
+
+  .dune-theme .text-slate-300 {
+    color: #e0cdaa;
+  }
+
+  .dune-theme .text-slate-400,
+  .dune-theme .placeholder\:text-slate-400::placeholder {
+    color: var(--dune-muted);
+  }
+
+  .dune-theme .text-slate-500 {
+    color: var(--dune-dim);
+  }
+
+  .dune-theme .bg-slate-500,
+  .dune-theme .bg-slate-800 {
+    background-color: rgba(142, 94, 47, 0.78);
+  }
+
+  .dune-theme .bg-emerald-400 {
+    background-color: #65d6a3;
+  }
+
+  .dune-theme .bg-rose-400 {
+    background-color: #e45f5f;
+  }
+
+  .dune-theme .bg-amber-300 {
+    background-color: #f2b35d;
+  }
+
+  .dune-theme .focus\:ring-sky-500:focus,
+  .dune-theme .focus-visible\:ring-sky-500:focus-visible {
+    --tw-ring-color: rgba(242, 179, 93, 0.72);
+  }
+
+  .dune-theme input,
+  .dune-theme select,
+  .dune-theme textarea {
+    color-scheme: dark;
+  }
+
+  .dune-theme ::selection {
+    background-color: rgba(242, 179, 93, 0.36);
+    color: #fff7e8;
+  }
+
+  .dune-theme ::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+  }
+
+  .dune-theme ::-webkit-scrollbar-track {
+    background: rgba(8, 6, 4, 0.7);
+  }
+
+  .dune-theme ::-webkit-scrollbar-thumb {
+    background: rgba(181, 123, 57, 0.62);
+    border: 2px solid rgba(8, 6, 4, 0.7);
+    border-radius: 999px;
+  }
+}

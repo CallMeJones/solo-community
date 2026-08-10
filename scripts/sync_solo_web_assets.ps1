@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 # evaluating parameter default expressions. Resolve script-relative defaults
 # after binding so the release helper works in both powershell.exe and pwsh.
 if ([string]::IsNullOrWhiteSpace($WebDist)) {
-    $WebDist = Join-Path $PSScriptRoot '..\..\solo-web\dist'
+    $WebDist = Join-Path $PSScriptRoot '..\apps\web\dist'
 }
 if ([string]::IsNullOrWhiteSpace($AssetDir)) {
     $AssetDir = Join-Path $PSScriptRoot '..\crates\solo-api\assets\solo-web'
@@ -43,10 +43,18 @@ function Test-PathIsSameOrChild {
 
 function Get-TreeDigest {
     param([string]$Root)
-    $digestLines = New-Object System.Collections.Generic.List[string]
-    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse | Sort-Object FullName) {
+    $filesByRelativePath = @{}
+    $relativePaths = New-Object System.Collections.Generic.List[string]
+    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse) {
         $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $filesByRelativePath[$relative] = $file.FullName
+        $relativePaths.Add($relative) | Out-Null
+    }
+    $relativePaths.Sort([System.StringComparer]::Ordinal)
+
+    $digestLines = New-Object System.Collections.Generic.List[string]
+    foreach ($relative in $relativePaths) {
+        $hash = (Get-FileHash -LiteralPath $filesByRelativePath[$relative] -Algorithm SHA256).Hash.ToLowerInvariant()
         $digestLines.Add("${relative}:${hash}") | Out-Null
     }
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -65,6 +73,11 @@ $webRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $webDistPath)).Path
 $assetPath = Get-CanonicalPath -Path $AssetDir
 $provenanceFullPath = Get-CanonicalPath -Path $ProvenancePath
 $expectedAssetRoot = (Resolve-Path -LiteralPath (Join-Path $repoRoot 'crates\solo-api\assets')).Path
+$expectedWebRoot = (Resolve-Path -LiteralPath (Join-Path $repoRoot 'apps\web')).Path
+
+if (![string]::Equals($webRoot, $expectedWebRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Solo Web source must be the monorepo app at ${expectedWebRoot}: $webRoot"
+}
 
 if (!(Test-PathIsSameOrChild -Path $assetPath -Root $expectedAssetRoot)) {
     throw "Refusing to sync assets outside ${expectedAssetRoot}: $assetPath"
@@ -80,12 +93,12 @@ if (Test-PathIsSameOrChild -Path $provenanceFullPath -Root $assetPath) {
     throw "Provenance must remain outside the replaceable asset tree: $provenanceFullPath"
 }
 
-$safeWebRoot = $webRoot -replace '\\', '/'
-$webCommit = (& git -c "safe.directory=$safeWebRoot" -C $webRoot rev-parse HEAD).Trim()
+$safeRepoRoot = $repoRoot -replace '\\', '/'
+$webCommit = (& git -c "safe.directory=$safeRepoRoot" -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $webCommit -notmatch '^[0-9a-f]{40}$') {
     throw "Could not resolve the Solo Web source commit in $webRoot"
 }
-$webDirty = @(& git -c "safe.directory=$safeWebRoot" -C $webRoot status --porcelain=v1 --untracked-files=all)
+$webDirty = @(& git -c "safe.directory=$safeRepoRoot" -C $repoRoot status --porcelain=v1 --untracked-files=all -- apps/web)
 if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect the Solo Web worktree in $webRoot"
 }
@@ -120,11 +133,11 @@ finally {
     Pop-Location
 }
 
-$commitAfterBuild = (& git -c "safe.directory=$safeWebRoot" -C $webRoot rev-parse HEAD).Trim()
+$commitAfterBuild = (& git -c "safe.directory=$safeRepoRoot" -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commitAfterBuild -ne $webCommit) {
     throw "Solo Web HEAD changed during build: before=$webCommit after=$commitAfterBuild"
 }
-$webDirtyAfterBuild = @(& git -c "safe.directory=$safeWebRoot" -C $webRoot status --porcelain=v1 --untracked-files=all)
+$webDirtyAfterBuild = @(& git -c "safe.directory=$safeRepoRoot" -C $repoRoot status --porcelain=v1 --untracked-files=all -- apps/web)
 if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect the Solo Web worktree after the build in $webRoot"
 }
@@ -155,8 +168,9 @@ if ($stagedTreeDigest -ne $sourceTreeDigest) {
 }
 
 $provenance = [ordered]@{
-    schema_version       = 2
-    source_repository   = 'CallMeJones/solo-web-community'
+    schema_version       = 3
+    source_repository   = 'CallMeJones/solo-community'
+    source_path         = 'apps/web'
     source_commit       = $webCommit
     source_dirty        = $sourceDirty
     package_lock_sha256 = (Get-FileHash -LiteralPath $packageLock -Algorithm SHA256).Hash.ToLowerInvariant()
