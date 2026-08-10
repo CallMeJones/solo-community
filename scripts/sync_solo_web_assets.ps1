@@ -43,10 +43,18 @@ function Test-PathIsSameOrChild {
 
 function Get-TreeDigest {
     param([string]$Root)
-    $digestLines = New-Object System.Collections.Generic.List[string]
-    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse | Sort-Object FullName) {
+    $filesByRelativePath = @{}
+    $relativePaths = New-Object System.Collections.Generic.List[string]
+    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse) {
         $relative = $file.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $filesByRelativePath[$relative] = $file.FullName
+        $relativePaths.Add($relative) | Out-Null
+    }
+    $relativePaths.Sort([System.StringComparer]::Ordinal)
+
+    $digestLines = New-Object System.Collections.Generic.List[string]
+    foreach ($relative in $relativePaths) {
+        $hash = (Get-FileHash -LiteralPath $filesByRelativePath[$relative] -Algorithm SHA256).Hash.ToLowerInvariant()
         $digestLines.Add("${relative}:${hash}") | Out-Null
     }
     $sha = [System.Security.Cryptography.SHA256]::Create()

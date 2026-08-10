@@ -46,10 +46,14 @@ function listFiles(root) {
 }
 
 function treeDigest(root) {
-  const lines = listFiles(root).map((path) => {
+  const entries = listFiles(root).map((path) => {
     const name = relative(root, path).split(sep).join('/');
-    return `${name}:${sha256File(path)}`;
+    return { name, digest: sha256File(path) };
   });
+  entries.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  const lines = entries.map(({ name, digest }) => `${name}:${digest}`);
   return createHash('sha256').update(lines.join('\n'), 'utf8').digest('hex');
 }
 

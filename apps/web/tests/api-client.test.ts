@@ -165,7 +165,10 @@ describe('api client', () => {
       const url = String(input);
       const body = JSON.parse(String(init?.body));
       expect(body.project).toStrictEqual(project);
-      expect(init?.headers).not.toHaveProperty('X-Solo-Tenant');
+      expect(init?.headers).toStrictEqual({
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      });
 
       if (url === 'http://solo.test/v1/project/policy') {
         expect(body.client).toBe('codex');
@@ -958,11 +961,12 @@ describe('api client', () => {
       if (url === 'http://solo.test/uploads/upload-1' && init?.method === 'PATCH') {
         const headers = init.headers as Record<string, string>;
         patchOffsets.push(headers['upload-offset']);
-        expect(headers).toMatchObject({
+        expect(headers).toStrictEqual({
+          'content-type': 'application/octet-stream',
+          'upload-offset': String(patchOffsets.length === 1 ? 0 : 5),
           'upload-length': '10',
           Authorization: 'Bearer local-bearer',
         });
-        expect(headers).not.toHaveProperty('X-Solo-Tenant');
         expect(init.body).toBeInstanceOf(Blob);
         return new Response(null, { status: 204 });
       }
@@ -1125,7 +1129,13 @@ describe('api client', () => {
       expect(call.headers).toMatchObject({
         Authorization: 'Bearer token-a',
       });
-      expect(call.headers).not.toHaveProperty('X-Solo-Tenant');
+      expect(
+        Object.keys(call.headers).every((name) =>
+          ['accept', 'authorization', 'content-type', 'upload-length', 'upload-offset'].includes(
+            name.toLowerCase(),
+          ),
+        ),
+      ).toBe(true);
     }
   });
 
@@ -1908,7 +1918,10 @@ describe('api client', () => {
       }),
     );
     const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit).headers;
-    expect(headers).not.toHaveProperty('X-Solo-Tenant');
+    expect(headers).toStrictEqual({
+      Accept: 'application/json',
+      Authorization: 'Bearer secret-token',
+    });
   });
 
   it('fetchLogs calls /v1/logs with a bounded tray source query', async () => {
