@@ -355,7 +355,14 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           NOTES="docs/releases/${TAG}.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists; skipping create"
+            RELEASE_STATE="$(gh release view "$TAG" --json isDraft,isPrerelease)"
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
+            if [[ "$IS_DRAFT" != "false" || "$IS_PRERELEASE" != "false" ]]; then
+              echo "::error::refusing to reuse non-final release $TAG: $RELEASE_STATE"
+              exit 1
+            fi
+            echo "final release $TAG already exists; skipping create"
           else
             gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
             echo "::notice title=Released::Created GitHub release $TAG with notes from $NOTES."
@@ -544,9 +551,8 @@ jobs:
           "WINDOWS_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # The publish job's "Create GitHub release" step ran before this
-      # job (needs: publish), so the release page exists. `gh release
-      # upload --clobber` is idempotent — re-running the workflow
-      # replaces assets rather than failing on duplicates.
+      # job (needs: publish), so the release page exists. The shared uploader
+      # retains matching assets and fails closed instead of replacing them.
       - name: Upload to GitHub release
         shell: bash
         env:
@@ -554,12 +560,14 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" "$ARCHIVE" --clobber
-          echo "::notice title=Uploaded::$ARCHIVE attached to release $TAG."
+          ASSETS=("$ARCHIVE")
           if [ -n "${WINDOWS_INSTALLER:-}" ]; then
-            gh release upload "$TAG" "$WINDOWS_INSTALLER" --clobber
-            echo "::notice title=Uploaded::$WINDOWS_INSTALLER attached to release $TAG."
+            ASSETS+=("$WINDOWS_INSTALLER")
           fi
+          bash scripts/upload_release_assets.sh "$TAG" "${ASSETS[@]}"
+          for ASSET in "${ASSETS[@]}"; do
+            echo "::notice title=Verified::$ASSET attached to release $TAG."
+          done
 
   release-ubuntu-deb:
     name: Ubuntu 24.04 Desktop package
@@ -651,8 +659,8 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" "$UBUNTU_DEB" --clobber
-          echo "::notice title=Uploaded::$UBUNTU_DEB attached to release $TAG."
+          bash scripts/upload_release_assets.sh "$TAG" "$UBUNTU_DEB"
+          echo "::notice title=Verified::$UBUNTU_DEB attached to release $TAG."
 
   release-sdk-starters:
     name: release SDK starter bundles
@@ -686,8 +694,8 @@ jobs:
         run: python sdks/package_starters.py --out dist/sdk-starters --check
 
       # The publish job creates the release first. Uploading from a separate
-      # job keeps the starter bundles out of the binary matrix and makes
-      # re-running this job idempotent via --clobber.
+      # job keeps the starter bundles out of the binary matrix; the shared
+      # uploader makes retries digest-aware and fail-closed.
       - name: Upload SDK starter bundles to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -699,5 +707,5 @@ jobs:
             echo "::error::no SDK starter bundles were built"
             exit 1
           fi
-          gh release upload "$TAG" "${BUNDLES[@]}" --clobber
-          printf 'uploaded SDK starter bundle: %s\n' "${BUNDLES[@]}"
+          bash scripts/upload_release_assets.sh "$TAG" "${BUNDLES[@]}"
+          printf 'verified SDK starter bundle: %s\n' "${BUNDLES[@]}"
