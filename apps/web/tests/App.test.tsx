@@ -277,7 +277,6 @@ describe('App desktop shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
     expect(screen.getAllByText('http://127.0.0.1:17821/mcp').length).toBeGreaterThan(0);
-    expect(screen.queryByText(/X-Solo-Tenant/i)).not.toBeInTheDocument();
     expect(screen.getAllByText('Copy dry-run')).toHaveLength(3);
     expect(screen.getAllByText('Copy Doctor')).toHaveLength(4);
     expect(

@@ -82,7 +82,7 @@ describe('useGraphData (live path)', () => {
     );
   });
 
-  it('never sends a database selector header', async () => {
+  it('uses only the Community JSON request headers', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ nodes: [], edges: [] }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -90,13 +90,16 @@ describe('useGraphData (live path)', () => {
     renderHook(() => useGraphData(), { wrapper: Wrapper });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const selectorHeaders = fetchMock.mock.calls.map(([, init]) => {
+    const requestHeaders = fetchMock.mock.calls.map(([, init]) => {
       const headers = (init as RequestInit | undefined)?.headers as
         | Record<string, string>
         | undefined;
-      return headers?.['X-Solo-Tenant'];
+      return headers;
     });
-    expect(selectorHeaders).toStrictEqual([undefined, undefined]);
+    expect(requestHeaders).toStrictEqual([
+      { Accept: 'application/json' },
+      { Accept: 'application/json' },
+    ]);
   });
 
   it('surfaces fetch errors via result.error', async () => {

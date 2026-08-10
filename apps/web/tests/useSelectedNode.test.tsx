@@ -79,7 +79,7 @@ describe('useSelectedNode', () => {
     expect(calledUrl).toContain(encodeURIComponent(SAMPLE_INSPECT.id));
   });
 
-  it('never sends a tenant or library selector', async () => {
+  it('uses only the Community JSON request headers', async () => {
     useGraphStore.setState({ selectedNodeId: SAMPLE_INSPECT.id });
     const fetchMock = vi.fn(async () => jsonResponse(SAMPLE_INSPECT));
     vi.stubGlobal('fetch', fetchMock);
@@ -91,7 +91,7 @@ describe('useSelectedNode', () => {
     const headers = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers as
       | Record<string, string>
       | undefined;
-    expect(headers).not.toHaveProperty('X-Solo-Tenant');
+    expect(headers).toStrictEqual({ Accept: 'application/json' });
   });
 
   it('refetches when selectedNodeId changes', async () => {

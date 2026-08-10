@@ -87,7 +87,7 @@ describe('useGraphStream', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens a selector-free fetch against /v1/graph/stream', async () => {
+  it('opens a Community event-stream fetch', async () => {
     const stream = makeStreamResponse();
     const fetchMock = vi.fn(async () => stream.res);
     vi.stubGlobal('fetch', fetchMock);
@@ -99,8 +99,7 @@ describe('useGraphStream', () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(String(url)).toContain('/v1/graph/stream');
     const headers = (init as RequestInit | undefined)?.headers as Record<string, string>;
-    expect(headers).not.toHaveProperty('X-Solo-Tenant');
-    expect(headers.Accept).toBe('text/event-stream');
+    expect(headers).toStrictEqual({ Accept: 'text/event-stream' });
 
     unmount();
     stream.close();

@@ -98,7 +98,6 @@ describe.skipIf(!SOLO_API_URL)('solo-web live Solo REST contract', () => {
       expect(typeof node.id).toBe('string');
       expect(typeof node.kind).toBe('string');
       expect(typeof node.label).toBe('string');
-      expect(node).not.toHaveProperty('tenant_id');
     }
   });
 

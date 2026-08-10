@@ -9,6 +9,18 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourcePath = 'apps/web';
 const sourceRoot = join(repoRoot, ...sourcePath.split('/'));
+const artifactSourcePaths = [
+  `${sourcePath}/index.html`,
+  `${sourcePath}/package.json`,
+  `${sourcePath}/package-lock.json`,
+  `${sourcePath}/postcss.config.js`,
+  `${sourcePath}/tailwind.config.js`,
+  `${sourcePath}/tsconfig.json`,
+  `${sourcePath}/vite.config.ts`,
+  `${sourcePath}/src`,
+  `${sourcePath}/scripts/assert-pilot-artifact.mjs`,
+  `${sourcePath}/scripts/build-pilot.mjs`,
+];
 const distRoot = join(sourceRoot, 'dist');
 const embeddedRoot = join(repoRoot, 'crates', 'solo-api', 'assets', 'solo-web');
 const provenancePath = join(
@@ -96,11 +108,11 @@ if (sourceCommitCheck.status !== 0) {
 
 const sourceDiff = spawnSync(
   'git',
-  ['diff', '--quiet', provenance.source_commit, headCommit, '--', sourcePath],
+  ['diff', '--quiet', provenance.source_commit, headCommit, '--', ...artifactSourcePaths],
   { cwd: repoRoot, stdio: 'ignore' },
 );
 if (sourceDiff.status === 1) {
-  fail('apps/web changed after the embedded artifact source commit');
+  fail('a Web artifact build input changed after the embedded source commit');
 }
 if (sourceDiff.status !== 0) fail('could not compare apps/web with its source commit');
 

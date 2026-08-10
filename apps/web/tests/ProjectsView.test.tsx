@@ -50,7 +50,10 @@ describe('ProjectsView', () => {
       const url = String(input);
       const body = JSON.parse(String(init?.body));
       expect(body.project).toStrictEqual(project);
-      expect(init?.headers).not.toHaveProperty('X-Solo-Tenant');
+      expect(init?.headers).toStrictEqual({
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      });
 
       if (url === 'http://solo.test/v1/project/policy') {
         return jsonResponse({

@@ -27,7 +27,10 @@ describe('ImportView', () => {
       const url = String(input);
       if (url === 'http://solo.test/memory') {
         expect(init?.method).toBe('POST');
-        expect(init?.headers).not.toHaveProperty('X-Solo-Tenant');
+        expect(init?.headers).toStrictEqual({
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        });
         const body = JSON.parse(String(init?.body));
         expect(body).toMatchObject({
           source_type: 'import.chatgpt',
@@ -119,10 +122,11 @@ describe('ImportView', () => {
     expect(memoryCalls.map((call) => call.sourceId)).toStrictEqual(['chat-a', 'chat-b']);
     for (const call of memoryCalls) {
       expect(call.url).toBe('http://solo-a.test/memory');
-      expect(call.headers).toMatchObject({
+      expect(call.headers).toStrictEqual({
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
         Authorization: 'Bearer token-a',
       });
-      expect(call.headers).not.toHaveProperty('X-Solo-Tenant');
     }
   });
 
@@ -151,7 +155,10 @@ describe('ImportView', () => {
       const url = String(input);
       if (url === 'http://solo.test/memory/documents/import') {
         expect(init?.method).toBe('POST');
-        expect(init?.headers).not.toHaveProperty('X-Solo-Tenant');
+        expect(init?.headers).toStrictEqual({
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        });
         const body = JSON.parse(String(init?.body));
         expect(body).toMatchObject({
           path: 'C:\\Notes',
@@ -352,11 +359,11 @@ describe('ImportView', () => {
         );
       }
       if (url === 'http://solo.test/uploads/upload-ui' && init?.method === 'PATCH') {
-        expect(init.headers).toMatchObject({
+        expect(init.headers).toStrictEqual({
+          'content-type': 'application/octet-stream',
           'upload-offset': '0',
           'upload-length': '13',
         });
-        expect(init.headers).not.toHaveProperty('X-Solo-Tenant');
         return new Response(null, { status: 204 });
       }
       if (
@@ -582,7 +589,13 @@ describe('ImportView', () => {
       expect(request.headers).toMatchObject({
         Authorization: 'Bearer token-a',
       });
-      expect(request.headers).not.toHaveProperty('X-Solo-Tenant');
+      expect(
+        Object.keys(request.headers).every((name) =>
+          ['accept', 'authorization', 'content-type', 'upload-length', 'upload-offset'].includes(
+            name.toLowerCase(),
+          ),
+        ),
+      ).toBe(true);
     }
   });
 

@@ -67,7 +67,10 @@ describe('BackupView', () => {
         const body = JSON.parse(String(init?.body));
         expect(body.to).toMatch(/^C:\\SoloData\\solo-backup-/);
         expect(body.force).toBe(false);
-        expect(init?.headers).not.toHaveProperty('X-Solo-Tenant');
+        expect(init?.headers).toStrictEqual({
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        });
         return jsonResponse({ path: body.to, elapsed_ms: 7 });
       }
       throw new Error(`unexpected fetch: ${url}`);
