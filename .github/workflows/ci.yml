@@ -167,6 +167,10 @@ jobs:
     name: cargo test (linux glibc)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Preserve the 30-second local regression signal while allowing the
+      # documented 60-second ceiling on variable shared CI runners.
+      SOLO_PERF_CI_BUDGET: '1'
 
     steps:
       - name: Checkout
