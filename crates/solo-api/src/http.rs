@@ -6176,8 +6176,8 @@ fn parse_node_id(raw: &str) -> Result<(NodeKind, &str), ApiError> {
     Ok((kind, value))
 }
 
-/// One node in the graph-expand response. Mirrors solo-web's `GraphNode`
-/// TS interface (see `solo-web/src/api/types.ts`).
+/// One node in the graph-expand response. Mirrors Solo Web's `GraphNode`
+/// TS interface (see `apps/web/src/api/types.ts`).
 #[derive(Debug, Serialize)]
 struct GraphNode {
     id: String,

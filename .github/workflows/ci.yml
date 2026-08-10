@@ -95,6 +95,72 @@ jobs:
         # current or future unsoundness advisory.
         run: cargo audit --deny unsound --ignore RUSTSEC-2024-0429
 
+  community-web:
+    name: Community Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Use exact Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked Web dependencies
+        working-directory: apps/web
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck Web
+        working-directory: apps/web
+        run: npm run typecheck
+
+      - name: Lint Web
+        working-directory: apps/web
+        run: npm run lint
+
+      - name: Test Web
+        working-directory: apps/web
+        run: npm test
+
+      - name: Install Playwright Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Test production Web artifact in Chromium
+        working-directory: apps/web
+        run: npm run e2e:ci
+
+      - name: Verify Community Web boundary
+        working-directory: apps/web
+        run: npm run verify:pilot-artifact
+
+      - name: Verify rebuilt and embedded Web are identical
+        working-directory: apps/web
+        run: npm run verify:embedded
+
+      - name: Audit production Web dependencies
+        working-directory: apps/web
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Generate production Web SBOM
+        working-directory: apps/web
+        run: npm sbom --package-lock-only --omit dev --sbom-format cyclonedx > sbom.cdx.json
+
+      - name: Retain production Web build and SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: solo-web-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            apps/web/dist/
+            apps/web/sbom.cdx.json
+
   test:
     name: cargo test (linux glibc)
     runs-on: ubuntu-latest

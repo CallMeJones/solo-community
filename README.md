@@ -14,8 +14,8 @@ user-owned memory.
 
 **v0.12.0 Community candidate** - Solo is now a full local memory stack:
 an encrypted local Memory Library, a single-writer actor for durable
-writes, HNSW/vector recall, document/RAG memory, graph APIs for
-`solo-web`, and MCP over stdio plus Streamable HTTP on `/mcp`.
+writes, HNSW/vector recall, document/RAG memory, the embedded Solo Web UI,
+and MCP over stdio plus Streamable HTTP on `/mcp`.
 This release adds resumable document uploads, retained source assets,
 native document extraction, temporal relationship paths, provenance
 explanations, and stricter memory-claim quality review. The Community product
@@ -38,10 +38,24 @@ contradiction detect + lifecycle     -> contradictions, resolutions
 context/entity/doc/graph surfaces    -> MCP, HTTP, Solo Desktop
 ```
 
-CI mirrors the publish gate: workspace tests on Linux, the bundled
-embedder test pass, clippy, mdBook, and an Ollama smoke. ADR-driven
+CI mirrors the publish gate: Rust workspace tests, the complete Web
+typecheck/lint/unit/browser suite, the bundled embedder test pass, clippy,
+mdBook, and an Ollama smoke. ADR-driven
 design; the writer model contract is in
 [`docs/adr/0003-writer-model.md`](docs/adr/0003-writer-model.md).
+
+## Repository layout
+
+- `crates/` contains Community Core, storage, API, CLI, and tray code.
+- `apps/web/` contains the React/Vite Community UI embedded by `solo-api`.
+- `crates/solo-api/assets/solo-web/` retains the verified production Web
+  artifact so Rust users do not need Node.js merely to build Solo.
+- `scripts/sync_solo_web_assets.ps1` rebuilds `apps/web` and atomically
+  refreshes the embedded artifact plus its provenance.
+
+For Web development, run `npm ci` and `npm run dev` from `apps/web`. A
+release change to Web source must refresh the embedded artifact before merge;
+CI rebuilds both and rejects any digest or source-commit mismatch.
 
 ## Install
 

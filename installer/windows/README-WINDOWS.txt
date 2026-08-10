@@ -103,10 +103,10 @@ Release verification
 Before shipping a Windows build, verify the installed app rather than only the
 build output. Run these from the repository root:
 
-  Push-Location ..\solo-web
+  Push-Location .\apps\web
   npm.cmd run build
   Pop-Location
-  .\scripts\sync_solo_web_assets.ps1 -WebDist ..\solo-web\dist
+  .\scripts\sync_solo_web_assets.ps1
   cargo build --locked -p solo-cli -p solo-tray --release
   $sourceDir = "D:\solo-target\release"
   & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=0.12.0 /DSourceDir="$sourceDir" /DOutputDir="." installer\windows\SoloSetup.iss

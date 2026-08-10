@@ -2,7 +2,6 @@
 [CmdletBinding()]
 param(
     [string]$CoreRoot = '',
-    [string]$WebRoot = '',
     [string]$ExpectedBranch = 'pilot',
     [string]$InstallerPath = '',
     [string]$ManifestPath = '',
@@ -16,10 +15,6 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($CoreRoot)) {
     $CoreRoot = Join-Path $PSScriptRoot '..'
 }
-if ([string]::IsNullOrWhiteSpace($WebRoot)) {
-    $WebRoot = Join-Path $PSScriptRoot '..\..\solo-web'
-}
-
 function Write-Step {
     param([string]$Message)
     Write-Host "==> $Message"
@@ -86,27 +81,6 @@ function Get-RepositoryState {
     }
 }
 
-function Get-TreeDigest {
-    param([string]$Path)
-
-    $root = (Resolve-Path -LiteralPath $Path).Path
-    $lines = New-Object System.Collections.Generic.List[string]
-    foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse | Sort-Object FullName) {
-        $relative = $file.FullName.Substring($root.Length).TrimStart('\', '/') -replace '\\', '/'
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        $lines.Add("${relative}:${hash}") | Out-Null
-    }
-    $joined = $lines -join "`n"
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined)
-        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
-}
-
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Value)
     $parent = Split-Path -Parent $Path
@@ -118,13 +92,10 @@ function Write-Utf8NoBom {
 }
 
 $core = Resolve-ExistingDirectory -Path $CoreRoot -Label 'Solo Core'
-$web = Resolve-ExistingDirectory -Path $WebRoot -Label 'Solo Web'
+$web = Resolve-ExistingDirectory -Path (Join-Path $core 'apps\web') -Label 'Solo Web'
 
 Write-Step 'Verify pinned pilot branches and clean worktrees'
-$repositories = @(
-    Get-RepositoryState -Path $core -Name 'solo-core'
-    Get-RepositoryState -Path $web -Name 'solo-web'
-)
+$repositories = @(Get-RepositoryState -Path $core -Name 'solo-community')
 
 $cargoToml = Get-Content -Raw -LiteralPath (Join-Path $core 'Cargo.toml')
 if ($cargoToml -notmatch '(?m)^version\s*=\s*"0\.12\.0"\s*$') {
@@ -151,30 +122,20 @@ if (!$SkipTests) {
 }
 
 Write-Step 'Verify embedded Solo Web assets match the candidate Web build'
-$webDist = Join-Path $web 'dist'
-$embeddedWeb = Join-Path $core 'crates\solo-api\assets\solo-web'
-if (!(Test-Path -LiteralPath (Join-Path $webDist 'index.html') -PathType Leaf)) {
-    throw "Solo Web dist is missing. Run npm run build in $web"
+$verificationOutput = @(& node (Join-Path $core 'scripts\verify_embedded_web.mjs'))
+if ($LASTEXITCODE -ne 0 -or $verificationOutput.Count -eq 0) {
+    throw 'Embedded Solo Web verification failed'
 }
-$webDigest = Get-TreeDigest -Path $webDist
-$embeddedDigest = Get-TreeDigest -Path $embeddedWeb
-if ($webDigest -ne $embeddedDigest) {
-    throw "Embedded Web assets do not match solo-web/dist. Run scripts/sync_solo_web_assets.ps1 and rebuild. dist=$webDigest embedded=$embeddedDigest"
-}
+$webVerification = $verificationOutput[-1] | ConvertFrom-Json
+$webDigest = [string]$webVerification.dist_tree_sha256
+$embeddedDigest = $webDigest
 $webProvenancePath = Join-Path $core 'crates\solo-api\assets\solo-web.provenance.json'
 if (!(Test-Path -LiteralPath $webProvenancePath -PathType Leaf)) {
     throw "Embedded Solo Web provenance is missing: $webProvenancePath"
 }
 $webProvenance = Get-Content -Raw -LiteralPath $webProvenancePath | ConvertFrom-Json
-$webRepositoryState = @($repositories | Where-Object { $_.name -eq 'solo-web' })[0]
-if ($null -eq $webRepositoryState) {
-    throw 'Solo Web repository state is missing from the release manifest'
-}
-if ($webProvenance.source_commit -ne $webRepositoryState.commit) {
-    throw "Embedded Solo Web commit $($webProvenance.source_commit) does not match candidate $($webRepositoryState.commit)"
-}
-if ($webProvenance.schema_version -ne 2) {
-    throw "Embedded Solo Web provenance schema must be 2; found $($webProvenance.schema_version)"
+if ($webProvenance.schema_version -ne 3) {
+    throw "Embedded Solo Web provenance schema must be 3; found $($webProvenance.schema_version)"
 }
 if ($webProvenance.source_dirty -ne $false) {
     throw 'Embedded Solo Web provenance records a dirty source tree'
@@ -182,7 +143,7 @@ if ($webProvenance.source_dirty -ne $false) {
 if ($webProvenance.dist_tree_sha256 -ne $embeddedDigest) {
     throw "Embedded Solo Web provenance tree hash $($webProvenance.dist_tree_sha256) does not match $embeddedDigest"
 }
-$candidatePackageLockHash = (Get-FileHash -LiteralPath (Join-Path $web 'package-lock.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+$candidatePackageLockHash = [string]$webVerification.package_lock_sha256
 if ($webProvenance.package_lock_sha256 -ne $candidatePackageLockHash) {
     throw 'Embedded Solo Web package-lock hash does not match the candidate source tree'
 }
@@ -210,7 +171,7 @@ if (![string]::IsNullOrWhiteSpace($InstallerPath)) {
 $manifest = [ordered]@{
     schema_version      = 1
     generated_at_utc    = [DateTime]::UtcNow.ToString('o')
-    product_scope       = 'windows-community-core-web'
+    product_scope       = 'windows-community-monorepo'
     excluded_components = @('remote-document-upload-required-path')
     repositories        = $repositories
     core_version        = '0.12.0'

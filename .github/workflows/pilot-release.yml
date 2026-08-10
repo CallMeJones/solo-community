@@ -3,10 +3,6 @@ name: Community Windows release candidate
 on:
   workflow_dispatch:
     inputs:
-      solo_web_commit:
-        description: 'Exact lowercase 40-character Solo Web commit embedded in Core'
-        required: true
-        type: string
       allow_unsigned_installer:
         description: 'Allow an unsigned invite-only candidate when signing secrets are not configured'
         required: true
@@ -32,7 +28,6 @@ jobs:
       PILOT_VERSION: '0.12.0'
       PILOT_TARGET: x86_64-pc-windows-msvc
       PILOT_ARTIFACT_DIR: ${{ github.workspace }}/pilot-artifacts
-      EXPECTED_WEB_COMMIT: ${{ inputs.solo_web_commit }}
 
     steps:
       - name: Checkout pinned Core candidate
@@ -56,41 +51,23 @@ jobs:
           }
           foreach ($required in @(
             'docs/releases/v0.12.0.md',
+            'apps/web/package-lock.json',
             'crates/solo-api/assets/solo-web/index.html'
           )) {
             if (!(Test-Path -LiteralPath $required)) { throw "Required candidate input is missing: $required" }
           }
-          if ($env:EXPECTED_WEB_COMMIT -notmatch '^[0-9a-f]{40}$') {
-            throw 'solo_web_commit must be an exact lowercase full Git commit SHA'
-          }
-
-      - name: Checkout exact Solo Web source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: CallMeJones/solo-web-community
-          ref: ${{ inputs.solo_web_commit }}
-          path: _pilot-sources/solo-web
-          persist-credentials: false
 
       - name: Install exact Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22.14.0
           cache: npm
-          cache-dependency-path: _pilot-sources/solo-web/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
 
-      - name: Rebuild and verify exact Solo Web candidate
+      - name: Rebuild monorepo Solo Web candidate
         shell: pwsh
-        working-directory: _pilot-sources/solo-web
+        working-directory: apps/web
         run: |
-          $actualCommit = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $env:EXPECTED_WEB_COMMIT) {
-            throw "Solo Web checkout $actualCommit does not equal $env:EXPECTED_WEB_COMMIT"
-          }
-          $dirty = @(git status --porcelain=v1 --untracked-files=all)
-          if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) {
-            throw "Solo Web candidate checkout is not clean:`n$($dirty -join [Environment]::NewLine)"
-          }
           if ((node --version).Trim() -ne 'v22.14.0') {
             throw "Unexpected Node version: $(node --version)"
           }
@@ -104,53 +81,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Web tests failed with exit code $LASTEXITCODE" }
           npm run build:pilot
           if ($LASTEXITCODE -ne 0) { throw "Web pilot build failed with exit code $LASTEXITCODE" }
-          $dirtyAfterBuild = @(git status --porcelain=v1 --untracked-files=all)
-          if ($LASTEXITCODE -ne 0 -or $dirtyAfterBuild.Count -ne 0) {
-            throw "Solo Web build mutated the clean candidate checkout:`n$($dirtyAfterBuild -join [Environment]::NewLine)"
-          }
 
       - name: Cryptographically compare rebuilt and embedded Web assets
         shell: pwsh
         run: |
-          function Get-TreeDigest([string]$Root) {
-            $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\', '/')
-            $lines = New-Object System.Collections.Generic.List[string]
-            foreach ($file in Get-ChildItem -LiteralPath $resolvedRoot -File -Recurse | Sort-Object FullName) {
-              $relative = $file.FullName.Substring($resolvedRoot.Length).TrimStart('\', '/') -replace '\\', '/'
-              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              $lines.Add("${relative}:${hash}") | Out-Null
-            }
-            $sha = [Security.Cryptography.SHA256]::Create()
-            try {
-              $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
-              return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-            }
-            finally { $sha.Dispose() }
+          $verification = (& node scripts/verify_embedded_web.mjs) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $null -eq $verification) {
+            throw 'Embedded Web verification failed'
           }
-          $candidateRoot = '_pilot-sources/solo-web/dist'
-          $embeddedRoot = 'crates/solo-api/assets/solo-web'
-          $provenancePath = 'crates/solo-api/assets/solo-web.provenance.json'
-          foreach ($required in @((Join-Path $candidateRoot 'index.html'), (Join-Path $embeddedRoot 'index.html'), $provenancePath)) {
-            if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required Web artifact is missing: $required" }
-          }
-          $candidateDigest = Get-TreeDigest $candidateRoot
-          $embeddedDigest = Get-TreeDigest $embeddedRoot
-          $provenance = Get-Content -Raw -LiteralPath $provenancePath | ConvertFrom-Json
-          $lockDigest = (Get-FileHash -LiteralPath '_pilot-sources/solo-web/package-lock.json' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($provenance.schema_version -ne 2) { throw 'Embedded Web provenance schema must be 2' }
-          if ($provenance.source_commit -ne $env:EXPECTED_WEB_COMMIT) {
-            throw "Embedded Web provenance commit $($provenance.source_commit) does not equal $env:EXPECTED_WEB_COMMIT"
-          }
-          if ($provenance.source_dirty -ne $false) { throw 'Embedded Web provenance records a dirty source tree' }
-          if ($provenance.package_lock_sha256 -ne $lockDigest) { throw 'Embedded Web provenance has the wrong package-lock digest' }
-          if ($provenance.dist_tree_sha256 -ne $candidateDigest -or $embeddedDigest -ne $candidateDigest) {
-            throw "Web artifact mismatch: rebuilt=$candidateDigest embedded=$embeddedDigest provenance=$($provenance.dist_tree_sha256)"
-          }
-          if ([string]::IsNullOrWhiteSpace($provenance.build_invocation_id)) {
-            throw 'Embedded Web provenance lacks a same-invocation build identifier'
-          }
-          "PILOT_EMBEDDED_WEB_SHA256=$embeddedDigest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PILOT_WEB_PACKAGE_LOCK_SHA256=$lockDigest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_WEB_SOURCE_COMMIT=$($verification.source_commit)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_EMBEDDED_WEB_SHA256=$($verification.dist_tree_sha256)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PILOT_WEB_PACKAGE_LOCK_SHA256=$($verification.package_lock_sha256)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install exact Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
@@ -359,7 +300,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "cargo cyclonedx failed with exit code $LASTEXITCODE" }
           $sbomDir = Join-Path $env:PILOT_ARTIFACT_DIR 'sbom'
           New-Item -ItemType Directory -Force -Path $sbomDir | Out-Null
-          $boms = @(Get-ChildItem -Path . -Recurse -File -Filter '*.cdx.json' | Where-Object { $_.FullName -notlike '*\target\*' -and $_.FullName -notlike '*\_pilot-sources\*' -and $_.FullName -notlike "$env:PILOT_ARTIFACT_DIR*" })
+          $boms = @(Get-ChildItem -Path . -Recurse -File -Filter '*.cdx.json' | Where-Object { $_.FullName -notlike '*\target\*' -and $_.FullName -notlike '*\apps\web\node_modules\*' -and $_.FullName -notlike "$env:PILOT_ARTIFACT_DIR*" })
           if ($boms.Count -eq 0) { throw 'cargo-cyclonedx produced no .cdx.json SBOM files' }
           foreach ($bom in $boms) {
             $relative = $bom.FullName.Substring($env:GITHUB_WORKSPACE.Length).TrimStart('\') -replace '[\\/]', '-'
@@ -386,9 +327,10 @@ jobs:
               clean_checkout_verified = $true
             }
             web = [ordered]@{
-              repository = 'CallMeJones/solo-web-community'
-              commit = $env:EXPECTED_WEB_COMMIT
-              clean_checkout_verified = $true
+              repository = '${{ github.repository }}'
+              path = 'apps/web'
+              source_commit = $env:PILOT_WEB_SOURCE_COMMIT
+              release_commit = $env:GITHUB_SHA
               rebuilt_tree_sha256 = $env:PILOT_EMBEDDED_WEB_SHA256
               embedded_tree_sha256 = $env:PILOT_EMBEDDED_WEB_SHA256
               package_lock_sha256 = $env:PILOT_WEB_PACKAGE_LOCK_SHA256

@@ -51,7 +51,9 @@ fn write_embedded_solo_web_assets() {
             writeln!(source, "];").unwrap();
         }
         None => {
-            println!("cargo:warning=solo-web/dist not found; embedding fallback page for /desktop");
+            println!(
+                "cargo:warning=embedded Solo Web assets not found; embedding fallback page for /desktop"
+            );
             writeln!(
                 source,
                 "pub const EMBEDDED_SOLO_WEB_REAL_DIST: bool = false;"
@@ -139,5 +141,5 @@ fn mime_for_path(path: &std::path::Path) -> &'static str {
 }
 
 fn fallback_html() -> &'static str {
-    r#"<!doctype html><html><head><meta charset="utf-8"><title>Solo Desktop Missing</title></head><body><main style="font-family:system-ui;margin:2rem;max-width:42rem"><h1>Solo Desktop assets were not bundled</h1><p>Build solo-web before building solo-api: <code>npm run build</code> in the solo-web directory, then rebuild solo-api.</p></main></body></html>"#
+    r#"<!doctype html><html><head><meta charset="utf-8"><title>Solo Desktop Missing</title></head><body><main style="font-family:system-ui;margin:2rem;max-width:42rem"><h1>Solo Desktop assets were not bundled</h1><p>Build the Web app in <code>apps/web</code>, run <code>scripts/sync_solo_web_assets.ps1</code>, then rebuild Solo.</p></main></body></html>"#
 }

@@ -304,7 +304,7 @@ In solo-web's Settings dialog:
 
 Real-time updates come from the daemon's `/v1/graph/stream` SSE
 endpoint. When any MCP client writes a memory, the graph view
-refreshes live. See `solo-web/README.md` for details.
+refreshes live. See `apps/web/README.md` for details.
 
 ### Generic MCP clients
 

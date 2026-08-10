@@ -156,6 +156,12 @@ fn current_documentation_sdks_examples_and_smokes_are_community_only() {
         &repo_root,
         &[
             "README.md",
+            "apps/web/README.md",
+            "apps/web/package.json",
+            "apps/web/src",
+            "apps/web/tests",
+            "apps/web/scripts",
+            "apps/web/e2e",
             "docs/book/src",
             "docs/editions.md",
             "examples",
@@ -170,6 +176,44 @@ fn current_documentation_sdks_examples_and_smokes_are_community_only() {
             "scripts/repro_document_upload_contract.ps1",
         ],
     );
+}
+
+#[test]
+fn community_web_has_one_monorepo_owner() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    assert!(
+        repo_root.join("apps/web/package-lock.json").is_file(),
+        "Community Web source must live under apps/web"
+    );
+
+    let provenance: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo_root.join("crates/solo-api/assets/solo-web.provenance.json"))
+            .expect("read embedded Web provenance"),
+    )
+    .expect("parse embedded Web provenance");
+    assert_eq!(provenance["schema_version"], 3);
+    assert_eq!(
+        provenance["source_repository"],
+        "CallMeJones/solo-community"
+    );
+    assert_eq!(provenance["source_path"], "apps/web");
+
+    for relative in [
+        "scripts/sync_solo_web_assets.ps1",
+        "scripts/verify_embedded_web.mjs",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pilot-release.yml",
+        ".github/workflows/linux-test-release.yml",
+        ".github/workflows/publish.yml",
+    ] {
+        let text = fs::read_to_string(repo_root.join(relative)).expect("read Web owner file");
+        assert!(
+            !text.contains("CallMeJones/solo-web-community")
+                && !text.contains("solo_web_commit")
+                && !text.contains("upstream/solo-web"),
+            "Community Web still has a second repository owner in {relative}"
+        );
+    }
 }
 
 #[test]
