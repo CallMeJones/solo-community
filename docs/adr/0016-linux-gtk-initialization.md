@@ -135,9 +135,25 @@ To revisit: if measured menu latency is poor on a real desktop session, or if
 GTK and winit contend on Wayland, Option B becomes the fallback and this ADR
 should be superseded rather than amended.
 
-Untested by CI: the Ubuntu runner is headless, so no CI job exercises this
-path. That gap is what allowed a crash-on-launch defect to ship through a green
-pipeline, and it is tracked as a follow-up rather than closed here.
+CI coverage: the Ubuntu runner now exercises the installed tray under Xvfb and
+DBus. The guard was also checked against a deliberately crashing binary so it
+cannot pass merely because the process exited early.
+
+## GTK3 Security Maintenance
+
+The GTK3 bindings require `glib ^0.18`. Upstream has declared that line
+end-of-life and will not publish the `VariantStrIter` soundness fix described
+by `RUSTSEC-2024-0429`. Solo therefore vendors the published glib 0.18.5 crate
+and applies upstream's reviewed two-token fix. The source provenance and
+exception lifecycle are recorded in
+`vendor/glib-0.18.5-solo/SOLO-PATCH.md`.
+
+CI verifies the patched source hash and Cargo resolution before allowing the
+single version-based audit exception, rejects any other unsoundness advisory,
+and runs the vulnerable iterator path in an optimized Linux test. This is a
+bounded compatibility patch, not a permanent endorsement of GTK3: replace the
+GTK3 stack when the tray/webview dependencies provide a production-ready GTK4
+path, then remove the vendor directory and exception together.
 
 ## Action Items
 
