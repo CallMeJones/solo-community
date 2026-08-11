@@ -1,19 +1,19 @@
-# Build and publish an Ubuntu package for hands-on testing without invoking
-# the production crates.io publisher. Only explicit linux-test SemVer tags
-# enter this workflow.
+# Build and publish a cross-platform Community prerelease for hands-on testing
+# without invoking the production crates.io publisher. A public Solo release
+# is considered releasable only when every supported OS artifact is present.
 
-name: Linux test release
+name: Community test release
 
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+-linux-test.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-test.[0-9]+'
 
 permissions:
   contents: read
 
 concurrency:
-  group: linux-test-release-${{ github.ref }}
+  group: community-test-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -38,11 +38,11 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-linux-test\.[0-9]+$ ]]; then
-            echo "::error::unexpected Linux test version: $VERSION"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-test\.[0-9]+$ ]]; then
+            echo "::error::unexpected Community test version: $VERSION"
             exit 1
           fi
-          BASE_VERSION="${VERSION%%-linux-test.*}"
+          BASE_VERSION="${VERSION%%-test.*}"
           WORKSPACE_VERSION="$(
             cargo metadata --locked --format-version 1 --no-deps |
               jq -r '.packages[] | select(.name == "solo-core") | .version'
@@ -105,17 +105,11 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: linux-test-release-ubuntu24.04-amd64
+          key: community-test-release-ubuntu24.04-amd64
 
-      - name: Verify Community boundary
-        run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
-
-      - name: Deny Rust warnings
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-      - name: Test Linux tray and autostart behavior
-        run: cargo test --locked -p solo-tray
-
+      # PR CI owns the full test/clippy gate. This release workflow proves the
+      # tagged source builds, packages, installs, and smokes on each supported
+      # OS without repeating the same validation pass.
       - name: Build Solo Community Desktop
         run: >-
           cargo build --locked --release --target x86_64-unknown-linux-gnu
@@ -189,9 +183,218 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  windows-package:
+    name: Windows x86-64 test package
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      release_notes: ${{ steps.validate.outputs.release_notes }}
+      installer_name: ${{ steps.package.outputs.installer_name }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      ARTIFACT_DIR: ${{ github.workspace }}\dist-windows
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate test tag and release notes
+        id: validate
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".Substring(1)
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-test\.[0-9]+$') {
+            throw "unexpected Community test version: $version"
+          }
+          $baseVersion = $version -replace '-test\.[0-9]+$', ''
+          $metadata = cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json
+          $workspaceVersion = ($metadata.packages | Where-Object { $_.name -eq 'solo-core' }).version
+          if ($baseVersion -ne $workspaceVersion) {
+            throw "tag base $baseVersion does not match workspace $workspaceVersion"
+          }
+          $notes = "docs/releases/${env:GITHUB_REF_NAME}.md"
+          if (!(Test-Path -LiteralPath $notes -PathType Leaf)) {
+            throw "release notes file is missing: $notes"
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BASE_VERSION=$baseVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_NOTES=$notes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release_notes=$notes" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Use exact Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Rebuild and verify embedded Community Web
+        shell: pwsh
+        working-directory: apps/web
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
+          npm run build:pilot
+          if ($LASTEXITCODE -ne 0) { throw "Web pilot build failed with exit code $LASTEXITCODE" }
+          npm run verify:embedded
+          if ($LASTEXITCODE -ne 0) { throw "Embedded Web verification failed with exit code $LASTEXITCODE" }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable, pinned 2026-08-09
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: community-test-release-windows-x86_64
+
+      # PR CI owns the full test/clippy gate. This release workflow proves the
+      # tagged source builds, packages, installs, and smokes on each supported
+      # OS without repeating the same validation pass.
+      - name: Build Solo Community Desktop
+        env:
+          SOLO_CI_BUILD_NUMBER: ${{ github.run_number }}
+        run: >-
+          cargo build --locked --release --target x86_64-pc-windows-msvc
+          -p solo-cli -p solo-tray
+
+      - name: Fetch pinned offline embedding model
+        shell: pwsh
+        run: >-
+          ./scripts/fetch_embedding_model.ps1
+          -Destination target/$env:TARGET/release/models/all-MiniLM-L6-v2
+
+      - name: Bundle MSVC runtime
+        shell: pwsh
+        run: ./scripts/bundle_msvc_runtime.ps1 -ReleaseDir "target/$env:TARGET/release"
+
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.1 --allow-downgrade --no-progress -y
+          if ($LASTEXITCODE -notin @(0, 1641, 3010)) { throw "Chocolatey exited with code $LASTEXITCODE" }
+          $isccCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($iscc)) { throw 'ISCC.exe not found' }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package Windows installer and portable ZIP
+        id: package
+        shell: pwsh
+        run: |
+          $releaseDir = (Resolve-Path "target/$env:TARGET/release").Path
+          New-Item -ItemType Directory -Force -Path $env:ARTIFACT_DIR | Out-Null
+          $zipName = "solo-cli-$env:VERSION-$env:TARGET.zip"
+          $cliZip = Join-Path $env:ARTIFACT_DIR $zipName
+          $files = @((Join-Path $releaseDir 'solo.exe'), (Join-Path $releaseDir 'solo-tray.exe'))
+          $files += @(Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.dll' | ForEach-Object FullName)
+          foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "CLI package input is missing: $file" }
+          }
+          $modelDir = Join-Path $releaseDir 'models'
+          if (!(Test-Path -LiteralPath $modelDir -PathType Container)) { throw "CLI model directory is missing: $modelDir" }
+          $files += $modelDir
+          Compress-Archive -LiteralPath $files -DestinationPath $cliZip -CompressionLevel Optimal
+          $extractDir = Join-Path $env:RUNNER_TEMP 'solo-cli-zip-smoke'
+          Expand-Archive -LiteralPath $cliZip -DestinationPath $extractDir
+          $zipVersion = (& (Join-Path $extractDir 'solo.exe') --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $zipVersion -notmatch "^solo $([regex]::Escape($env:BASE_VERSION))(?:\+[0-9A-Za-z.-]+)?$") {
+            throw "Packaged CLI has the wrong version: $zipVersion"
+          }
+          & $env:ISCC "/DAppVersion=$env:VERSION" "/DSourceDir=$releaseDir" "/DOutputDir=$env:ARTIFACT_DIR" 'installer/windows/SoloSetup.iss'
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $installerName = "SoloSetup-$env:VERSION-x86_64.exe"
+          $installer = Join-Path $env:ARTIFACT_DIR $installerName
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Expected installer not found: $installer" }
+          "INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CLI_ZIP=$cliZip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "installer_name=$installerName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Optionally sign installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
+            Write-Warning 'Signing certificate is not configured; test candidate remains unsigned.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'solo-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+          try {
+            $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+            & $signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $pfx /p $env:WINDOWS_SIGNING_CERT_PASSWORD $env:INSTALLER
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+          }
+          finally { Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue }
+
+      - name: Enforce installer signature policy
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath $env:INSTALLER
+          Write-Host "signature status: $($signature.Status)"
+          if ($signature.Status -eq 'Valid') {
+            Write-Host 'Installer Authenticode signature is valid.'
+          }
+          elseif ($signature.Status -eq 'NotSigned') {
+            Write-Warning 'Installer is unsigned; this is allowed only for Community test prereleases.'
+          }
+          else {
+            throw "Installer Authenticode status '$($signature.Status)' is not releasable."
+          }
+
+      - name: Silent install and packaged smoke
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath $env:INSTALLER -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Solo'
+          $smokeDataDir = Join-Path $env:RUNNER_TEMP "solo-installed-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows_installed_smoke.ps1 -InstallDir $installDir -DataDir $smokeDataDir
+          if ($LASTEXITCODE -ne 0) { throw "Installed smoke failed with exit code $LASTEXITCODE" }
+
+      - name: Save final checksums
+        shell: pwsh
+        run: |
+          $checksumPath = Join-Path $env:ARTIFACT_DIR 'SHA256SUMS-windows.txt'
+          $checksumLines = foreach ($file in Get-ChildItem -LiteralPath $env:ARTIFACT_DIR -File | Sort-Object Name) {
+            if ($file.FullName -eq $checksumPath) { continue }
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $checksumLines | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          foreach ($requiredName in @("${{ steps.package.outputs.installer_name }}", "${{ steps.package.outputs.zip_name }}")) {
+            if (!($checksumLines | Where-Object { $_ -like "*  $requiredName" })) { throw "SHA256SUMS omits $requiredName" }
+          }
+
+      - name: Retain Windows packages in the workflow run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: solo-${{ env.VERSION }}-windows-x86_64
+          path: ${{ github.workspace }}/dist-windows
+          if-no-files-found: error
+          retention-days: 30
+
   publish-prerelease:
     name: Publish GitHub prerelease
-    needs: ubuntu-package
+    needs:
+      - ubuntu-package
+      - windows-package
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -212,13 +415,23 @@ jobs:
           name: solo-${{ needs.ubuntu-package.outputs.version }}-ubuntu24.04-amd64
           path: dist
 
-      - name: Verify downloaded package
+      - name: Download certified Windows package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: solo-${{ needs.windows-package.outputs.version }}-windows-x86_64
+          path: dist
+
+      - name: Verify downloaded packages
         shell: bash
         run: |
           set -euo pipefail
           cd dist
           sha256sum --check \
             "solo-${VERSION}-ubuntu24.04-amd64.deb.sha256"
+          sha256sum --check SHA256SUMS-windows.txt
+          test -s "solo-${VERSION}-ubuntu24.04-amd64.deb"
+          test -s "${{ needs.windows-package.outputs.installer_name }}"
+          test -s "${{ needs.windows-package.outputs.zip_name }}"
 
       - name: Publish GitHub prerelease
         env:
@@ -227,6 +440,8 @@ jobs:
           set -euo pipefail
           TAG="$GITHUB_REF_NAME"
           UBUNTU_DEB="dist/solo-${VERSION}-ubuntu24.04-amd64.deb"
+          WINDOWS_INSTALLER="dist/${{ needs.windows-package.outputs.installer_name }}"
+          WINDOWS_ZIP="dist/${{ needs.windows-package.outputs.zip_name }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
             if [[ "$IS_PRERELEASE" != "true" ]]; then
@@ -237,12 +452,15 @@ jobs:
             gh release create "$TAG" \
               --verify-tag \
               --prerelease \
-              --title "Solo ${VERSION} - Ubuntu test" \
+              --title "Solo ${VERSION} - Community test" \
               --notes-file "$RELEASE_NOTES"
           fi
 
           bash scripts/upload_release_assets.sh \
             "$TAG" \
             "$UBUNTU_DEB" \
-            "$UBUNTU_DEB.sha256"
+            "$UBUNTU_DEB.sha256" \
+            "$WINDOWS_INSTALLER" \
+            "$WINDOWS_ZIP" \
+            dist/SHA256SUMS-windows.txt
           gh release view "$TAG" --json isPrerelease,assets,url

@@ -57,6 +57,10 @@ For Web development, run `npm ci` and `npm run dev` from `apps/web`. A
 release change to Web source must refresh the embedded artifact before merge;
 CI rebuilds both and rejects any digest or source-commit mismatch.
 
+Public Community releases must ship the supported OS set together: Windows
+installer, Windows portable ZIP, Ubuntu 24.04 `.deb`, and checksums. See
+[`docs/release-policy.md`](docs/release-policy.md).
+
 ## Install
 
 ### Windows installer (recommended for Windows)

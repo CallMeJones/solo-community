@@ -20,7 +20,7 @@
 #
 # Tag-push runtime overview:
 #   - publish job:        ~10 min tests + ~10 min cargo publish leaf-up.
-#                         Final step creates the GitHub Release with
+#                         Final step creates a draft GitHub Release with
 #                         notes from docs/releases/v<x.y.z>.md.
 #   - release-binaries:   ~5 min matrix (Linux + Windows in parallel),
 #                         uploads Linux .tgz archives, the Windows
@@ -30,9 +30,11 @@
 #                         ~1 min, builds the dependency-free TypeScript
 #                         and Python starter zips and uploads them to
 #                         the release.
-#   - workflow_dispatch:  release-binaries skipped (only runs on
-#                         tag-push); publish job's release-create step
-#                         is idempotent for partial-run resumes.
+#   - finalize-release:   verifies the supported OS artifact set, then
+#                         publishes the draft release.
+#   - workflow_dispatch:  release artifact jobs are skipped (only run on
+#                         tag-push); the draft-create step is idempotent for
+#                         partial-run resumes.
 #
 # What this workflow does NOT do:
 #   - Recover automatically from crates.io's new-crate rate limit
@@ -357,12 +359,10 @@ jobs:
 
           echo "All target crates published."
 
-      # Create the GitHub Release with notes from docs/releases/.
-      # Idempotent: if the release already exists (workflow_dispatch
-      # resume after a partial publish), the create step is skipped
-      # and the existing release is reused. release-binaries uploads
-      # to whichever of the two paths produced it.
-      - name: Create GitHub release
+      # Create a draft GitHub Release with notes from docs/releases/.
+      # Asset jobs upload into the draft. A later finalize job publishes it
+      # only after every supported OS artifact and SDK bundle job succeeds.
+      - name: Create draft GitHub release
         if: success() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -374,14 +374,18 @@ jobs:
             RELEASE_STATE="$(gh release view "$TAG" --json isDraft,isPrerelease)"
             IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
             IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
-            if [[ "$IS_DRAFT" != "false" || "$IS_PRERELEASE" != "false" ]]; then
-              echo "::error::refusing to reuse non-final release $TAG: $RELEASE_STATE"
+            if [[ "$IS_PRERELEASE" != "false" ]]; then
+              echo "::error::refusing to reuse prerelease $TAG: $RELEASE_STATE"
               exit 1
             fi
-            echo "final release $TAG already exists; skipping create"
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              echo "draft release $TAG already exists; asset jobs will reuse it"
+            else
+              echo "final release $TAG already exists; skipping create"
+            fi
           else
-            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
-            echo "::notice title=Released::Created GitHub release $TAG with notes from $NOTES."
+            gh release create "$TAG" --draft --title "$TAG" --notes-file "$NOTES"
+            echo "::notice title=Draft release::Created draft GitHub release $TAG with notes from $NOTES."
           fi
 
   # Build pre-built binaries and attach them to the release page so
@@ -398,9 +402,9 @@ jobs:
     permissions:
       contents: write
     strategy:
-      # Don't cancel the Linux build if Windows fails or vice versa —
-      # a single-platform binary release is still better than none, and
-      # surfaces both failures together for triage.
+      # A public Solo release must carry every supported OS variant. Keep
+      # matrix rows independent during build so triage sees each failure, but
+      # do not treat a partial asset set as a successful release.
       fail-fast: false
       matrix:
         include:
@@ -566,9 +570,9 @@ jobs:
           }
           "WINDOWS_INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # The publish job's "Create GitHub release" step ran before this
-      # job (needs: publish), so the release page exists. The shared uploader
-      # retains matching assets and fails closed instead of replacing them.
+      # The publish job's draft-release step ran before this job, so the
+      # release page exists but is not public yet. The shared uploader retains
+      # matching assets and fails closed instead of replacing them.
       - name: Upload to GitHub release
         shell: bash
         env:
@@ -709,9 +713,9 @@ jobs:
       - name: Build release SDK starter bundles
         run: python sdks/package_starters.py --out dist/sdk-starters --check
 
-      # The publish job creates the release first. Uploading from a separate
-      # job keeps the starter bundles out of the binary matrix; the shared
-      # uploader makes retries digest-aware and fail-closed.
+      # The publish job creates the draft release first. Uploading from a
+      # separate job keeps the starter bundles out of the binary matrix; the
+      # shared uploader makes retries digest-aware and fail-closed.
       - name: Upload SDK starter bundles to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -725,3 +729,44 @@ jobs:
           fi
           bash scripts/upload_release_assets.sh "$TAG" "${BUNDLES[@]}"
           printf 'verified SDK starter bundle: %s\n' "${BUNDLES[@]}"
+
+  finalize-release:
+    name: publish complete GitHub release
+    needs:
+      - publish
+      - release-binaries
+      - release-ubuntu-deb
+      - release-sdk-starters
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify complete OS artifact set and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          REQUIRED_ASSETS=(
+            "solo-cli-${VERSION}-x86_64-unknown-linux-gnu.tgz"
+            "solo-cli-${VERSION}-aarch64-unknown-linux-gnu.tgz"
+            "solo-cli-${VERSION}-x86_64-pc-windows-msvc.zip"
+            "SoloSetup-${VERSION}-x86_64.exe"
+            "solo-${VERSION}-ubuntu24.04-amd64.deb"
+          )
+          ASSETS="$(gh release view "$TAG" --json assets)"
+          for asset in "${REQUIRED_ASSETS[@]}"; do
+            if ! jq -e --arg name "$asset" \
+              '.assets | map(select(.name == $name)) | length == 1' \
+              <<<"$ASSETS" >/dev/null; then
+              echo "::error::release $TAG is missing required asset: $asset"
+              gh release view "$TAG" --json isDraft,isPrerelease,assets,url
+              exit 1
+            fi
+          done
+          gh release edit "$TAG" --draft=false --prerelease=false
+          gh release view "$TAG" --json isDraft,isPrerelease,assets,url
