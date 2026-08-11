@@ -957,16 +957,19 @@ fn apply_readiness_states(
         || coverage.entities > 0
         || coverage.relationships > 0
         || coverage.contradictions > 0;
-    for (section, count, empty_reason) in [
+    let facts_were_queried = bundle.subject.is_some();
+    for (section, count, queried, empty_reason) in [
         (
             &mut bundle.sections.entities,
             bundle.entities.len(),
+            true,
             "Extraction completed, but no matching entity was found.",
         ),
         (
             &mut bundle.sections.facts,
             bundle.facts.len(),
-            if bundle.subject.is_some() {
+            facts_were_queried,
+            if facts_were_queried {
                 "Extraction completed, but no facts were found for this subject."
             } else {
                 "No subject was supplied, so subject facts were not queried."
@@ -975,11 +978,13 @@ fn apply_readiness_states(
         (
             &mut bundle.sections.contradictions,
             bundle.contradictions.len(),
+            true,
             "Extraction completed and no contradictions were detected.",
         ),
         (
             &mut bundle.sections.graph,
             graph_result_count(&bundle.graph),
+            true,
             "Extraction completed, but no connected graph knowledge was found.",
         ),
     ] {
@@ -987,7 +992,9 @@ fn apply_readiness_states(
             continue;
         }
         let warning = section.warning.take();
-        let mut next = if !runtime_has_llm && (knowledge_was_extracted || count > 0) {
+        let mut next = if !queried {
+            section_state("empty", 0, empty_reason)
+        } else if !runtime_has_llm && (knowledge_was_extracted || count > 0) {
             let mut available = section_ready_or_empty(count, empty_reason);
             available.explanation.push_str(
                 " Existing derived data remains queryable, but new knowledge extraction is off until a Steward model is active.",
@@ -1186,9 +1193,37 @@ mod tests {
                     .sections
                     .facts
                     .explanation
-                    .contains("remains queryable")
+                    .contains("No subject was supplied")
             );
             assert_eq!(previously_extracted.sections.contradictions.status, "empty");
+            assert!(
+                previously_extracted
+                    .sections
+                    .contradictions
+                    .explanation
+                    .contains("remains queryable")
+            );
+
+            let mut pending_without_subject = result.clone();
+            apply_readiness_states(
+                &mut pending_without_subject,
+                solo_storage::DerivedCoverageSnapshot {
+                    active_episodes: 3,
+                    clusters: 1,
+                    clustered_episodes: 3,
+                    pending_clusters: 1,
+                    ..Default::default()
+                },
+                true,
+            );
+            assert_eq!(pending_without_subject.sections.facts.status, "empty");
+            assert!(
+                pending_without_subject
+                    .sections
+                    .facts
+                    .explanation
+                    .contains("No subject was supplied")
+            );
         });
         shutdown(&runtime, pool, handle, tmp, join);
     }

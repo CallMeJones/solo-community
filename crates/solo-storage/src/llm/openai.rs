@@ -72,6 +72,7 @@ use serde::{Deserialize, Serialize};
 use solo_core::{Error, LlmClient, Message, Result, Role};
 use zeroize::Zeroizing;
 
+use super::redact_secret;
 use super::retry::{
     RetryConfig, exp_backoff_with_jitter, is_retryable_reqwest_err, is_retryable_status,
     parse_retry_after,
@@ -111,6 +112,7 @@ impl OpenAIClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::llm(format!("build reqwest client: {e}")))?;
         Ok(Self {
@@ -164,6 +166,7 @@ impl OpenAIClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self> {
         self.http = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::llm(format!("rebuild reqwest client: {e}")))?;
         Ok(self)
@@ -339,10 +342,11 @@ impl LlmClient for OpenAIClient {
                         attempt += 1;
                         continue;
                     }
+                    let safe_body = redact_secret(&body_text, self.api_key.as_str());
                     return Err(Error::llm(format!(
                         "openai HTTP {}: {}",
                         status,
-                        truncate(&body_text, 500)
+                        truncate(&safe_body, 500)
                     )));
                 }
                 Err(e) => {

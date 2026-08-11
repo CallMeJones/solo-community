@@ -648,7 +648,7 @@ describe('api client', () => {
         hosted_processing_consent: true,
       },
       restart_required: true,
-      environment_commands: ['setx OLLAMA_API_KEY <your-ollama-api-key>'],
+      environment_commands: ['setx OLLAMA_API_KEY "YOUR_OLLAMA_API_KEY"'],
       next_steps: ['Restart Solo from Solo Controls.'],
       note: 'Config saved.',
     };

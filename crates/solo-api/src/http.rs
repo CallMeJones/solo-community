@@ -164,6 +164,7 @@ impl RuntimeControl {
 #[derive(Debug, Clone, Default)]
 pub struct StewardRuntimeStatus {
     inner: Arc<RwLock<StewardRuntimeSnapshot>>,
+    derived_job: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -219,6 +220,21 @@ impl StewardRuntimeStatus {
         self.inner.read().await.clone()
     }
 
+    /// Acquire the process-wide derived-work lease without waiting. Scheduled
+    /// consolidation, scheduled extraction, manual extraction, repair, and
+    /// backfill all use this same lease so they cannot duplicate LLM work or
+    /// race their progress state.
+    pub fn try_begin_derived_job(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.derived_job).try_lock_owned().ok()
+    }
+
+    /// Wait for the derived-work lease. Startup uses this form before any
+    /// timers or HTTP jobs can exist; interactive and scheduled paths use the
+    /// non-blocking form so they can report or skip contention immediately.
+    pub async fn begin_derived_job(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.derived_job).lock_owned().await
+    }
+
     pub async fn set_next_triples_run_at_ms(&self, next: Option<i64>) {
         self.inner.write().await.next_triples_run_at_ms = next;
     }
@@ -260,18 +276,8 @@ impl StewardRuntimeStatus {
         guard.last_triples_timed_out = timed_out;
     }
 
-    pub async fn start_backfill(
-        &self,
-        initial_pending_clusters: usize,
-    ) -> Result<StewardBackfillStatus, String> {
+    pub async fn start_backfill(&self, initial_pending_clusters: usize) -> StewardBackfillStatus {
         let mut guard = self.inner.write().await;
-        if guard
-            .backfill
-            .as_ref()
-            .is_some_and(|current| current.status == "running")
-        {
-            return Err("A derived-memory backfill is already running.".to_string());
-        }
         let now = now_unix_ms();
         let status = StewardBackfillStatus {
             id: solo_core::MemoryId::new().to_string(),
@@ -289,7 +295,7 @@ impl StewardRuntimeStatus {
             note: "Clustering existing memories.".to_string(),
         };
         guard.backfill = Some(status.clone());
-        Ok(status)
+        status
     }
 
     pub async fn update_backfill(&self, status: StewardBackfillStatus) {
@@ -730,32 +736,29 @@ fn build_cors_layer() -> CorsLayer {
         ])
 }
 
-/// True if `origin` is `http(s)://localhost[:port]` or
-/// `http(s)://127.0.0.1[:port]` or `http(s)://[::1][:port]` (loopback IPv6).
+/// True if `origin` is an HTTP(S) origin whose host is `localhost` or a
+/// literal loopback IP (IPv4 127/8 or IPv6 `::1`).
 /// Anything else (incl. nip.io tricks like `127.0.0.1.nip.io`) is rejected.
 fn is_localhost_origin(origin: &str) -> bool {
-    let rest = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"));
-    let host = match rest {
-        Some(r) => r,
-        None => return false,
+    let Ok(parsed) = reqwest::Url::parse(origin) else {
+        return false;
     };
-    // Strip path (shouldn't appear on Origin headers but defend anyway).
-    let host = host.split('/').next().unwrap_or(host);
-    // Strip port.
-    let host = if let Some(idx) = host.rfind(':') {
-        // For [::1]:port, keep the brackets in the host part.
-        if host.starts_with('[') {
-            // Find matching ']'; everything up to and including it is the host.
-            host.find(']').map(|i| &host[..=i]).unwrap_or(host)
-        } else {
-            &host[..idx]
-        }
-    } else {
-        host
-    };
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    parsed.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    })
 }
 
 /// Bind + serve (v0.7.x legacy shape). `shutdown` is awaited inside
@@ -6043,6 +6046,10 @@ async fn consolidate_handler(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?
     };
+    let _derived_job = state
+        .steward_runtime
+        .try_begin_derived_job()
+        .ok_or_else(|| ApiError::conflict("Another derived-memory job is already running."))?;
     let report = tenant.write().consolidate_as(principal, scope).await;
     let report = match report {
         Ok(report) => {
@@ -6061,6 +6068,7 @@ async fn consolidate_handler(
 }
 
 async fn derived_repair_handler(
+    State(state): State<SoloHttpState>,
     TenantExtractor(tenant): TenantExtractor,
     AuditPrincipal(principal): AuditPrincipal,
     body: axum::body::Bytes,
@@ -6071,6 +6079,10 @@ async fn derived_repair_handler(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?
     };
+    let _derived_job = state
+        .steward_runtime
+        .try_begin_derived_job()
+        .ok_or_else(|| ApiError::conflict("Another derived-memory job is already running."))?;
     let report = tenant
         .write()
         .repair_derived_as(principal, scope)
@@ -6100,6 +6112,11 @@ async fn triples_extract_handler(
     let cluster_timeout_secs = req
         .cluster_timeout_secs
         .unwrap_or(tenant.config().triples.cluster_timeout_secs);
+
+    let _derived_job = state
+        .steward_runtime
+        .try_begin_derived_job()
+        .ok_or_else(|| ApiError::conflict("Another derived-memory job is already running."))?;
 
     {
         let steward = tenant.steward_slot().read().await;
@@ -10242,6 +10259,10 @@ async fn steward_backfill_start_handler(
             "max_batches must be between 1 and 100",
         ));
     }
+    let derived_job = state
+        .steward_runtime
+        .try_begin_derived_job()
+        .ok_or_else(|| ApiError::conflict("Another derived-memory job is already running."))?;
     {
         let steward = tenant.steward_slot().read().await;
         if !steward.as_ref().is_some_and(|steward| steward.has_llm()) {
@@ -10256,23 +10277,41 @@ async fn steward_backfill_start_handler(
     let backfill = state
         .steward_runtime
         .start_backfill(coverage.pending_clusters)
-        .await
-        .map_err(ApiError::conflict)?;
+        .await;
 
     let runtime = state.steward_runtime.clone();
     let cluster_timeout_secs = tenant.config().triples.cluster_timeout_secs;
     let accepted_backfill = backfill.clone();
+    let mut panic_status = accepted_backfill.clone();
     tokio::spawn(async move {
-        run_steward_backfill(
-            tenant,
-            runtime,
-            principal,
-            backfill,
-            limit,
-            max_batches,
-            cluster_timeout_secs,
-        )
-        .await;
+        // Hold the shared lease in this monitor task so it survives caller
+        // disconnects and is released even when the worker panics.
+        let _derived_job = derived_job;
+        let worker_runtime = runtime.clone();
+        let worker = tokio::spawn(async move {
+            run_steward_backfill(
+                tenant,
+                worker_runtime,
+                principal,
+                backfill,
+                limit,
+                max_batches,
+                cluster_timeout_secs,
+            )
+            .await;
+        });
+        if let Err(error) = worker.await {
+            panic_status.status = "failed".to_string();
+            panic_status.phase = "failed".to_string();
+            panic_status.updated_at_ms = now_unix_ms();
+            panic_status.error = Some(compact_status_detail(&format!(
+                "Backfill worker terminated unexpectedly: {error}"
+            )));
+            panic_status.note =
+                "Backfill stopped unexpectedly. Existing derived memory was preserved; retry after checking Solo logs."
+                    .to_string();
+            runtime.update_backfill(panic_status).await;
+        }
     });
 
     Ok((
@@ -10915,7 +10954,7 @@ async fn switch_llm_handler(
         restart_required: true,
         environment_commands: llm_environment_commands(&next),
         next_steps: llm_next_steps(&next),
-        note: "Steward LLM config is saved in solo.config.toml. Restart Solo from Solo Controls for the running daemon to load it; API keys stay in environment variables and are not stored in the config file.".to_string(),
+        note: "Steward LLM config is saved in solo.config.toml. Follow the restart steps below so the running daemon can load it; API keys stay in environment variables and are not stored in the config file.".to_string(),
     }))
 }
 
@@ -11819,14 +11858,25 @@ fn llm_environment_commands(llm: &LlmSettings) -> Vec<String> {
 }
 
 fn secret_environment_command(name: &str, placeholder: &str) -> String {
+    let placeholder = placeholder.to_ascii_uppercase().replace('-', "_");
     if cfg!(windows) {
-        format!("setx {name} <{placeholder}>")
+        format!("setx {name} \"{placeholder}\"")
     } else {
-        format!("export {name}='<{placeholder}>'")
+        format!("export {name}='{placeholder}'")
     }
 }
 
 fn llm_next_steps(llm: &LlmSettings) -> Vec<String> {
+    let needs_fresh_process_environment = matches!(
+        llm,
+        LlmSettings::Anthropic { .. } | LlmSettings::Openai { .. }
+    ) || matches!(
+        llm,
+        LlmSettings::Ollama {
+            api_key_env: Some(_),
+            ..
+        }
+    );
     let mut steps = match llm {
         LlmSettings::Anthropic { api_key_env, .. } => vec![format!(
             "Make sure {api_key_env} is set in the environment that launches Solo."
@@ -11857,9 +11907,19 @@ fn llm_next_steps(llm: &LlmSettings) -> Vec<String> {
         ],
         LlmSettings::McpSampling => Vec::new(),
     };
-    steps.push(
-        "Restart Solo from Solo Controls so the daemon loads the new LLM config.".to_string(),
-    );
+    if needs_fresh_process_environment {
+        steps.push(if cfg!(windows) {
+            "After setting the variable, fully quit and reopen Solo Controls so both the supervisor and daemon inherit the new Windows environment. A daemon-only restart is not sufficient."
+                .to_string()
+        } else {
+            "After exporting the variable, fully quit Solo Controls and launch it from that shell (or configure the variable in its desktop/service environment). A daemon-only restart is not sufficient."
+                .to_string()
+        });
+    } else {
+        steps.push(
+            "Restart Solo from Solo Controls so the daemon loads the new LLM config.".to_string(),
+        );
+    }
     steps.push(
         "Run consolidation or wait for the configured triples/consolidation cadence.".to_string(),
     );
@@ -11948,8 +12008,16 @@ fn normalize_llm_model(model: Option<String>, default: &str) -> Result<String, A
             "model must be at most 128 characters",
         ));
     }
-    if model.chars().any(char::is_whitespace) {
-        return Err(ApiError::bad_request("model must not contain whitespace"));
+    // The setup response includes a copyable `ollama pull <model>` command.
+    // Restrict identifiers to the provider-safe subset instead of returning
+    // shell metacharacters supplied by a settings caller.
+    if !model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.' | '/'))
+    {
+        return Err(ApiError::bad_request(
+            "model may contain only ASCII letters, numbers, colon, dash, underscore, dot, or slash",
+        ));
     }
     Ok(model)
 }
@@ -22844,6 +22912,17 @@ mod handler_tests {
     }
 
     #[test]
+    fn derived_job_lease_excludes_overlapping_work_and_recovers_after_drop() {
+        let runtime = StewardRuntimeStatus::new();
+        let first = runtime
+            .try_begin_derived_job()
+            .expect("first derived job should acquire the lease");
+        assert!(runtime.try_begin_derived_job().is_none());
+        drop(first);
+        assert!(runtime.try_begin_derived_job().is_some());
+    }
+
+    #[test]
     fn status_respects_auth_when_enabled() {
         let runtime = rt();
         let h = Harness::new_with_auth(&runtime, Some("status-secret".into()));
@@ -23198,11 +23277,39 @@ mod handler_tests {
             safe_display_base_url("https://user:secret@example.test/path?token=hidden#fragment"),
             "https://example.test/path"
         );
+        assert_eq!(
+            normalize_llm_model(Some("qwen3:8b-cloud".to_string()), "fallback").unwrap(),
+            "qwen3:8b-cloud"
+        );
+        assert!(normalize_llm_model(Some("qwen3:8b; whoami".to_string()), "fallback").is_err());
+        assert!(normalize_llm_model(Some("$(whoami)".to_string()), "fallback").is_err());
+        let local_steps = llm_next_steps(&LlmSettings::Ollama {
+            endpoint: solo_storage::OllamaEndpointKind::Local,
+            base_url: "http://localhost:11434".into(),
+            model: "qwen3:8b".into(),
+            api_key_env: None,
+            hosted_processing_consent: false,
+        });
+        assert!(
+            local_steps
+                .iter()
+                .any(|step| step.contains("Restart Solo from Solo Controls"))
+        );
+        let hosted_steps = llm_next_steps(&LlmSettings::Openai {
+            api_key_env: "OPENAI_API_KEY".into(),
+            model: "gpt-5.6-terra".into(),
+            hosted_processing_consent: true,
+        });
+        assert!(
+            hosted_steps
+                .iter()
+                .any(|step| step.contains("daemon-only restart is not sufficient"))
+        );
         let command = secret_environment_command("OLLAMA_API_KEY", "key");
         if cfg!(windows) {
-            assert_eq!(command, "setx OLLAMA_API_KEY <key>");
+            assert_eq!(command, "setx OLLAMA_API_KEY \"KEY\"");
         } else {
-            assert_eq!(command, "export OLLAMA_API_KEY='<key>'");
+            assert_eq!(command, "export OLLAMA_API_KEY='KEY'");
         }
     }
 
@@ -25612,6 +25719,7 @@ mod cors_tests {
         assert!(is_localhost_origin("https://localhost:8443"));
         assert!(is_localhost_origin("http://127.0.0.1"));
         assert!(is_localhost_origin("http://127.0.0.1:5173"));
+        assert!(is_localhost_origin("http://127.20.30.40:5173"));
         assert!(is_localhost_origin("http://[::1]"));
         assert!(is_localhost_origin("http://[::1]:8080"));
     }
@@ -25632,6 +25740,8 @@ mod cors_tests {
         assert!(!is_localhost_origin("http://127.0.0.1.nip.io"));
         assert!(!is_localhost_origin("http://localhost.evil.com"));
         assert!(!is_localhost_origin("http://evil.localhost"));
+        assert!(!is_localhost_origin("http://127.0.0.1:80@evil.com"));
+        assert!(!is_localhost_origin("http://localhost/path"));
     }
 
     #[test]

@@ -400,6 +400,13 @@ describe('App desktop shell', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/v1/settings/llm')) {
+        const request = JSON.parse(String(_init?.body ?? '{}')) as {
+          mode?: string;
+          model?: string;
+          base_url?: string;
+          api_key_env?: string;
+          endpoint?: string;
+        };
         return jsonResponse({
           changed: true,
           config_path: 'C:\\SoloData\\solo.config.toml',
@@ -411,11 +418,12 @@ describe('App desktop shell', () => {
             api_key_env: null,
           },
           next: {
-            mode: 'ollama',
-            provider: 'ollama',
-            model: 'qwen2.5-coder:7b',
-            base_url: 'http://localhost:11434',
-            api_key_env: null,
+            mode: request.mode ?? 'ollama',
+            provider: request.mode === 'none' ? null : (request.mode ?? 'ollama'),
+            model: request.model ?? null,
+            base_url: request.base_url ?? null,
+            api_key_env: request.api_key_env ?? null,
+            endpoint: request.endpoint ?? null,
           },
           restart_required: true,
           environment_commands: ['ollama pull qwen2.5-coder:7b'],
@@ -583,6 +591,16 @@ describe('App desktop shell', () => {
     expect(
       within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
     ).toBeEnabled();
+    fireEvent.click(
+      within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
+    );
+    expect(
+      await within(stewardPanel as HTMLElement).findByText(/daemon-only restart cannot inherit/),
+    ).toBeInTheDocument();
+    expect(
+      within(stewardPanel as HTMLElement).queryByRole('button', { name: 'Restart Solo now' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Ollama' }));
     fireEvent.click(
       within(stewardPanel as HTMLElement).getByRole('button', { name: 'Local model' }),
     );

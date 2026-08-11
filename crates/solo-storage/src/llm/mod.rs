@@ -72,6 +72,14 @@ async fn bounded_response_bytes(
     Ok(body)
 }
 
+fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() || !text.contains(secret) {
+        text.to_string()
+    } else {
+        text.replace(secret, "[REDACTED]")
+    }
+}
+
 /// Build an [`LlmClient`] from environment variables, applying the
 /// precedence documented at the module level: **Anthropic first**,
 /// then **OpenAI**, then `None`.

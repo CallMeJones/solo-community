@@ -1106,8 +1106,9 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
   });
 
   const runtimeMatches = stewardRuntimeMatchesConfig(solo.data, llmSwitch.data?.next);
+  const needsFreshSupervisorEnvironment = Boolean(llmSwitch.data?.next.api_key_env);
   const canRestartAfterSwitch = Boolean(
-    llmSwitch.data?.restart_required && runtimeMatches !== true,
+    llmSwitch.data?.restart_required && runtimeMatches !== true && !needsFreshSupervisorEnvironment,
   );
 
   useEffect(() => {
@@ -1325,6 +1326,12 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       {runtimeRestart.isError && (
         <p className="mt-4 rounded-md border border-red-800/70 bg-red-950/30 px-3 py-2 text-xs text-red-200">
           {errorMessage(runtimeRestart.error)}
+        </p>
+      )}
+
+      {llmSwitch.data?.restart_required && needsFreshSupervisorEnvironment && runtimeMatches !== true && (
+        <p className="mt-4 rounded-md border border-amber-800/70 bg-amber-950/25 px-3 py-2 text-xs text-amber-100">
+          Set the named environment variable, then fully quit and reopen Solo Controls. A daemon-only restart cannot inherit a newly added API key.
         </p>
       )}
 

@@ -342,7 +342,11 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let tenant = default_handle.clone();
         let min_episode_count = startup_derived_catchup_min_episodes;
         let cluster_timeout_secs = config.triples.cluster_timeout_secs;
+        // Reserve derived work before publishing the HTTP listener so an
+        // immediate user backfill cannot overlap startup catch-up.
+        let derived_job = steward_runtime.begin_derived_job().await;
         Some(tokio::spawn(async move {
+            let _derived_job = derived_job;
             if let Err(error) =
                 run_startup_derived_graph_catchup(tenant, min_episode_count, cluster_timeout_secs)
                     .await
@@ -1023,6 +1027,13 @@ async fn triples_batch_timer(
         // remembered during the batch run accumulate toward the NEXT
         // batch — correct, because they aren't covered by the
         // currently-running tick's cluster snapshot.
+        let Some(_derived_job) = steward_runtime.try_begin_derived_job() else {
+            tracing::debug!(
+                trigger,
+                "scheduled triples-batch tick skipped because another derived-memory job is running"
+            );
+            continue;
+        };
         signal.reset();
 
         let result = solo_storage::triples_batch::run_triples_batch_tick(
@@ -1114,6 +1125,12 @@ async fn consolidate_timer(
         let scope = ConsolidationScope {
             window_days,
             force_merge,
+        };
+        let Some(_derived_job) = steward_runtime.try_begin_derived_job() else {
+            tracing::debug!(
+                "scheduled consolidation skipped because another derived-memory job is running"
+            );
+            continue;
         };
         match handle.consolidate(scope).await {
             Ok(report) => {

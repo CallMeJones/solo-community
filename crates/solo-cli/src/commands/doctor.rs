@@ -177,6 +177,8 @@ async fn report_live_daemon_stats(data_dir: &Path, daemon_url: &str) -> Result<(
     let url = base.join("v1/status").context("build live status URL")?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
+        // Never forward the daemon bearer token through an HTTP redirect.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build doctor live-daemon client")?;
     let mut request = client.get(url.clone());

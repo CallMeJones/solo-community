@@ -59,8 +59,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use solo_core::{Error, LlmClient, Message, Result, Role};
+use zeroize::Zeroizing;
 
-use super::{bounded_response_bytes, openai::OpenAIClient};
+use super::{bounded_response_bytes, openai::OpenAIClient, redact_secret};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_KEEP_ALIVE: &str = "30s";
@@ -78,7 +79,7 @@ pub struct OllamaChatClient {
     model: String,
     keep_alive: String,
     display_name: String,
-    bearer_token: Option<String>,
+    bearer_token: Option<Zeroizing<String>>,
     structured_outputs: bool,
     allow_format_fallback: bool,
 }
@@ -105,6 +106,10 @@ impl OllamaChatClient {
         }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            // Provider API endpoints are final destinations. Refusing redirects
+            // prevents a custom/cloud endpoint from forwarding Solo's bearer
+            // token or memory payload to a different location.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::llm(format!("build Ollama reqwest client: {e}")))?;
         Ok(Self {
@@ -125,7 +130,7 @@ impl OllamaChatClient {
     }
 
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.bearer_token = Some(token.into());
+        self.bearer_token = Some(Zeroizing::new(token.into()));
         self
     }
 
@@ -216,6 +221,10 @@ impl OllamaChatClient {
 
         if !status.is_success() {
             let body = String::from_utf8_lossy(&body);
+            let body = self
+                .bearer_token
+                .as_deref()
+                .map_or_else(|| body.to_string(), |token| redact_secret(&body, token));
             return Err(Error::llm(format!(
                 "ollama chat HTTP {}: {}",
                 status,
@@ -618,5 +627,64 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("response exceeded"));
+    }
+
+    #[tokio::test]
+    async fn chat_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/redirect-target", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirect-target"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {"content": "{\"unexpected\":true}"}
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = OllamaChatClient::new(server.uri(), "cloud-model")
+            .unwrap()
+            .with_bearer_token("must-not-be-forwarded")
+            .with_structured_outputs(false)
+            .with_format_fallback(false);
+        let error = client
+            .complete(&[Message::user("extract")])
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("HTTP 307"));
+    }
+
+    #[tokio::test]
+    async fn cloud_error_does_not_echo_the_bearer_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("rejected cloud-secret"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OllamaChatClient::new(server.uri(), "cloud-model")
+            .unwrap()
+            .with_bearer_token("cloud-secret")
+            .with_structured_outputs(false)
+            .with_format_fallback(false);
+        let error = client
+            .complete(&[Message::user("extract")])
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("[REDACTED]"));
+        assert!(!error.contains("cloud-secret"));
     }
 }
