@@ -623,6 +623,50 @@ describe('InboxView', () => {
     ]);
   });
 
+  it('refreshes the inbox after a partially successful bulk review', async () => {
+    const items = [
+      inboxItem({ memory_id: 'committed', label: 'Committed memory', review_state: null }),
+      inboxItem({ memory_id: 'failed', label: 'Failed memory', review_state: null }),
+    ];
+    let inboxFetches = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/v1/inbox/committed/review') && init?.method === 'POST') {
+        items[0].review_state = 'approved';
+        return jsonResponse({
+          memory_id: 'committed',
+          state: 'approved',
+          reviewed_at_ms: 1718000001000,
+        });
+      }
+      if (url.includes('/v1/inbox/failed/review') && init?.method === 'POST') {
+        return errorResponse({ error: 'second review failed' }, 503, 'Service Unavailable');
+      }
+      if (url.includes('/v1/inbox')) {
+        inboxFetches += 1;
+        return jsonResponse({ items });
+      }
+      if (url.includes('/memory/contradictions')) return jsonResponse([]);
+      throw new Error(`unexpected fetch: ${url} ${init?.method ?? 'GET'}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const Wrapper = makeWrapper();
+    render(
+      <Wrapper>
+        <InboxView />
+      </Wrapper>,
+    );
+
+    await screen.findByText('Committed memory');
+    fireEvent.click(screen.getByRole('button', { name: /^approve visible$/i }));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('second review failed'));
+    await waitFor(() => expect(inboxFetches).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText('Committed memory').closest('li')).toHaveTextContent(/approved/i);
+    expect(screen.getByText('Failed memory').closest('li')).toHaveTextContent(/needs review/i);
+  });
+
   it('resolves a contradiction from the inbox', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

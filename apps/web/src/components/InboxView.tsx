@@ -229,10 +229,13 @@ export function InboxView({ onSelectEpisode }: InboxViewProps) {
           note: bulkReviewNoteFor(state),
         });
       }
-      await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] });
     } catch (err) {
       setEpisodeActionError(err instanceof Error ? err.message : String(err));
     } finally {
+      // Bulk review is intentionally sequential and can partially succeed.
+      // Always reconcile the inbox so an earlier committed row is not shown
+      // with stale review state after a later row fails.
+      await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] }).catch(() => undefined);
       setBulkReviewingState(null);
     }
   };
