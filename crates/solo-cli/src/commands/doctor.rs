@@ -217,7 +217,7 @@ async fn report_live_daemon_stats(data_dir: &Path, daemon_url: &str) -> Result<(
     let status: serde_json::Value =
         serde_json::from_slice(&bytes).context("decode live Solo daemon status")?;
     let coverage = &status["steward"]["coverage"];
-    println!("live daemon     : {} (database lock is healthy)", url);
+    println!("live daemon     : {url} (database lock is healthy)");
     println!(
         "library         : {}",
         status["library"]["name"]

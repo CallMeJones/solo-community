@@ -5787,7 +5787,6 @@ mod dispatch_tests {
             runtime.block_on(async move {
                 drop(extra);
                 drop(self.server);
-                drop(self._tmp);
                 if let Some(join) = join {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
@@ -5801,6 +5800,10 @@ mod dispatch_tests {
                     .expect("writer thread did not exit within 5s")
                     .expect("writer thread panicked");
                 }
+                // Keep the temporary directory alive until SQLite and the
+                // writer actor have released their files. Removing an open
+                // database directory can block or fail on Windows.
+                drop(self._tmp);
             });
         }
     }
