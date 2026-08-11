@@ -8971,14 +8971,32 @@ async fn inspect_entity_node(
                     (SELECT COUNT(*)
                        FROM relationship_edges re
                       WHERE re.status = 'active'
-                        AND (re.subject_entity_id = ?1 OR
-                             (re.object_kind = 'entity' AND re.object_entity_id = ?1)))
+                        AND re.subject_entity_id = ?1)
+                    +
+                    (SELECT COUNT(*)
+                       FROM relationship_edges re
+                      WHERE re.status = 'active'
+                        AND re.object_kind = 'entity'
+                        AND re.object_entity_id = ?1)
                     +
                     (SELECT COUNT(*)
                        FROM triples t
                       WHERE t.status = 'active'
-                        AND (t.subject_id = ?1 OR
-                             (t.object_kind = 'entity' AND t.object_id = ?1))
+                        AND t.subject_id = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_evidence ev
+                             WHERE ev.triple_id = t.triple_id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_edges re
+                             WHERE re.edge_id = t.triple_id
+                        ))
+                    +
+                    (SELECT COUNT(*)
+                       FROM triples t
+                      WHERE t.status = 'active'
+                        AND t.object_kind = 'entity'
+                        AND t.object_id = ?1
                         AND NOT EXISTS (
                             SELECT 1 FROM relationship_evidence ev
                              WHERE ev.triple_id = t.triple_id
@@ -20354,6 +20372,55 @@ mod handler_tests {
                 .map(|facts| facts.is_empty())
                 .unwrap_or(true)
         );
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn inspect_entity_self_reference_count_matches_graph_catalog() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        {
+            let conn = h.open_db();
+            let rowid = seed_episode(
+                &conn,
+                "e5550000-0000-7000-8000-000000000002",
+                100,
+                "Alice reflects on herself",
+            );
+            seed_triple_row(
+                &conn,
+                "t-ent-self",
+                "Alice",
+                "reflects_on",
+                "Alice",
+                Some(rowid),
+            );
+        }
+
+        let (nodes_status, nodes_body) = runtime.block_on(call(
+            h.router.clone(),
+            "GET",
+            "/v1/graph/nodes?kind=entity",
+            None,
+        ));
+        assert_eq!(nodes_status, StatusCode::OK, "body: {nodes_body}");
+        let catalog_count = nodes_body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "ent:Alice")
+            .and_then(|node| node["ref_count"].as_i64())
+            .unwrap_or_else(|| panic!("Alice entity missing: {nodes_body}"));
+
+        let (inspect_status, inspect_body) = runtime.block_on(call(
+            h.router.clone(),
+            "GET",
+            &inspect_uri("ent:Alice"),
+            None,
+        ));
+        assert_eq!(inspect_status, StatusCode::OK, "body: {inspect_body}");
+        assert_eq!(catalog_count, 2, "body: {nodes_body}");
+        assert_eq!(inspect_body["node"]["ref_count"], catalog_count);
         h.shutdown(&runtime);
     }
 
