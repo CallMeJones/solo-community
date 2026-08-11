@@ -215,7 +215,7 @@ pub fn sampling_capability_missing_error_message() -> String {
         "  [llm]",
         "  mode = \"openai\"",
         "  api_key_env = \"OPENAI_API_KEY\"",
-        "  model = \"gpt-5o\"",
+        "  model = \"gpt-5.6-terra\"",
         "",
         "  # Ollama (local daemon):",
         "  [llm]",
@@ -5787,7 +5787,6 @@ mod dispatch_tests {
             runtime.block_on(async move {
                 drop(extra);
                 drop(self.server);
-                drop(self._tmp);
                 if let Some(join) = join {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
@@ -5801,6 +5800,10 @@ mod dispatch_tests {
                     .expect("writer thread did not exit within 5s")
                     .expect("writer thread panicked");
                 }
+                // Keep the temporary directory alive until SQLite and the
+                // writer actor have released their files. Removing an open
+                // database directory can block or fail on Windows.
+                drop(self._tmp);
             });
         }
     }
@@ -9281,6 +9284,7 @@ mod initialize_decision_tests {
         let s = Some(LlmSettings::Anthropic {
             api_key_env: "ANTHROPIC_API_KEY".into(),
             model: "claude-sonnet-4-6".into(),
+            hosted_processing_consent: true,
         });
         assert_eq!(initialize_decision(&s, false), InitializeDecision::Allow);
         assert_eq!(initialize_decision(&s, true), InitializeDecision::Allow);
@@ -9290,8 +9294,11 @@ mod initialize_decision_tests {
     #[test]
     fn llm_ollama_allows_initialize_regardless_of_sampling_capability() {
         let s = Some(LlmSettings::Ollama {
+            endpoint: solo_storage::OllamaEndpointKind::Local,
             base_url: "http://localhost:11434".into(),
-            model: "qwen3-coder:30b".into(),
+            model: "qwen3:8b".into(),
+            api_key_env: None,
+            hosted_processing_consent: false,
         });
         assert_eq!(initialize_decision(&s, false), InitializeDecision::Allow);
         assert_eq!(initialize_decision(&s, true), InitializeDecision::Allow);

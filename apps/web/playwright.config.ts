@@ -8,6 +8,10 @@ export default defineConfig({
     timeout: 5_000,
   },
   fullyParallel: true,
+  // Keep browser/socket pressure bounded on Windows and smaller Linux CI
+  // runners. Eight simultaneous contexts can exhaust the local socket buffer
+  // and produce unrelated ERR_NO_BUFFER_SPACE navigation failures.
+  workers: 4,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   use: {
     baseURL: 'http://127.0.0.1:4173',

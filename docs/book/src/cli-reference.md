@@ -238,16 +238,25 @@ solo http-serve [--bind <ip>]
 
 ## `solo doctor`
 
-Print health + state of a data directory.
+Print health and setup state without changing the real memory library.
 
 ```text
-solo doctor [--with-stats] [--data-dir <path>]
+solo doctor [--with-stats]
+            [--round-trip]
+            [--daemon-url <url>]
+            [--data-dir <path>]
 ```
 
-  - **`--with-stats`** — also open the database (prompts
-    for passphrase) and print live stats: episode counts
-    by tier/status, HNSW vector count, pending_index row
-    count, drift state.
+  - **`--with-stats`** — print database and derived-coverage statistics. If
+    the live daemon owns `solo.lock`, doctor queries its authenticated local
+    `/v1/status` endpoint instead of trying to open the database and failing
+    on the lock.
+  - **`--round-trip`** — create an isolated temporary encrypted library and
+    verify write → bundled MiniLM embedding → HNSW indexing → recall. The
+    temporary library is deleted afterward, so setup validation never
+    pollutes the user's memories.
+  - **`--daemon-url <url>`** — live daemon base URL used by `--with-stats`.
+    Default `http://127.0.0.1:17821`.
 
 Without `--with-stats`, doctor reads only the unencrypted
 files (config, lockfile, snapshot file presence + sizes)
@@ -351,25 +360,3 @@ JSON fixture file, and `--all` scores every bundled fixture for CI.
 `--save` writes a JSON report to `.solo/eval-runs/` by default and
 prints the generated `run_id` in JSON output. `report` reads that saved
 run id, or a direct path to a saved JSON report.
-
-## `solo download-model`
-
-Download embedder model weights from HuggingFace.
-
-```text
-solo download-model [--model <name>]
-                    [--out <dir>]
-                    [--data-dir <path>]
-                    [--force]
-```
-
-  - **`--model <name>`** — currently only `bge-m3` is
-    supported. Default `bge-m3`.
-  - **`--out <dir>`** — target directory. Default
-    `<data_dir>/models/BAAI/bge-m3/`.
-  - **`--force`** — re-download even if existing files
-    appear complete.
-
-Resumable. SHA256-verifies LFS files via the Etag header
-when present. On success, prints the exact `export
-SOLO_BGE_M3_DIR=...` line to copy.

@@ -98,8 +98,8 @@ local model, install Ollama separately, pull a model, then start Solo
 with `--ollama-model`, for example:
 
 ```powershell
-ollama pull qwen2.5-coder:7b
-solo daemon --http-port 17821 --consolidate-interval-secs 3600 --ollama-model qwen2.5-coder:7b
+ollama pull qwen3:8b
+solo daemon --http-port 17821 --consolidate-interval-secs 3600 --ollama-model qwen3:8b
 ```
 
 ### Ubuntu 24.04 installer (recommended for Linux Desktop)
@@ -343,7 +343,7 @@ Core HTTP routes include:
   `GET /v1/graph/inspect/{id}`, `GET /v1/graph/neighbors/{id}`,
   `GET /v1/graph/stream`.
 - MCP Streamable HTTP: `POST /mcp`, `GET /mcp`.
-- Operations: `POST /backup`.
+- Operations: `POST /backup`, `GET|POST /v1/steward/backfill`.
 
 The localhost CORS policy covers the browser UI write path as well as reads,
 including `PATCH /memory/{id}` for solo-web memory corrections.
@@ -354,13 +354,14 @@ solo http-serve --bind 0.0.0.0 --bearer-token-file /etc/solo/token
 
 ## Embeddings
 
-**Recommendation**: **Ollama embeddings** are the default real-embedder
-backend.
+**Default**: official Windows and Linux packages bundle
+`all-MiniLM-L6-v2` (384 dimensions). Semantic recall works locally without
+Ollama, an API key, or a first-use model download.
 
-- **`StubEmbedder`** (default when no env set): deterministic BLAKE3
+- **`StubEmbedder`** (tests/development only): deterministic BLAKE3
   hash → unit-norm f32 vectors. No model download. Useful for offline
   development; vectors have identity-only meaning, not semantic.
-- **`OllamaEmbedder`**: real semantic embeddings via a local Ollama
+- **`OllamaEmbedder`** (optional): alternate semantic embeddings via Ollama
   daemon. `ollama pull nomic-embed-text`, then set
   `SOLO_EMBEDDER=ollama` (optionally `SOLO_OLLAMA_EMBED_MODEL=<model>`
   and `SOLO_OLLAMA_BASE_URL=<url>`).
@@ -378,62 +379,67 @@ below.
 The consolidation pass runs the SWS-equivalent clustering pass
 without an LLM (cheap, deterministic). The REM-equivalent
 abstraction pass and contradiction detection require an
-`LlmClient`. Solo speaks the OpenAI Chat Completions wire format,
-so any backend that exposes it works — local-first via Ollama is
-the recommended path; hosted Anthropic / OpenAI are also supported.
+`LlmClient`. Solo has native Ollama, Anthropic, and OpenAI clients.
+Local Ollama is the recommended privacy-first path; direct Ollama Cloud and
+hosted Anthropic/OpenAI are also supported with explicit consent.
 
-### Local LLM via Ollama (recommended)
+### Ollama Steward: local or cloud
 
-[Ollama](https://ollama.com) is a separate single-binary tool that
-runs LLMs locally with automatic GPU/CPU offload. Install it once,
-pull a model, point Solo at it. No API costs, no data leaves your
-machine.
+[Ollama](https://ollama.com) can run the Steward locally or provide cloud
+models. In Solo Web, open **Settings → Steward LLM → Ollama** and choose:
+
+- **Local** — the model and memory content stay on this device. No API key.
+- **Cloud** — selected memory content is processed by Ollama Cloud. Solo
+  requires explicit consent and stores only an environment-variable reference
+  such as `OLLAMA_API_KEY`, never the key itself.
+- **Custom** — an operator-controlled Ollama endpoint. Treat a non-loopback
+  endpoint as off-device processing, use HTTPS outside the local machine, and
+  review its logging/retention policy.
 
 ```bash
 # 1. Install Ollama (Linux/macOS one-liner; Windows installer at ollama.com)
 curl -fsSL https://ollama.com/install.sh | sh
 
 # 2. Pull a model that fits your GPU (see hardware tiers below)
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:8b
 
 # 3. Point Solo at it (one-flag shorthand)
-solo consolidate --ollama-model qwen2.5-coder:7b
+solo consolidate --ollama-model qwen3:8b
 # Or for the daemon:
-solo daemon --consolidate-interval-secs 3600 --ollama-model qwen2.5-coder:7b
+solo daemon --consolidate-interval-secs 3600 --ollama-model qwen3:8b
 ```
 
-The `--ollama-model` flag is shorthand for setting
-`OPENAI_API_KEY=ollama` + `OPENAI_BASE_URL=http://localhost:11434/v1`
-+ `OPENAI_MODEL=<MODEL>` and unsetting `ANTHROPIC_API_KEY` for the
-process. Override the base URL or API key by setting them
-explicitly (for non-default Ollama port, remote Ollama, or
-auth-proxy fronted Ollama). The env-var dance below is equivalent
-if you'd rather configure Solo via your shell profile:
+For normal installations, prefer the Web setup wizard. It writes an explicit
+`[llm]` block with `endpoint = "local"`, `"cloud"`, or `"custom"`. MiniLM is
+only the recall encoder; a generative model such as Qwen3 is what creates
+themes, facts, entities, relationships, and contradictions. After setup,
+choose **Backfill existing memories now** to see progress immediately.
 
-```bash
-export OPENAI_API_KEY=ollama                                # any non-empty string
-export OPENAI_BASE_URL=http://localhost:11434/v1
-export OPENAI_MODEL=qwen2.5-coder:7b
-solo consolidate
-```
+Hosted Anthropic, OpenAI, Ollama Cloud, and non-loopback custom endpoints are
+refused until the user explicitly consents to off-device memory processing.
+API keys remain in environment variables; Solo stores only the variable name.
 
-**Hardware tiers — pick a model that fits your GPU:**
+For a temporary local-only CLI run, `--ollama-model <MODEL>` remains a
+compatibility shorthand. Persisted local and cloud configuration belongs in
+`solo.config.toml` and is easiest to manage through Solo Web.
 
-| VRAM | Model | Quantization | Notes |
-|---|---|---|---|
-| **8 GB** | `qwen2.5-coder:7b` | Q4_K_M (~5 GB) | Good for personal corpus; fits RTX 3060/4060/2060 Super |
-| **12 GB** | `qwen2.5-coder:7b` | Q8 (~8 GB) | Same model, higher quality bits |
-| **16 GB** | `qwen2.5-coder:14b` | Q4_K_M (~9 GB) | Better on ambiguous contradiction detection |
-| **24 GB** | `qwen2.5-coder:32b` | Q4_K_M (~20 GB) | Closest to hosted-Sonnet quality |
-| **CPU-only** | `qwen2.5-coder:3b` | Q4 (~2 GB RAM) | Slow (~30 sec - few min per cluster) but works |
+Start with `qwen3:8b` when the machine can run it. `qwen3:4b` is the lighter
+fallback. Larger local or hosted models can improve ambiguous entity linking
+and contradiction judgments, but model changes should be evaluated against
+the versioned retrieval and derivation corpus rather than assumed to help.
 
-The `qwen2.5-coder` family is recommended because it's heavily
-trained on structured-output tasks (the Steward's prompts return
-JSON). Other models work — `llama3.3`, `phi4`, `mistral-small`,
-`deepseek-v2.5` — just pull whichever fits your hardware and set
-`OPENAI_MODEL` accordingly. Ollama auto-offloads layers between
-GPU and CPU based on available VRAM, so partial-fit models work
-gracefully (just slower).
+Ollama Cloud can be reached in either supported form:
+
+- Directly at `https://ollama.com/api` using `endpoint = "cloud"` and a bearer
+  token held in `OLLAMA_API_KEY`.
+- Through a signed-in local Ollama daemon using `endpoint = "local"` and a
+  `-cloud` model tag. The
+  request still leaves the device, so Solo requires hosted-processing consent
+  even though the API connection itself is loopback.
+
+Ollama Cloud currently lacks the native structured-output switch available in
+local Ollama. Solo therefore requests JSON in the prompt, validates the reply,
+and performs one bounded repair attempt before reporting a failed extraction.
 
 ### Hosted LLM (Anthropic or OpenAI)
 
@@ -443,7 +449,8 @@ If you'd rather pay per call than run a model locally:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-export ANTHROPIC_MODEL=claude-3-5-sonnet-20241022   # optional override
+export SOLO_HOSTED_PROCESSING_CONSENT=true
+export ANTHROPIC_MODEL=claude-sonnet-4-6            # optional override
 solo consolidate
 ```
 
@@ -451,7 +458,8 @@ solo consolidate
 
 ```bash
 export OPENAI_API_KEY=sk-...
-export OPENAI_MODEL=gpt-4o-mini                     # optional override
+export SOLO_HOSTED_PROCESSING_CONSENT=true
+export OPENAI_MODEL=gpt-5.6-terra                   # optional override
 solo consolidate
 ```
 
@@ -461,15 +469,14 @@ Mistral, DeepInfra) work the same way — just override
 
 ### Precedence + no-LLM fallback
 
-When more than one env var is set: **Anthropic > OpenAI / Ollama
-/ OpenAI-compatible > none**. Set only the variable for the backend
-you want active.
+Fresh installations persist `[llm] mode = "none"`; inherited API keys never
+opt memory into hosted processing. Older configurations without an `[llm]`
+block retain the legacy environment fallback, but hosted use also requires
+`SOLO_HOSTED_PROCESSING_CONSENT=true`.
 
-Without any LLM env var, `solo consolidate` runs the cheap
-clustering pass only; `abstractions_built` and
-`contradictions_found` stay 0. The re-consolidation tetralogy's
-existing-vs-existing merge (which depends on the Steward) also
-no-ops — drift catches up only when an LLM is wired.
+Without a Steward model, consolidation still performs deterministic
+clustering. Abstractions, facts, entities, relationships, and contradiction
+detection remain visibly disabled until the user enables knowledge extraction.
 
 ## Architecture
 

@@ -1,15 +1,17 @@
 # Introduction
 
-Solo is **local-first personal memory for AI assistants**. One
-binary, one encrypted SQLite file, no cloud.
+Solo is **local-first personal memory for AI assistants**. Community uses one
+encrypted SQLite file and works without a cloud account; optional hosted
+Steward providers are enabled only with explicit consent.
 
 You run Solo on your own machine. Your AI assistant — Claude
 Desktop, Cursor, an OpenAI-compatible chat client, anything that
 speaks the Model Context Protocol (MCP) — connects to it as a
 memory backend. Conversations get embedded, clustered into
-themes, and distilled into structured facts. Everything stays
-on disk inside an encrypted SQLite database that only you hold
-the passphrase to.
+themes, and optionally distilled into structured facts. Raw and derived data
+stay in the encrypted local database. When a hosted Steward is enabled,
+selected cluster content is processed by that provider as disclosed during
+setup.
 
 ## What Solo gives you
 
@@ -28,17 +30,17 @@ the passphrase to.
   - **Encryption at rest, by default.** SQLCipher with an
     Argon2id-derived key from your passphrase. The database
     file is unintelligible without it.
-  - **Single binary.** No services, no docker, no cloud
-    accounts. Run `solo daemon` and you're done.
+  - **Packaged local runtime.** No Docker or cloud account is required. Windows
+    and Ubuntu packages include the bundled semantic model and Desktop app.
 
 ## What Solo isn't
 
   - **Not a chatbot.** Solo doesn't talk to you — it stores
     what your AI assistant tells it to and serves it back via
     MCP or HTTP.
-  - **Not a hosted service.** No SaaS. No remote API. The
-    assistant talks to your local Solo over `stdin`/`stdout`
-    or `127.0.0.1`.
+  - **Not a hosted memory service.** The assistant talks to your local Solo
+    over `stdin`/`stdout` or `127.0.0.1`. Optional hosted models process only
+    the selected derived-memory workload after consent.
   - **Not a hosted identity system.** Community has one Memory Library
     per Solo data directory. Run multiple daemons with different data
     directories, passphrases, and ports when you need hard operational
@@ -53,10 +55,8 @@ the passphrase to.
   - **[Getting Started](./getting-started.md)** — install,
     initialise, store your first memory, get something out.
     Read this first.
-  - **[Model Selection](./model-selection.md)** — picking an
-    embedder (StubEmbedder for offline / BGE-M3 for real
-    semantic recall) and a Steward LLM (Anthropic, OpenAI,
-    or none).
+  - **[Model Selection](./model-selection.md)** — bundled MiniLM versus an
+    optional Ollama embedder, and choosing a local or hosted Steward model.
   - **[Consolidation Cycle](./consolidation-cycle.md)** —
     what `solo consolidate` actually does, the four-pass
     re-consolidation tetralogy, and when to run it manually

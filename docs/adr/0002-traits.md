@@ -277,7 +277,7 @@ impl Message {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     /// Identifies the backend — "qwen3-coder-30b-local", "claude-sonnet-4-6",
-    /// "gpt-5o", etc. Used in dev-log entries and consolidation provenance.
+    /// "gpt-5.6-terra", etc. Used in dev-log entries and consolidation provenance.
     fn name(&self) -> &str;
 
     /// Run a single completion turn. Implementations handle their own retries,

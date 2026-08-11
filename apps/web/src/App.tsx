@@ -14,8 +14,10 @@ import {
   switchOllamaEmbedder,
   switchStewardCadence,
   switchStewardLlm,
+  startStewardBackfill,
   updateMemoryQualityReview,
   type LlmSettingsSummary,
+  type OllamaEndpoint,
   type StewardLlmMode,
 } from './api/client';
 import type {
@@ -278,6 +280,8 @@ function HomeView({ onModeChange }: { onModeChange: (mode: AppMode) => void }) {
     queryKey: ['desktop-home', 'solo-status', apiUrl, connectionRevision],
     queryFn: ({ signal }) => fetchSoloStatus({ signal }),
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.steward?.backfill?.status === 'running' ? 1_000 : false,
   });
   const inbox = useQuery({
     queryKey: ['desktop-home', 'inbox', apiUrl, connectionRevision],
@@ -701,6 +705,8 @@ function SettingsView({
     queryKey: ['desktop-settings', 'solo-status', apiUrl, connectionRevision],
     queryFn: ({ signal }) => fetchSoloStatus({ signal }),
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.steward?.backfill?.status === 'running' ? 1_000 : false,
   });
   const libraryName = solo.data?.library.name ?? COMMUNITY_LIBRARY_NAME;
   const mcpUrl = mcpEndpoint(apiUrl);
@@ -911,6 +917,8 @@ function SettingsView({
           </div>
         </section>
 
+        <CapabilityPanel solo={solo} />
+
         <StewardLlmPanel solo={solo} />
 
         <StewardCadencePanel solo={solo} />
@@ -957,13 +965,82 @@ function SettingsView({
   );
 }
 
+function CapabilityPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) {
+  const capabilities = solo.data?.capabilities;
+  const rows = [
+    ['memory_recall', 'Memory recall'],
+    ['documents', 'Documents'],
+    ['clustering', 'Clustering'],
+    ['knowledge_extraction', 'Knowledge extraction'],
+    ['themes', 'Themes'],
+    ['facts', 'Facts'],
+    ['entities', 'Entities'],
+    ['graph', 'Relationships'],
+    ['contradictions', 'Contradictions'],
+  ] as const;
+
+  return (
+    <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-100">Memory Capabilities</h2>
+          <p className="mt-1 text-xs text-slate-400">
+            What works now, what is waiting, and why.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void solo.refetch()}
+          className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+        >
+          Refresh
+        </button>
+      </div>
+      {!capabilities ? (
+        <p className="mt-4 text-xs text-slate-500">
+          {solo.isError ? errorMessage(solo.error) : 'Checking capability state'}
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {rows.map(([key, label]) => {
+            const capability = capabilities[key];
+            return (
+              <div key={key} className="rounded-md border border-slate-800 bg-slate-950/60 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-200">{label}</span>
+                  <span className={`rounded px-2 py-0.5 text-[11px] uppercase ${capabilityTone(capability.state)}`}>
+                    {capability.state}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">{capability.explanation}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function capabilityTone(state: string): string {
+  if (state === 'ready') return 'bg-emerald-950 text-emerald-200';
+  if (state === 'pending') return 'bg-sky-950 text-sky-200';
+  if (state === 'failed') return 'bg-red-950 text-red-200';
+  if (state === 'disabled') return 'bg-amber-950 text-amber-200';
+  return 'bg-slate-800 text-slate-300';
+}
+
+type OllamaSetupRoute = OllamaEndpoint | 'signed_cloud';
+
 function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) {
   const queryClient = useQueryClient();
   const [dirty, setDirty] = useState(false);
   const [llmMode, setLlmMode] = useState<StewardLlmMode>('ollama');
-  const [llmModel, setLlmModel] = useState('qwen2.5-coder:7b');
+  const [llmModel, setLlmModel] = useState('qwen3:8b');
   const [llmBaseUrl, setLlmBaseUrl] = useState('http://localhost:11434');
   const [llmApiKeyEnv, setLlmApiKeyEnv] = useState('ANTHROPIC_API_KEY');
+  const [ollamaRoute, setOllamaRoute] = useState<OllamaSetupRoute>('local');
+  const [hostedConsent, setHostedConsent] = useState(false);
   const [restartRequested, setRestartRequested] = useState(false);
 
   useEffect(() => {
@@ -971,7 +1048,12 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
     const mode = stewardLlmMode(solo.data);
     setLlmMode(mode);
     setLlmModel(stewardLlmModel(solo.data, mode));
-    setLlmApiKeyEnv(defaultLlmApiKeyEnv(mode));
+    setLlmApiKeyEnv(solo.data?.steward?.api_key_env ?? defaultLlmApiKeyEnv(mode));
+    const endpoint = solo.data?.steward?.endpoint ?? 'local';
+    const model = stewardLlmModel(solo.data, mode);
+    setOllamaRoute(endpoint === 'local' && model.endsWith('-cloud') ? 'signed_cloud' : endpoint);
+    setLlmBaseUrl(stewardLlmBaseUrl(solo.data));
+    setHostedConsent(solo.data?.steward?.hosted_processing_consent ?? false);
   }, [dirty, solo.data]);
 
   const llmSwitch = useMutation({
@@ -981,9 +1063,17 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
           mode: llmMode,
           ...(llmMode !== 'none' ? { model: llmModel.trim() } : {}),
           ...(llmMode === 'ollama' ? { base_url: llmBaseUrl.trim() } : {}),
-          ...(llmMode === 'anthropic' || llmMode === 'openai'
+          ...(llmMode === 'ollama'
+            ? { endpoint: ollamaRoute === 'signed_cloud' ? 'local' : ollamaRoute }
+            : {}),
+          ...(llmMode === 'anthropic' ||
+          llmMode === 'openai' ||
+          (llmMode === 'ollama' &&
+            (ollamaRoute === 'cloud' || ollamaRoute === 'custom') &&
+            llmApiKeyEnv.trim().length > 0)
             ? { api_key_env: llmApiKeyEnv.trim() }
             : {}),
+          ...(llmMode !== 'none' ? { hosted_processing_consent: hostedConsent } : {}),
         },
         {},
       ),
@@ -1007,10 +1097,18 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       }, 4000);
     },
   });
+  const backfill = useMutation({
+    mutationFn: () => startStewardBackfill(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['desktop-settings', 'solo-status'] });
+      void solo.refetch();
+    },
+  });
 
   const runtimeMatches = stewardRuntimeMatchesConfig(solo.data, llmSwitch.data?.next);
+  const needsFreshSupervisorEnvironment = Boolean(llmSwitch.data?.next.api_key_env);
   const canRestartAfterSwitch = Boolean(
-    llmSwitch.data?.restart_required && runtimeMatches !== true,
+    llmSwitch.data?.restart_required && runtimeMatches !== true && !needsFreshSupervisorEnvironment,
   );
 
   useEffect(() => {
@@ -1022,8 +1120,31 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
     setLlmMode(mode);
     setLlmModel(defaultLlmModel(mode));
     setLlmApiKeyEnv(defaultLlmApiKeyEnv(mode));
+    setHostedConsent(false);
+  };
+  const chooseOllamaRoute = (route: OllamaSetupRoute) => {
+    setDirty(true);
+    setOllamaRoute(route);
+    setHostedConsent(false);
+    setLlmBaseUrl(route === 'cloud' ? 'https://ollama.com' : 'http://localhost:11434');
+    setLlmModel(route === 'cloud' || route === 'signed_cloud' ? 'gpt-oss:120b-cloud' : 'qwen3:8b');
+    setLlmApiKeyEnv(route === 'cloud' ? 'OLLAMA_API_KEY' : '');
   };
   const commands = llmSwitch.data?.environment_commands ?? [];
+  const normalizedLlmModel = llmModel.trim();
+  const hostedProcessing =
+    llmMode === 'anthropic' ||
+    llmMode === 'openai' ||
+    (llmMode === 'ollama' &&
+      (ollamaRoute === 'cloud' ||
+        ollamaRoute === 'signed_cloud' ||
+        normalizedLlmModel.endsWith('-cloud') ||
+        (ollamaRoute === 'custom' && !isLoopbackOllamaUrl(llmBaseUrl))));
+  const signedCloudModelInvalid =
+    llmMode === 'ollama' &&
+    ollamaRoute === 'signed_cloud' &&
+    !normalizedLlmModel.endsWith('-cloud');
+  const backfillStatus = solo.data?.steward?.backfill;
 
   return (
     <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
@@ -1063,6 +1184,31 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
         ))}
       </div>
 
+      {llmMode === 'ollama' && (
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {([
+            ['local', 'Local model'],
+            ['signed_cloud', 'Cloud via local'],
+            ['cloud', 'Cloud direct'],
+            ['custom', 'Custom'],
+          ] as const).map(([route, label]) => (
+            <button
+              key={route}
+              type="button"
+              onClick={() => chooseOllamaRoute(route)}
+              className={`rounded-md border px-3 py-2 text-xs ${
+                ollamaRoute === route
+                  ? 'border-emerald-500 bg-emerald-950/50 text-emerald-100'
+                  : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
+              }`}
+              aria-pressed={ollamaRoute === route}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {llmMode !== 'none' && (
         <div className="mt-5 grid gap-3">
           <label className="text-xs font-medium uppercase text-slate-400">
@@ -1077,17 +1223,33 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
             />
           </label>
           {llmMode === 'ollama' ? (
+            <>
             <label className="text-xs font-medium uppercase text-slate-400">
               Base URL
               <input
                 value={llmBaseUrl}
+                disabled={ollamaRoute !== 'custom'}
                 onChange={(event) => {
                   setDirty(true);
                   setLlmBaseUrl(event.target.value);
                 }}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-slate-500"
               />
             </label>
+            {(ollamaRoute === 'cloud' || ollamaRoute === 'custom') && (
+              <label className="text-xs font-medium uppercase text-slate-400">
+                API key env {ollamaRoute === 'custom' && '(optional)'}
+                <input
+                  value={llmApiKeyEnv}
+                  onChange={(event) => {
+                    setDirty(true);
+                    setLlmApiKeyEnv(event.target.value);
+                  }}
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
+                />
+              </label>
+            )}
+            </>
           ) : (
             <label className="text-xs font-medium uppercase text-slate-400">
               API key env
@@ -1099,6 +1261,36 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
                 }}
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
               />
+            </label>
+          )}
+        </div>
+      )}
+
+      {signedCloudModelInvalid && (
+        <p className="mt-4 rounded-md border border-red-800/70 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+          Cloud via local requires an Ollama Cloud model whose name ends in <code>-cloud</code>.
+        </p>
+      )}
+
+      {llmMode !== 'none' && (
+        <div className={`mt-4 rounded-md border px-3 py-3 text-xs ${hostedProcessing ? 'border-amber-800/70 bg-amber-950/25 text-amber-100' : 'border-emerald-800/70 bg-emerald-950/25 text-emerald-100'}`}>
+          <div className="font-medium">
+            {hostedProcessing
+              ? `Memory content will be processed off device by ${llmMode === 'ollama' ? (ollamaRoute === 'cloud' || ollamaRoute === 'signed_cloud' || normalizedLlmModel.endsWith('-cloud') ? 'Ollama Cloud' : 'the configured Ollama host') : llmMode === 'anthropic' ? 'Anthropic' : 'OpenAI'}.`
+              : 'Memory content stays on this device and is processed by local Ollama.'}
+          </div>
+          {hostedProcessing && (
+            <label className="mt-3 flex items-start gap-2 text-amber-100">
+              <input
+                type="checkbox"
+                checked={hostedConsent}
+                onChange={(event) => {
+                  setDirty(true);
+                  setHostedConsent(event.target.checked);
+                }}
+                className="mt-0.5"
+              />
+              <span>I understand selected memory content will leave this device and consent to this provider processing it.</span>
             </label>
           )}
         </div>
@@ -1137,17 +1329,61 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
         </p>
       )}
 
+      {llmSwitch.data?.restart_required && needsFreshSupervisorEnvironment && runtimeMatches !== true && (
+        <p className="mt-4 rounded-md border border-amber-800/70 bg-amber-950/25 px-3 py-2 text-xs text-amber-100">
+          Set the named environment variable, then fully quit and reopen Solo Controls. A daemon-only restart cannot inherit a newly added API key.
+        </p>
+      )}
+
       {runtimeRestart.data && (
         <p className="mt-4 rounded-md border border-emerald-800/70 bg-emerald-950/25 px-3 py-2 text-xs text-emerald-100">
           {runtimeRestart.data.note}
         </p>
       )}
 
+      {solo.data?.steward?.runtime_has_llm && (
+        <div className="mt-4 rounded-md border border-emerald-800/70 bg-emerald-950/20 px-3 py-3 text-xs text-emerald-100">
+          <div className="font-medium">Backfill existing memories now</div>
+          <p className="mt-1 text-emerald-200">
+            Run clustering and knowledge extraction immediately instead of waiting for the hourly schedule.
+          </p>
+          {backfillStatus && (
+            <div className="mt-3">
+              <div className="flex justify-between text-[11px] uppercase text-emerald-200">
+                <span>{backfillStatus.phase.replaceAll('_', ' ')}</span>
+                <span>{backfillStatus.progress_percent}%</span>
+              </div>
+              <div className="mt-1 h-2 overflow-hidden rounded bg-slate-900">
+                <div
+                  className="h-full rounded bg-emerald-500 transition-[width]"
+                  style={{ width: `${backfillStatus.progress_percent}%` }}
+                />
+              </div>
+              <p className="mt-2 text-emerald-200">{backfillStatus.note}</p>
+              {backfillStatus.error && <p className="mt-1 text-red-200">{backfillStatus.error}</p>}
+            </div>
+          )}
+          {backfill.isError && <p className="mt-2 text-red-200">{errorMessage(backfill.error)}</p>}
+          <button
+            type="button"
+            onClick={() => backfill.mutate()}
+            disabled={backfill.isPending || backfillStatus?.status === 'running'}
+            className="mt-3 rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+          >
+            {backfillStatus?.status === 'running' || backfill.isPending ? 'Backfill running' : 'Backfill existing memories'}
+          </button>
+        </div>
+      )}
+
       <div className="mt-5 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => llmSwitch.mutate()}
-          disabled={llmSwitch.isPending}
+          <button
+            type="button"
+            onClick={() => llmSwitch.mutate()}
+            disabled={
+              llmSwitch.isPending ||
+              signedCloudModelInvalid ||
+              (hostedProcessing && !hostedConsent)
+            }
           className="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-700"
         >
           {llmSwitch.isPending ? 'Applying' : 'Apply LLM config'}
@@ -2203,10 +2439,25 @@ function stewardLlmModel(status: SoloStatus | undefined, mode: StewardLlmMode): 
   return model || defaultLlmModel(mode);
 }
 
+function stewardLlmBaseUrl(status?: SoloStatus): string {
+  const configured = status?.steward?.base_url?.trim();
+  if (configured) return configured;
+  return status?.steward?.endpoint === 'cloud' ? 'https://ollama.com' : 'http://localhost:11434';
+}
+
+function isLoopbackOllamaUrl(value: string): boolean {
+  try {
+    const host = new URL(value.trim()).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
 function defaultLlmModel(mode: StewardLlmMode): string {
   if (mode === 'anthropic') return 'claude-sonnet-4-6';
-  if (mode === 'openai') return 'gpt-5o';
-  if (mode === 'ollama') return 'qwen2.5-coder:7b';
+  if (mode === 'openai') return 'gpt-5.6-terra';
+  if (mode === 'ollama') return 'qwen3:8b';
   return '';
 }
 
@@ -2269,7 +2520,13 @@ function stewardRuntimeMatchesConfig(
   if (mode === 'none') return !steward.runtime_has_llm;
   if (!model || !steward.runtime_llm) return false;
   if (mode === 'ollama') {
-    return steward.runtime_llm === `ollama:${model}` || steward.runtime_llm === model;
+    return (
+      steward.runtime_llm === `ollama:${model}` ||
+      steward.runtime_llm === `ollama-local:${model}` ||
+      steward.runtime_llm === `ollama-cloud:${model}` ||
+      steward.runtime_llm === `ollama-remote:${model}` ||
+      steward.runtime_llm === model
+    );
   }
   if (mode === 'anthropic' || mode === 'openai') return steward.runtime_llm === model;
   return steward.runtime_has_llm;

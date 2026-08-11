@@ -77,6 +77,9 @@ deployments.
 | `GET` | `/health` | none | Returns `ok` (liveness probe). |
 | `GET` | `/openapi.json` | none | OpenAPI 3.1 spec for the rest of the API. |
 | `GET` | `/v1/status` | required | Community Memory Library readiness payload for local UIs and agent bridges. |
+| `GET` | `/v1/steward/backfill` | required | Current or most recent derived-memory backfill progress. |
+| `POST` | `/v1/steward/backfill` | required | Start bounded clustering and knowledge-extraction backfill. |
+| `POST` | `/v1/settings/llm` | required | Save Steward provider, processing location, secret reference, and consent. |
 | `GET` | `/v1/graph/nodes` | required | Paginated graph node catalog for solo-web. |
 | `GET` | `/v1/graph/edges` | required | Paginated graph edge catalog for solo-web. |
 | `GET` | `/v1/graph/inspect/{id}` | required | Full record drilldown for a graph node. |
@@ -136,9 +139,30 @@ Response:
   },
   "embedder": {
     "name": "bundled:all-MiniLM-L6-v2",
-    "version": "v1",
+    "version": "v2",
     "dim": 384,
     "dtype": "f32"
+  },
+  "capabilities": {
+    "memory_recall": {"state": "ready", "explanation": "..."},
+    "documents": {"state": "ready", "explanation": "..."},
+    "clustering": {"state": "pending", "explanation": "..."},
+    "knowledge_extraction": {"state": "disabled", "explanation": "..."},
+    "facts": {"state": "disabled", "explanation": "..."},
+    "entities": {"state": "disabled", "explanation": "..."},
+    "graph": {"state": "disabled", "explanation": "..."},
+    "contradictions": {"state": "disabled", "explanation": "..."}
+  },
+  "steward": {
+    "config_mode": "none",
+    "processing_location": "knowledge extraction disabled",
+    "coverage": {
+      "active_episodes": 0,
+      "clusters": 0,
+      "pending_clusters": 0,
+      "triples": 0
+    },
+    "backfill": null
   },
   "mcp": {
     "sessions": 0
@@ -155,9 +179,48 @@ Response:
 `/health` is public and tiny; `/v1/status` goes through the same authenticated
 boundary as the graph and MCP surfaces. Local UIs should use it when they need
 operator-facing readiness: package/build identity, Memory Library state,
-embedder identity, runtime ownership, and MCP session count. Bearer/OIDC
+embedder identity, capability explanations, derived coverage/backfill,
+provider processing location, runtime ownership, and MCP session count. Bearer/OIDC
 deployments require the same `Authorization` header as the rest of the
 authenticated API.
+
+### Configure the Steward
+
+Local Ollama:
+
+```bash
+curl -X POST http://127.0.0.1:17821/v1/settings/llm \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"ollama","endpoint":"local","base_url":"http://localhost:11434","model":"qwen3:8b","hosted_processing_consent":false}'
+```
+
+Direct Ollama Cloud:
+
+```bash
+curl -X POST http://127.0.0.1:17821/v1/settings/llm \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"ollama","endpoint":"cloud","base_url":"https://ollama.com","model":"gpt-oss:120b-cloud","api_key_env":"OLLAMA_API_KEY","hosted_processing_consent":true}'
+```
+
+The Cloud secret stays in `OLLAMA_API_KEY`; the response and config contain
+only that variable name. Hosted Ollama, Anthropic, OpenAI, and non-loopback
+custom endpoints are rejected unless explicit consent is true. Restart Solo
+after saving so the runtime loads the new provider.
+
+### Backfill derived memory
+
+```bash
+curl -X POST http://127.0.0.1:17821/v1/steward/backfill \
+  -H 'Content-Type: application/json' \
+  -d '{"limit":50,"max_batches":20}'
+
+curl http://127.0.0.1:17821/v1/steward/backfill
+```
+
+The start call returns `202 Accepted`. The job clusters existing memories,
+then extracts abstractions, facts, entities, relationships, and contradiction
+candidates in bounded batches. Only one backfill runs at a time. Progress and
+failure details also appear under `steward.backfill` in `/v1/status`.
 
 ### Remember
 
@@ -253,13 +316,24 @@ Response shape:
   "recall": { "hits": [], "index_len": 0, "candidates_considered": 0 },
   "themes": [],
   "facts": [],
-  "contradictions": []
+  "entities": [],
+  "contradictions": [],
+  "graph": {"relationship_facts": [], "literal_facts": [], "relationship_paths": []},
+  "sections": {
+    "themes": {"status": "pending", "count": 0, "explanation": "Clustering has not produced a cluster yet.", "warning": null},
+    "facts": {"status": "disabled", "count": 0, "explanation": "Knowledge extraction is off because no Steward model is active.", "warning": null},
+    "entities": {"status": "disabled", "count": 0, "explanation": "Knowledge extraction is off because no Steward model is active.", "warning": null},
+    "graph": {"status": "disabled", "count": 0, "explanation": "Knowledge extraction is off because no Steward model is active.", "warning": null},
+    "contradictions": {"status": "disabled", "count": 0, "explanation": "Knowledge extraction is off because no Steward model is active.", "warning": null}
+  }
 }
 ```
 
 `/memory/context` is the agent-oriented retrieval bundle. It combines
 episodic recall, recent themes, optional facts about `subject`, and
-known contradictions into one bounded response. Agents should use it
+known contradictions into one bounded response. Each derived section reports
+`ready`, `disabled`, `pending`, `empty`, or `failed` with an explanation, so an
+agent can distinguish an unavailable graph from a valid empty result. Agents should use it
 when they need working context before answering, then drill into
 specific items with `/memory/{id}` or the derived/document endpoints.
 

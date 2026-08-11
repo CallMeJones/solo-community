@@ -6,6 +6,7 @@
 
 - [Getting Started](./getting-started.md)
 - [Model Selection](./model-selection.md)
+- [Steward Setup & Capability States](./steward-setup.md)
 - [Consolidation Cycle](./consolidation-cycle.md)
 - [Derived Layer](./derived-layer.md)
 - [MCP Integration](./mcp-integration.md)

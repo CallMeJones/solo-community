@@ -342,7 +342,11 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let tenant = default_handle.clone();
         let min_episode_count = startup_derived_catchup_min_episodes;
         let cluster_timeout_secs = config.triples.cluster_timeout_secs;
+        // Reserve derived work before publishing the HTTP listener so an
+        // immediate user backfill cannot overlap startup catch-up.
+        let derived_job = steward_runtime.begin_derived_job().await;
         Some(tokio::spawn(async move {
+            let _derived_job = derived_job;
             if let Err(error) =
                 run_startup_derived_graph_catchup(tenant, min_episode_count, cluster_timeout_secs)
                     .await
@@ -376,6 +380,7 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let interval = Duration::from_secs(effective_consolidate_interval_secs);
         let window = args.consolidate_window_days;
         let force_merge = args.force_merge_on_timer;
+        let consolidate_runtime = steward_runtime.clone();
         tracing::info!(
             interval_secs = effective_consolidate_interval_secs,
             window_days = ?window,
@@ -389,7 +394,13 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         Some(tokio::spawn(async move {
             loop {
                 let h = h.clone();
-                let inner = tokio::spawn(consolidate_timer(h, interval, window, force_merge));
+                let inner = tokio::spawn(consolidate_timer(
+                    h,
+                    interval,
+                    window,
+                    force_merge,
+                    consolidate_runtime.clone(),
+                ));
                 match inner.await {
                     Ok(()) => return,
                     Err(e) if e.is_panic() => {
@@ -1016,6 +1027,13 @@ async fn triples_batch_timer(
         // remembered during the batch run accumulate toward the NEXT
         // batch — correct, because they aren't covered by the
         // currently-running tick's cluster snapshot.
+        let Some(_derived_job) = steward_runtime.try_begin_derived_job() else {
+            tracing::debug!(
+                trigger,
+                "scheduled triples-batch tick skipped because another derived-memory job is running"
+            );
+            continue;
+        };
         signal.reset();
 
         let result = solo_storage::triples_batch::run_triples_batch_tick(
@@ -1092,17 +1110,31 @@ async fn consolidate_timer(
     interval: Duration,
     window_days: Option<i64>,
     force_merge: bool,
+    steward_runtime: solo_api::StewardRuntimeStatus,
 ) {
+    steward_runtime
+        .set_next_consolidation_run_at_ms(Some(solo_api::unix_ms_after(interval)))
+        .await;
     let mut tick = tokio::time::interval(interval);
     tick.tick().await; // skip first
     loop {
         tick.tick().await;
+        steward_runtime
+            .set_next_consolidation_run_at_ms(Some(solo_api::unix_ms_after(interval)))
+            .await;
         let scope = ConsolidationScope {
             window_days,
             force_merge,
         };
+        let Some(_derived_job) = steward_runtime.try_begin_derived_job() else {
+            tracing::debug!(
+                "scheduled consolidation skipped because another derived-memory job is running"
+            );
+            continue;
+        };
         match handle.consolidate(scope).await {
             Ok(report) => {
+                steward_runtime.record_consolidation_success().await;
                 if report.episodes_seen > 0 {
                     tracing::info!(
                         seen = report.episodes_seen,
@@ -1117,6 +1149,9 @@ async fn consolidate_timer(
                 }
             }
             Err(e) => {
+                steward_runtime
+                    .record_consolidation_error(e.to_string())
+                    .await;
                 tracing::warn!(error = %e, "scheduled consolidate failed");
             }
         }
@@ -1409,6 +1444,7 @@ mod tests {
         let cfg = config_with_llm(Some(LlmSettings::Anthropic {
             api_key_env: "ANTHROPIC_API_KEY".into(),
             model: "claude-sonnet-4-6".into(),
+            hosted_processing_consent: true,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }
@@ -1418,7 +1454,8 @@ mod tests {
     fn daemon_startup_allows_openai_mode() {
         let cfg = config_with_llm(Some(LlmSettings::Openai {
             api_key_env: "OPENAI_API_KEY".into(),
-            model: "gpt-5o".into(),
+            model: "gpt-5.6-terra".into(),
+            hosted_processing_consent: true,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }
@@ -1427,8 +1464,11 @@ mod tests {
     #[test]
     fn daemon_startup_allows_ollama_mode() {
         let cfg = config_with_llm(Some(LlmSettings::Ollama {
+            endpoint: solo_storage::OllamaEndpointKind::Local,
             base_url: "http://localhost:11434".into(),
-            model: "qwen3-coder:30b".into(),
+            model: "qwen3:8b".into(),
+            api_key_env: None,
+            hosted_processing_consent: false,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }

@@ -70,6 +70,7 @@ use serde::{Deserialize, Serialize};
 use solo_core::{Error, LlmClient, Message, Result, Role};
 use zeroize::Zeroizing;
 
+use super::redact_secret;
 use super::retry::{
     RetryConfig, exp_backoff_with_jitter, is_retryable_reqwest_err, is_retryable_status,
     parse_retry_after,
@@ -105,6 +106,7 @@ impl AnthropicClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::llm(format!("build reqwest client: {e}")))?;
         Ok(Self {
@@ -126,6 +128,7 @@ impl AnthropicClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self> {
         self.http = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| Error::llm(format!("rebuild reqwest client: {e}")))?;
         Ok(self)
@@ -175,10 +178,14 @@ impl LlmClient for AnthropicClient {
             match send_res {
                 Ok(resp) => {
                     let status = resp.status();
+                    let retry_after_hdr = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let response_bytes = super::bounded_response_bytes(resp, "anthropic").await?;
                     if status.is_success() {
-                        let parsed: AnthropicResponse = resp
-                            .json()
-                            .await
+                        let parsed: AnthropicResponse = serde_json::from_slice(&response_bytes)
                             .map_err(|e| Error::llm(format!("anthropic response parse: {e}")))?;
                         let text = parsed
                             .content
@@ -199,14 +206,9 @@ impl LlmClient for AnthropicClient {
                     }
 
                     // Non-2xx. Decide retry.
-                    let retry_after_hdr = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
                     // Consume the response body for diagnostics
                     // (ignored on retry, surfaced on terminal).
-                    let body_text = resp.text().await.unwrap_or_default();
+                    let body_text = String::from_utf8_lossy(&response_bytes);
 
                     if attempt < self.retry.max_retries && is_retryable_status(status.as_u16()) {
                         let delay =
@@ -224,10 +226,11 @@ impl LlmClient for AnthropicClient {
                         attempt += 1;
                         continue;
                     }
+                    let safe_body = redact_secret(&body_text, self.api_key.as_str());
                     return Err(Error::llm(format!(
                         "anthropic HTTP {}: {}",
                         status,
-                        truncate(&body_text, 500)
+                        truncate(&safe_body, 500)
                     )));
                 }
                 Err(e) => {

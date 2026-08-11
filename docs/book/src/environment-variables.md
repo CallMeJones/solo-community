@@ -14,15 +14,16 @@ two API key vars (which gate optional features) and
 | `SOLO_OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model used by `SOLO_EMBEDDER=ollama` and init-time probing. Persisted migrated data dirs store the chosen model in `[embedder].name` as `ollama:<model>`. |
 | `SOLO_OLLAMA_KEEP_ALIVE` | `30s` | Request-level Ollama `keep_alive` value for Solo embedding calls. Set `5m` to restore Ollama's normal default, or `0` to ask Ollama to unload after each request. |
 | `SOLO_OLLAMA_LLM_KEEP_ALIVE` | `30s` | Request-level Ollama `keep_alive` value for Steward chat calls. Falls back to `SOLO_OLLAMA_KEEP_ALIVE` when unset. |
+| `OLLAMA_API_KEY` | _none_ | Bearer token for direct Ollama Cloud Steward calls. The config stores this variable name, not the key value. |
+| `SOLO_HOSTED_PROCESSING_CONSENT` | _unset_ | Set to `true` only to acknowledge off-device processing for the deprecated environment-only hosted-provider path. The Web wizard records consent in `[llm]` instead. |
 | `OLLAMA_KEEP_ALIVE` | _unset_ | Ollama server default keep-alive. When Solo Tray auto-starts local `ollama serve` and this variable is unset, it starts Ollama with `30s` to avoid leaving large models resident after idle Solo work. |
-| `SOLO_BGE_M3_DIR` | _none_ | Path to a directory containing BGE-M3 weights (`config.json`, `tokenizer.json`, `model.safetensors`). If set, Solo loads BGE-M3 instead of the StubEmbedder fallback. See Model Selection. |
 | `SOLO_REFUSE_STUB_EMBEDDER` | _unset_ | When set (any value), `solo consolidate` and the daemon's consolidate timer **refuse to run** if the active embedder is the 32-dim BLAKE3 stub. Without it, Solo emits a `tracing::error!` per consolidate run when the stub is active but still proceeds. Recommended for production deployments. v0.11.2+. |
 | `SOLO_NO_LOCKFILE` | _unset_ | Proxy-friendly mode for `solo mcp-stdio` only. When set (any value), skips `solo.lock` acquisition so a gateway (Cloudflare Access, Pomerium, etc.) can spawn multiple ephemeral `mcp-stdio` subprocesses against one shared data dir. **Dangerous**: breaks the writer-actor single-process invariant. See [MCP Integration § Gateway / proxy mode](./mcp-integration.md#gateway--proxy-mode-no-lockfile) for safety guidance. Equivalent to `--no-lockfile` on the CLI. v0.11.5+. |
-| `ANTHROPIC_API_KEY` | _none_ | Anthropic Claude API key. If set, the consolidation pipeline uses Anthropic for abstraction + contradiction detection. |
-| `ANTHROPIC_MODEL` | `claude-3-5-sonnet-20241022` | Anthropic model name. |
-| `OPENAI_API_KEY` | _none_ | OpenAI API key. Activates the OpenAI Steward when `ANTHROPIC_API_KEY` is unset. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI / OpenAI-compatible model name. |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI base URL. Override for LM Studio, Ollama, and other OpenAI-compatible services. Trailing slashes are stripped. |
+| `ANTHROPIC_API_KEY` | _none_ | Anthropic Claude API key. Persisted `[llm]` config stores this variable name, never the value. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Legacy environment-only Anthropic model override. |
+| `OPENAI_API_KEY` | _none_ | OpenAI API key. Persisted `[llm]` config stores this variable name, never the value. |
+| `OPENAI_MODEL` | `gpt-5.6-terra` | Legacy environment-only OpenAI/OpenAI-compatible model override. |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Legacy OpenAI-compatible base URL override. Persisted Ollama settings use their native `base_url` field. |
 | `RUST_LOG` | _none_ (defaults to WARN) | Standard `tracing-subscriber` filter. Examples: `RUST_LOG=info`, `RUST_LOG=solo_storage=debug,info`. |
 
 ## Precedence rules
@@ -31,13 +32,11 @@ two API key vars (which gate optional features) and
     fallback (e.g. `--data-dir` with `SOLO_DATA_DIR`), the
     flag wins. Useful for overriding the env in a single
     command without unsetting it.
-  - **`ANTHROPIC_API_KEY` > `OPENAI_API_KEY` > none.** When
-    both LLM keys are set, Solo picks Anthropic. See Model
-    Selection for the rationale.
-  - **`SOLO_BGE_M3_DIR` set + dir invalid → hard error.**
-    Solo doesn't silently fall back to the stub if the
-    directory exists but doesn't parse as BGE-M3. Better to
-    fail at startup than mix vector spaces.
+  - **Persisted `[llm]` > legacy provider env detection.** Fresh installs
+    write `mode = "none"`, so an inherited API key never turns hosted memory
+    processing on. Only old configs without an `[llm]` block use the legacy
+    Anthropic-then-OpenAI fallback, and that path also requires
+    `SOLO_HOSTED_PROCESSING_CONSENT=true`.
 
 ## Where to set them
 

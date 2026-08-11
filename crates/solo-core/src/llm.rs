@@ -50,7 +50,7 @@ impl Message {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     /// Backend identifier — "qwen3-coder-30b-local", "claude-sonnet-4-6",
-    /// "gpt-5o", etc. Used in dev-log entries and consolidation provenance
+    /// "gpt-5.6-terra", etc. Used in dev-log entries and consolidation provenance
     /// (`Provenance::by`).
     fn name(&self) -> &str;
 

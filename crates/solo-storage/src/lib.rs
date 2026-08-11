@@ -63,6 +63,7 @@ pub mod asset_blob;
 pub mod audit;
 pub mod backup;
 pub mod config;
+pub mod derived_readiness;
 pub mod document;
 pub mod embedder;
 pub mod embedder_registry;
@@ -113,9 +114,11 @@ pub use backup::{
 };
 pub use config::{
     AuditSettings, AuthSettings, CustomRedactionPattern, DocumentConfig, EmbedderConfig,
-    IdentityConfig, LlmSettings, RedactionConfig, SamplingConfig, SamplingConfigDiagnostic,
-    SoloConfig, StewardSettings, TriplesConfig, WorkspaceFileAccessConfig,
+    IdentityConfig, LlmSettings, OllamaEndpointKind, RedactionConfig, SamplingConfig,
+    SamplingConfigDiagnostic, SoloConfig, StewardSettings, TriplesConfig,
+    WorkspaceFileAccessConfig,
 };
+pub use derived_readiness::{DerivedCoverageSnapshot, read_derived_coverage};
 pub use document::{ChunkConfig, ChunkSpec, ParseError, ParsedDocument, chunk_text, parse_file};
 pub use embedder::{
     OllamaEmbedder, StubEmbedder, build_embedder_from_env, probe_embedder_config_from_env,

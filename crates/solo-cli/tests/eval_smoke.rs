@@ -63,6 +63,33 @@ fn eval_list_shows_bundled_fixtures() {
 }
 
 #[test]
+fn production_retrieval_corpus_is_versioned_and_covers_hard_cases() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/corpora/retrieval-v1.json");
+    let raw = std::fs::read_to_string(&path).expect("read retrieval corpus");
+    let corpus: serde_json::Value = serde_json::from_str(&raw).expect("valid corpus JSON");
+    assert_eq!(corpus["version"], 1);
+    assert_eq!(corpus["model_baseline"], "bundled:all-MiniLM-L6-v2@v2");
+    let cases = corpus["cases"].as_array().expect("cases array");
+    assert!(
+        cases.len() >= 8,
+        "retrieval corpus should span multiple failure modes"
+    );
+    let categories = cases
+        .iter()
+        .filter_map(|case| case["category"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for expected in [
+        "semantic_paraphrase",
+        "lexical_rescue",
+        "entity_ambiguity",
+        "correction",
+        "negation",
+    ] {
+        assert!(categories.contains(expected), "missing category {expected}");
+    }
+}
+
+#[test]
 fn eval_run_json_scores_bundled_fixture() {
     let out = run_cmd(&["eval", "run", "memory-baseline", "--json"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
