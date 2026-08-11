@@ -12,16 +12,39 @@
 //   SOLO_BRIDGE_PORT  Port the bridge listens on (default 7436)
 //   SOLO_BIN          Path to the solo binary (default "solo")
 //   SOLO_PASSPHRASE   Forwarded to solo automatically via env
+//   SOLO_BRIDGE_TOKEN Optional bearer token (random and printed when omitted)
 //
 // Then open solo-web Settings and set the Solo API URL to:
 //   http://127.0.0.1:7436
 
 import { spawn } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const _rawPort = Number(process.env.SOLO_BRIDGE_PORT ?? '7436');
 const PORT = Number.isInteger(_rawPort) && _rawPort > 0 && _rawPort < 65536 ? _rawPort : 7436;
 const SOLO_BIN = process.env.SOLO_BIN ?? 'solo';
+const MCP_CALL_TIMEOUT_MS = 30_000;
+const MAX_BODY_BYTES = 1024 * 1024;
+
+export function resolveBridgeToken(configuredToken) {
+  const token = configuredToken?.trim();
+  if (!token) return randomBytes(32).toString('hex');
+  if (Buffer.byteLength(token, 'utf8') < 32) {
+    throw new Error('SOLO_BRIDGE_TOKEN must contain at least 32 bytes');
+  }
+  return token;
+}
+
+export function soloProcessEnvironment(environment) {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.SOLO_BRIDGE_TOKEN;
+  return childEnvironment;
+}
+
+const BRIDGE_TOKEN = resolveBridgeToken(process.env.SOLO_BRIDGE_TOKEN);
 
 // MCP JSON-RPC 2.0 stdio client
 
@@ -38,7 +61,7 @@ class McpClient {
     const args = ['mcp-stdio'];
 
     this._proc = spawn(SOLO_BIN, args, {
-      env: { ...process.env },
+      env: soloProcessEnvironment(process.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -49,14 +72,15 @@ class McpClient {
     // Without this Node throws an uncaught 'error' event and crashes the bridge.
     this._proc.stdin.on('error', (e) => {
       console.error(`[bridge] stdin error (solo may have exited): ${e.message}`);
+      this._failPending(e);
+    });
+    this._proc.on('error', (error) => {
+      console.error(`[bridge] could not start solo: ${error.message}`);
+      this._failPending(error);
     });
     this._proc.on('exit', (code) => {
-      this._dead = true;
       console.error(`[bridge] solo process exited (code ${code})`);
-      for (const { reject } of this._pending.values()) {
-        reject(new Error(`solo process exited with code ${code}`));
-      }
-      this._pending.clear();
+      this._failPending(new Error(`solo process exited with code ${code}`));
     });
 
     return this._initialize();
@@ -85,8 +109,9 @@ class McpClient {
         continue;
       }
       if (msg.id != null && this._pending.has(msg.id)) {
-        const { resolve, reject } = this._pending.get(msg.id);
+        const { resolve, reject, timeout } = this._pending.get(msg.id);
         this._pending.delete(msg.id);
+        clearTimeout(timeout);
         if (msg.error) {
           reject(Object.assign(new Error(msg.error.message ?? 'MCP error'), { mcpCode: msg.error.code }));
         } else {
@@ -100,14 +125,34 @@ class McpClient {
     this._proc.stdin.write(JSON.stringify(obj) + '\n');
   }
 
+  _failPending(error) {
+    this._dead = true;
+    for (const { reject, timeout } of this._pending.values()) {
+      clearTimeout(timeout);
+      reject(error);
+    }
+    this._pending.clear();
+  }
+
   _call(method, params) {
     if (this._dead) {
       return Promise.reject(new Error('solo process has exited - restart the bridge'));
     }
     return new Promise((resolve, reject) => {
       const id = this._seq++;
-      this._pending.set(id, { resolve, reject });
-      this._send({ jsonrpc: '2.0', id, method, params });
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error(`MCP ${method} timed out after ${MCP_CALL_TIMEOUT_MS}ms`));
+      }, MCP_CALL_TIMEOUT_MS);
+      timeout.unref?.();
+      this._pending.set(id, { resolve, reject, timeout });
+      try {
+        this._send({ jsonrpc: '2.0', id, method, params });
+      } catch (error) {
+        clearTimeout(timeout);
+        this._pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -208,16 +253,39 @@ function noContentResponse(res) {
   res.end();
 }
 
-function readBody(req) {
+export function isAuthorized(authorization, expectedToken) {
+  if (typeof authorization !== 'string' || !expectedToken) return false;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  if (!match) return false;
+  const supplied = Buffer.from(match[1], 'utf8');
+  const expected = Buffer.from(expectedToken, 'utf8');
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+export function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
+    let received = 0;
+    let tooLarge = false;
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > maxBytes) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      if (!tooLarge) chunks.push(chunk);
+    });
     req.on('error', reject); // client disconnect - propagates to handle()'s catch
     req.on('end', () => {
+      if (tooLarge) {
+        reject(Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { statusCode: 413 }));
+        return;
+      }
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
-        resolve({});
+        reject(Object.assign(new Error('request body must be valid JSON'), { statusCode: 400 }));
       }
     });
   });
@@ -225,7 +293,7 @@ function readBody(req) {
 
 // Route handler
 
-async function handle(client, req, res) {
+export async function handle(client, req, res, expectedToken = BRIDGE_TOKEN) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
   const method = req.method?.toUpperCase() ?? 'GET';
@@ -233,6 +301,11 @@ async function handle(client, req, res) {
   if (method === 'OPTIONS') {
     res.writeHead(204, CORS);
     return res.end();
+  }
+
+  if (!isAuthorized(req.headers.authorization, expectedToken)) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="solo-bridge"');
+    return jsonResponse(res, 401, { error: 'valid Solo bridge bearer token required' });
   }
 
   try {
@@ -264,7 +337,7 @@ async function handle(client, req, res) {
     // POST /v1/inbox/:id/review
     const reviewMatch = path.match(/^\/v1\/inbox\/([^/]+)\/review$/);
     if (reviewMatch && method === 'POST') {
-      const body = await readBody(req);
+      const body = await readJsonBody(req);
       const result = await client.tool('memory_review', {
         memory_id: decodeURIComponent(reviewMatch[1]),
         state: body.state,
@@ -362,7 +435,7 @@ async function handle(client, req, res) {
 
     // POST /memory/contradictions/resolve
     if (method === 'POST' && path === '/memory/contradictions/resolve') {
-      const body = await readBody(req);
+      const body = await readJsonBody(req);
       const result = await client.tool('memory_contradiction_resolve', {
         a_id: body.a_id,
         b_id: body.b_id,
@@ -379,7 +452,7 @@ async function handle(client, req, res) {
     // PATCH /memory/:id
     const memoryMatch = path.match(/^\/memory\/([^/]+)$/);
     if (memoryMatch && method === 'PATCH') {
-      const body = await readBody(req);
+      const body = await readJsonBody(req);
       const result = await client.tool('memory_update', {
         memory_id: memoryMatch[1],
         content: body.content,
@@ -402,32 +475,62 @@ async function handle(client, req, res) {
     return jsonResponse(res, 404, { error: `no bridge handler for ${method} ${path}` });
   } catch (err) {
     console.error(`[bridge] ${method} ${path} ->`, err.message);
-    return jsonResponse(res, 500, { error: err.message });
+    return jsonResponse(res, err.statusCode ?? 500, { error: err.message });
   }
 }
 
 // Main
 
-console.log(`[bridge] spawning ${SOLO_BIN} mcp-stdio ...`);
-const client = new McpClient();
-await client.start();
-console.log('[bridge] MCP handshake complete');
+export async function startBridge() {
+  console.log(`[bridge] spawning ${SOLO_BIN} mcp-stdio ...`);
+  console.log(`[bridge] ephemeral bearer token (sensitive): ${BRIDGE_TOKEN}`);
+  console.log('[bridge] paste this token into Solo Web Settings for the bridge connection');
+  const client = new McpClient();
+  try {
+    await client.start();
+  } catch (error) {
+    client._proc?.kill();
+    throw error;
+  }
+  console.log('[bridge] MCP handshake complete');
 
-const server = createServer((req, res) => {
-  handle(client, req, res).catch((err) => {
-    console.error('[bridge] unhandled error:', err);
-    try { jsonResponse(res, 500, { error: 'internal bridge error' }); } catch { /* already sent */ }
+  const server = createServer((req, res) => {
+    handle(client, req, res).catch((err) => {
+      console.error('[bridge] unhandled error:', err);
+      try {
+        jsonResponse(res, 500, { error: 'internal bridge error' });
+      } catch {
+        // Response was already sent.
+      }
+    });
   });
-});
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[bridge] listening -> http://127.0.0.1:${PORT}`);
-  console.log('[bridge] open solo-web Settings -> set Solo API URL to this address');
-});
+  server.on('error', (error) => {
+    console.error(`[bridge] HTTP server failed: ${error.message}`);
+    client._proc?.kill();
+    process.exitCode = 1;
+  });
 
-process.on('SIGINT', () => {
-  console.log('\n[bridge] shutting down');
-  server.close();
-  client._proc?.kill();
-  process.exit(0);
-});
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`[bridge] listening -> http://127.0.0.1:${PORT}`);
+    console.log('[bridge] open Solo Web Settings and select the Developer bridge');
+  });
+
+  function shutdown() {
+    console.log('\n[bridge] shutting down');
+    server.close();
+    client._proc?.kill();
+    process.exit(0);
+  }
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+const entryPoint = process.argv[1];
+if (entryPoint && import.meta.url === pathToFileURL(resolve(entryPoint)).href) {
+  startBridge().catch((error) => {
+    console.error(`[bridge] startup failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+}

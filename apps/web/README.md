@@ -43,6 +43,8 @@ Use this when Solo is already running via Claude Desktop (stdio mode) and you
 don't want to start a second daemon. The bridge spawns its own `solo mcp-stdio`
 process — two processes share the same WAL database safely.
 
+Linux/macOS:
+
 ```bash
 # Terminal 1 — start the bridge
 cd /path/to/solo-community/apps/web
@@ -52,9 +54,26 @@ SOLO_PASSPHRASE=your-passphrase npm run bridge
 npm run dev
 ```
 
+Windows PowerShell:
+
+```powershell
+# Terminal 1 - start the bridge
+Set-Location C:\path\to\solo-community\apps\web
+$env:SOLO_PASSPHRASE = 'your-passphrase'
+npm run bridge
+
+# Terminal 2 - start Solo Web
+npm run dev
+```
+
 Open http://localhost:5173. In the Settings dialog, click the **MCP bridge**
 chip — it fills the Solo daemon URL to `http://127.0.0.1:7436` automatically.
-Save, and the status strip will turn green.
+The bridge prints a random bearer token when it starts. Treat that terminal
+output as sensitive and paste the token into
+the Settings dialog's **Bearer token** field, then save. The status strip will
+turn green. Set
+`SOLO_BRIDGE_TOKEN` before startup only when you need a stable development
+token; never commit it.
 
 **Bridge limitations vs. HTTP server:**
 
@@ -82,11 +101,12 @@ Copy `.env.example` to `.env` to override locally.
 
 ### Bridge env vars
 
-| Var                | Default   | Purpose                                                           |
-| ------------------ | --------- | ----------------------------------------------------------------- |
-| `SOLO_PASSPHRASE`  | —         | Database passphrase. Forwarded automatically to `solo mcp-stdio`. |
-| `SOLO_BRIDGE_PORT` | `7436`    | Port the bridge HTTP server listens on.                           |
-| `SOLO_BIN`         | `solo`    | Path to the `solo` binary (useful if not on `PATH`).              |
+| Var                 | Default          | Purpose                                                           |
+| ------------------- | ---------------- | ----------------------------------------------------------------- |
+| `SOLO_PASSPHRASE`   | —                | Database passphrase. Forwarded automatically to `solo mcp-stdio`. |
+| `SOLO_BRIDGE_PORT`  | `7436`           | Port the bridge HTTP server listens on.                           |
+| `SOLO_BRIDGE_TOKEN` | random per start | Optional 32-byte-or-longer bearer override for local development. |
+| `SOLO_BIN`          | `solo`           | Path to the `solo` binary (useful if not on `PATH`).              |
 
 ---
 
