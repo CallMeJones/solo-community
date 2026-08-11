@@ -61,14 +61,22 @@ export function buildGraphPresentation(
     .map((edge) => ({ ...edge }));
 
   if (!visibleKinds.has('chunk')) {
+    const hiddenChunksByDocument = new Map<string, GraphEdge[]>();
+    for (const edge of graph.edges) {
+      if (
+        edge.kind !== 'document_chunk' ||
+        !visibleRealIds.has(edge.source) ||
+        visibleRealIds.has(edge.target)
+      ) {
+        continue;
+      }
+      const edges = hiddenChunksByDocument.get(edge.source) ?? [];
+      edges.push(edge);
+      hiddenChunksByDocument.set(edge.source, edges);
+    }
     for (const document of visibleRealNodes.filter((node) => node.kind === 'document')) {
       if (expandedNodeIds.has(document.id)) continue;
-      const hiddenChunkEdges = graph.edges.filter(
-        (edge) =>
-          edge.kind === 'document_chunk' &&
-          edge.source === document.id &&
-          !visibleRealIds.has(edge.target),
-      );
+      const hiddenChunkEdges = hiddenChunksByDocument.get(document.id) ?? [];
       if (hiddenChunkEdges.length === 0) continue;
 
       const count = hiddenChunkEdges.length;
@@ -148,6 +156,14 @@ export function describeGraphEdge(edge: PresentedGraphLink): string {
 
 export function documentIdForSummary(node: PresentedGraphNode): string | null {
   return node.__aggregateForDocumentId ?? null;
+}
+
+/** Force-graph accepts HTML strings; use a text-only element for memory-owned content. */
+export function createGraphTooltip(text: string): HTMLElement {
+  const tooltip = document.createElement('span');
+  tooltip.textContent = text;
+  tooltip.style.whiteSpace = 'pre-line';
+  return tooltip;
 }
 
 function documentSummaryId(documentId: string): string {

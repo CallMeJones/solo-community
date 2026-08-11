@@ -505,11 +505,15 @@ describe('api client', () => {
   it('fetchGraph follows node and edge cursors so links keep both endpoints', async () => {
     useSettingsStore.getState().setAll({
       apiUrl: 'http://solo.test',
-      bearerToken: '',
+      bearerToken: 'original-graph-bearer',
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url === 'http://solo.test/v1/graph/nodes?limit=500') {
+        useSettingsStore.getState().setAll({
+          apiUrl: 'http://replacement.test',
+          bearerToken: 'replacement-graph-bearer',
+        });
         return jsonResponse({
           nodes: [{ id: 'ep:1', kind: 'episode', label: 'Episode 1', ts_ms: 1 }],
           next_cursor: 'nodes-page-2',
@@ -541,6 +545,13 @@ describe('api client', () => {
 
     expect(graph.nodes.map((node) => node.id)).toStrictEqual(['ep:1', 'cl:1']);
     expect(graph.edges.map((edge) => edge.id)).toStrictEqual(['e:1', 'e:2']);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(String(url)).toMatch(/^http:\/\/solo\.test\/v1\/graph\/(nodes|edges)/);
+      expect(new Headers(init?.headers).get('authorization')).toBe(
+        'Bearer original-graph-bearer',
+      );
+    }
     expect(fetchMock).toHaveBeenCalledWith(
       'http://solo.test/v1/graph/nodes?limit=500&cursor=nodes-page-2',
       expect.objectContaining({

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { GraphResponse, NodeKind } from '../src/api/types';
 import {
   buildGraphPresentation,
+  createGraphTooltip,
   describeGraphEdge,
   describeGraphNode,
   documentIdForSummary,
@@ -86,5 +87,13 @@ describe('graph presentation', () => {
       'uses for embeddings\n2 evidence sources · 88% confidence',
     );
     expect(solo).toMatchObject({ __highlighted: true, __relationshipCount: 1 });
+  });
+
+  it('renders memory-owned tooltip content as text rather than HTML', () => {
+    const tooltip = createGraphTooltip('<img src=x onerror="globalThis.pwned=true">');
+
+    expect(tooltip.textContent).toBe('<img src=x onerror="globalThis.pwned=true">');
+    expect(tooltip.querySelector('img')).toBeNull();
+    expect(tooltip.innerHTML).toContain('&lt;img');
   });
 });

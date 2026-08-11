@@ -670,9 +670,11 @@ async function fetchGraphPages<T>(
 
 /** GET /v1/graph/nodes + GET /v1/graph/edges, batched client-side into one response. */
 export async function fetchGraph(opts: RequestOptions = {}): Promise<GraphResponse> {
+  const connection = requestConnection(opts);
+  const stableOpts = { ...opts, connection };
   const [nodes, edges] = await Promise.all([
-    fetchGraphPages<GraphResponse['nodes'][number]>('/v1/graph/nodes', 'nodes', opts),
-    fetchGraphPages<GraphResponse['edges'][number]>('/v1/graph/edges', 'edges', opts),
+    fetchGraphPages<GraphResponse['nodes'][number]>('/v1/graph/nodes', 'nodes', stableOpts),
+    fetchGraphPages<GraphResponse['edges'][number]>('/v1/graph/edges', 'edges', stableOpts),
   ]);
   return {
     nodes,

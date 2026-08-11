@@ -8,6 +8,7 @@ import { useGraphStore } from '../store/graphStore';
 import { NODE_KIND_COLORS, NODE_KIND_SIZES } from '../lib/nodeKindTheme';
 import {
   buildGraphPresentation,
+  createGraphTooltip,
   describeGraphEdge,
   describeGraphNode,
   documentIdForSummary,
@@ -220,7 +221,7 @@ export function GraphView() {
             height={height}
             backgroundColor="#080604"
             nodeId="id"
-            nodeLabel={describeGraphNode}
+            nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
             nodeCanvasObject={nodeCanvasObject}
             nodePointerAreaPaint={(
               node: ForceGraphNode,
@@ -239,7 +240,7 @@ export function GraphView() {
               ctx.fill();
             }}
             linkColor={graphLinkColor}
-            linkLabel={describeGraphEdge}
+            linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
             linkDirectionalParticles={graphLinkDirectionalParticles}
             linkDirectionalParticleColor={graphLinkColor}
@@ -263,7 +264,7 @@ export function GraphView() {
             height={height}
             backgroundColor="#080604"
             nodeId="id"
-            nodeLabel={describeGraphNode}
+            nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
             nodeColor={(n: ForceGraphNode) => NODE_KIND_COLORS[n.kind]}
             nodeVal={(n: ForceGraphNode) =>
               n.__aggregateForDocumentId
@@ -271,7 +272,7 @@ export function GraphView() {
                 : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
             }
             linkColor={graphLinkColor}
-            linkLabel={describeGraphEdge}
+            linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
             linkDirectionalParticles={graphLinkDirectionalParticles}
             linkDirectionalParticleColor={graphLinkColor}
