@@ -68,6 +68,8 @@ export function InspectorPanel() {
   const searchQuery = useGraphStore((s) => s.searchQuery);
   const visibleKinds = useGraphStore((s) => s.visibleKinds);
   const addRecalled = useGraphStore((s) => s.addRecalled);
+  const expandedNodeIds = useGraphStore((s) => s.expandedNodeIds);
+  const toggleExpansion = useGraphStore((s) => s.toggleExpansion);
   const { data, isLoading } = useSelectedNode();
   const [similar, setSimilar] = useState<SimilarState>({
     loading: false,
@@ -254,7 +256,17 @@ export function InspectorPanel() {
 
   const { node, full_text, triples_in, triples_out } = data;
   const literalFacts = data.literal_facts ?? [];
-  const neighborCount = triples_in.length + triples_out.length;
+  const incidentGraphEdges =
+    graphCache?.edges.filter(
+      (edge) => edge.source === selectedNodeId || edge.target === selectedNodeId,
+    ) ?? [];
+  const graphConnectionCount = incidentGraphEdges.length;
+  const documentChunkCount = incidentGraphEdges.filter(
+    (edge) => edge.kind === 'document_chunk',
+  ).length;
+  const isExpanded = expandedNodeIds.has(node.id);
+  const displayedRefCount =
+    node.ref_count ?? graphCache?.nodes.find((candidate) => candidate.id === node.id)?.ref_count;
   const canEditMemory = node.kind === 'episode' && full_text !== undefined;
   const editDirty = editText !== (full_text ?? '');
   const entitiesForCurrent =
@@ -288,10 +300,38 @@ export function InspectorPanel() {
       {full_text && (
         <section>
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
-            Full text
+            {node.kind === 'document' ? 'Document text' : 'Full text'}
           </h3>
-          <p className="whitespace-pre-wrap rounded-md bg-slate-900 p-2 text-slate-200">
+          <p className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-md bg-slate-900 p-2 text-slate-200">
             {full_text}
+          </p>
+        </section>
+      )}
+
+      {node.kind === 'document' && (
+        <section className="rounded-md border border-orange-900/60 bg-orange-950/20 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-200">
+                Indexed sections
+              </h3>
+              <p className="mt-1 text-xs text-slate-400">
+                {documentChunkCount} searchable section{documentChunkCount === 1 ? '' : 's'} belong
+                to this document.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => toggleExpansion(node.id)}
+              disabled={documentChunkCount === 0}
+              className="shrink-0 rounded-md border border-orange-800 bg-slate-950 px-2 py-1 text-[10px] uppercase tracking-wider text-orange-200 hover:border-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isExpanded ? 'Collapse' : 'Reveal'}
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Sections are collapsed into one summary node by default so large documents do not
+            overwhelm the memory graph.
           </p>
         </section>
       )}
@@ -359,9 +399,23 @@ export function InspectorPanel() {
 
       <section className="grid grid-cols-2 gap-2 text-xs">
         <div className="col-span-2 rounded-md bg-slate-900 p-2">
-          <div className="text-slate-400">Neighbors</div>
-          <div className="text-base font-semibold text-slate-100">{neighborCount}</div>
+          <div className="text-slate-400">Graph connections</div>
+          <div className="text-base font-semibold text-slate-100">{graphConnectionCount}</div>
         </div>
+        {node.kind === 'episode' && node.source_type && (
+          <div className="rounded-md bg-slate-900 p-2">
+            <div className="text-slate-400">Source</div>
+            <div className="truncate text-xs font-medium text-slate-100">{node.source_type}</div>
+          </div>
+        )}
+        {node.kind === 'episode' && typeof node.salience === 'number' && (
+          <div className="rounded-md bg-slate-900 p-2">
+            <div className="text-slate-400">Salience</div>
+            <div className="text-xs font-medium text-slate-100">
+              {Math.round(node.salience * 100)}%
+            </div>
+          </div>
+        )}
         {node.ts_ms && (
           <div className="col-span-2 rounded-md bg-slate-900 p-2">
             <div className="text-slate-400">Created</div>
@@ -370,10 +424,10 @@ export function InspectorPanel() {
             </div>
           </div>
         )}
-        {typeof node.ref_count === 'number' && (
+        {typeof displayedRefCount === 'number' && (
           <div className="col-span-2 rounded-md bg-slate-900 p-2">
             <div className="text-slate-400">Reference count</div>
-            <div className="text-base font-semibold text-slate-100">{node.ref_count}</div>
+            <div className="text-base font-semibold text-slate-100">{displayedRefCount}</div>
           </div>
         )}
       </section>
@@ -416,7 +470,14 @@ export function InspectorPanel() {
                 className="flex items-center gap-2 rounded-md bg-slate-900 px-2 py-1 text-xs"
               >
                 <span className="text-slate-400">{e.predicate ?? e.kind}</span>
-                <span className="flex-1 truncate font-mono text-slate-300">{e.target}</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedNodeId(e.target)}
+                  title={e.target}
+                  className="min-w-0 flex-1 truncate text-left text-sky-300 hover:text-sky-200 hover:underline"
+                >
+                  {graphNodeDisplayLabel(graphCache, e.target)}
+                </button>
               </li>
             ))}
           </ul>
@@ -434,7 +495,14 @@ export function InspectorPanel() {
                 key={e.id}
                 className="flex items-center gap-2 rounded-md bg-slate-900 px-2 py-1 text-xs"
               >
-                <span className="flex-1 truncate font-mono text-slate-300">{e.source}</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedNodeId(e.source)}
+                  title={e.source}
+                  className="min-w-0 flex-1 truncate text-left text-sky-300 hover:text-sky-200 hover:underline"
+                >
+                  {graphNodeDisplayLabel(graphCache, e.source)}
+                </button>
                 <span className="text-slate-400">{e.predicate ?? e.kind}</span>
               </li>
             ))}
@@ -629,4 +697,8 @@ function SimilarList({
 
 function neighborQueryKind(kind: NodeKind): 'semantic' | 'explicit' {
   return kind === 'episode' || kind === 'chunk' ? 'semantic' : 'explicit';
+}
+
+function graphNodeDisplayLabel(graph: GraphResponse | null, nodeId: string): string {
+  return graph?.nodes.find((node) => node.id === nodeId)?.label ?? nodeId;
 }

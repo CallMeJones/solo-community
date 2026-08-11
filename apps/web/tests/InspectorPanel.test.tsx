@@ -149,6 +149,60 @@ describe('InspectorPanel', () => {
     expect(screen.getAllByText(/talked about Helsinki/i).length).toBeGreaterThanOrEqual(1);
   });
 
+  it('explains collapsed document sections and reveals them from the inspector', async () => {
+    const documentId = 'doc:solo-guide';
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 60_000, staleTime: 0 } },
+    });
+    const { apiUrl, connectionRevision } = useSettingsStore.getState();
+    client.setQueryData(['graph', apiUrl, connectionRevision, 'live'], {
+      nodes: [
+        { id: documentId, kind: 'document', label: 'Solo guide' },
+        { id: 'chunk:one', kind: 'chunk', label: 'First section' },
+        { id: 'chunk:two', kind: 'chunk', label: 'Second section' },
+      ],
+      edges: [
+        {
+          id: 'doc-one',
+          source: documentId,
+          target: 'chunk:one',
+          kind: 'document_chunk',
+        },
+        {
+          id: 'doc-two',
+          source: documentId,
+          target: 'chunk:two',
+          kind: 'document_chunk',
+        },
+      ],
+    });
+    useGraphStore.setState({ selectedNodeId: documentId });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          node: { id: documentId, kind: 'document', label: 'Solo guide' },
+          full_text: 'First section\n\nSecond section',
+          triples_in: [],
+          triples_out: [],
+        }),
+      ),
+    );
+
+    const Wrapper = makeWrapper(client);
+    render(
+      <Wrapper>
+        <InspectorPanel />
+      </Wrapper>,
+    );
+
+    await screen.findByText('Document text');
+    expect(screen.getByText(/2 searchable sections belong to this document/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^reveal$/i }));
+    expect(useGraphStore.getState().expandedNodeIds.has(documentId)).toBe(true);
+    expect(screen.getByRole('button', { name: /^collapse$/i })).toBeInTheDocument();
+  });
+
   it('clears the selection when "Clear" is clicked', async () => {
     useGraphStore.setState({ selectedNodeId: NODE_ID });
     vi.stubGlobal(

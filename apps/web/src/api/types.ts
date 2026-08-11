@@ -15,12 +15,18 @@ export interface GraphNode {
   ref_count?: number;
   /** Longer preview text (for inspector panel). */
   preview?: string;
+  /** Original episode source, such as user_message or codex. */
+  source_type?: string;
+  /** Episode salience in the range 0..1. */
+  salience?: number;
+  /** Episode lifecycle state. */
+  status?: string;
 }
 
 export type EdgeKind = 'triple' | 'document_chunk' | 'cluster_member' | 'semantic';
 
 export interface GraphEdge {
-  /** Composite id; e.g. `${source}--${kind}--${target}`. */
+  /** Stable edge identity. */
   id: string;
   /** Source node id. */
   source: string;
@@ -31,6 +37,21 @@ export interface GraphEdge {
   predicate?: string;
   /** For semantic edges (HNSW similarity score 0..1). */
   weight?: number;
+  /** First-class relationship evidence and temporal metadata when available. */
+  meta?: {
+    relationship_edge_id?: string;
+    subject_entity_id?: string;
+    object_entity_id?: string;
+    object_kind?: string;
+    confidence?: number;
+    strength?: number;
+    evidence_count?: number;
+    valid_from_ms?: number;
+    valid_to_ms?: number | null;
+    status?: string;
+    evidence_memory_id?: string | null;
+    [key: string]: unknown;
+  };
 }
 
 export interface GraphLiteralFact {

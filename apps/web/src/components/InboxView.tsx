@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import {
+  captureApiConnection,
   fetchContradictions,
   fetchInbox,
   fetchInspect,
@@ -218,18 +219,23 @@ export function InboxView({ onSelectEpisode }: InboxViewProps) {
   const handleBulkReview = async (state: MemoryReviewRequestState) => {
     const targets = bulkReviewTargets(visibleEpisodes, state);
     if (targets.length === 0) return;
+    const connection = captureApiConnection();
     setEpisodeActionError(null);
     setBulkReviewingState(state);
     try {
       for (const episode of targets) {
         await reviewMemory(episode.memory_id, state, {
+          connection,
           note: bulkReviewNoteFor(state),
         });
       }
-      await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] });
     } catch (err) {
       setEpisodeActionError(err instanceof Error ? err.message : String(err));
     } finally {
+      // Bulk review is intentionally sequential and can partially succeed.
+      // Always reconcile the inbox so an earlier committed row is not shown
+      // with stale review state after a later row fails.
+      await queryClient.invalidateQueries({ queryKey: ['memory-inbox'] }).catch(() => undefined);
       setBulkReviewingState(null);
     }
   };

@@ -1665,6 +1665,7 @@ pub fn openapi_spec() -> serde_json::Value {
                         "source_type": { "type": ["string", "null"], "description": "Episode source type when kind=episode." },
                         "salience": { "type": ["number", "null"], "description": "Episode salience in [0, 1] when kind=episode." },
                         "status": { "type": ["string", "null"], "description": "Episode lifecycle status when kind=episode." },
+                        "ref_count": { "type": ["integer", "null"], "minimum": 0, "description": "Number of active graph relationships that reference an entity." },
                         "score": { "type": ["number", "null"] },
                         "meta": { "type": ["object", "null"], "additionalProperties": true }
                     },
@@ -6193,6 +6194,8 @@ struct GraphNode {
     salience: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ref_count: Option<i64>,
 }
 
 /// One edge. Mirrors `GraphEdge` in solo-web TS types. `id` is a composite
@@ -6278,6 +6281,7 @@ fn graph_node_for_episode(_library_id: &str, ep: &ExpandedEpisode) -> GraphNode 
         source_type: Some(ep.source_type.clone()),
         salience: Some(ep.salience),
         status: Some(ep.status.clone()),
+        ref_count: None,
     }
 }
 
@@ -6296,6 +6300,7 @@ fn graph_node_for_document(_library_id: &str, d: &ExpandedDocument) -> GraphNode
         source_type: None,
         salience: None,
         status: None,
+        ref_count: None,
     }
 }
 
@@ -6309,6 +6314,7 @@ fn graph_node_for_chunk(_library_id: &str, c: &ExpandedChunk) -> GraphNode {
         source_type: None,
         salience: None,
         status: None,
+        ref_count: None,
     }
 }
 
@@ -6330,6 +6336,7 @@ fn graph_node_for_cluster(
         source_type: None,
         salience: None,
         status: None,
+        ref_count: None,
     }
 }
 
@@ -6343,6 +6350,7 @@ fn graph_node_for_entity(_library_id: &str, value: &str) -> GraphNode {
         source_type: None,
         salience: None,
         status: None,
+        ref_count: None,
     }
 }
 
@@ -7058,6 +7066,7 @@ async fn expand_semantic(
             source_type: None,
             salience: None,
             status: None,
+            ref_count: None,
         });
     }
     Ok(GraphExpandResponse { nodes, edges })
@@ -7885,6 +7894,7 @@ async fn graph_nodes_handler(
                     node.label = truncate_preview(&e.display_label, GRAPH_LABEL_CHARS);
                     node.ts_ms = Some(e.first_seen_ms);
                     node.preview = Some(format!("Graph references: {}", e.ref_count));
+                    node.ref_count = Some(e.ref_count);
                     staged.push(StagingNode {
                         sort_ts_ms: e.first_seen_ms,
                         sort_id: id.clone(),
@@ -8932,7 +8942,12 @@ async fn inspect_entity_node(
     // populate the relationship lists, but an active `entities` row is
     // enough for the inspector to return an empty relationship panel.
     let entity_q = entity_value.clone();
-    let (rows, display_label, entity_exists): (Vec<TripleRow>, Option<String>, bool) = tenant
+    let (rows, display_label, entity_exists, ref_count): (
+        Vec<TripleRow>,
+        Option<String>,
+        bool,
+        i64,
+    ) = tenant
         .read()
         .interact(move |conn| {
             let entity_label = conn
@@ -8951,6 +8966,48 @@ async fn inspect_entity_node(
                     other => Err(other),
                 })?;
             let entity_exists = entity_label.is_some();
+            let ref_count = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*)
+                       FROM relationship_edges re
+                      WHERE re.status = 'active'
+                        AND re.subject_entity_id = ?1)
+                    +
+                    (SELECT COUNT(*)
+                       FROM relationship_edges re
+                      WHERE re.status = 'active'
+                        AND re.object_kind = 'entity'
+                        AND re.object_entity_id = ?1)
+                    +
+                    (SELECT COUNT(*)
+                       FROM triples t
+                      WHERE t.status = 'active'
+                        AND t.subject_id = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_evidence ev
+                             WHERE ev.triple_id = t.triple_id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_edges re
+                             WHERE re.edge_id = t.triple_id
+                        ))
+                    +
+                    (SELECT COUNT(*)
+                       FROM triples t
+                      WHERE t.status = 'active'
+                        AND t.object_kind = 'entity'
+                        AND t.object_id = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_evidence ev
+                             WHERE ev.triple_id = t.triple_id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM relationship_edges re
+                             WHERE re.edge_id = t.triple_id
+                        ))",
+                rusqlite::params![&entity_q],
+                |r| r.get::<_, i64>(0),
+            )?;
             let mut stmt = conn.prepare(
                 "SELECT subject_id, predicate, object_id, object_kind, confidence
                    FROM triples
@@ -8991,7 +9048,7 @@ async fn inspect_entity_node(
                     other => Err(other),
                 })?;
             let display_label = entity_label.or(alias_label);
-            Ok::<_, rusqlite::Error>((rows, display_label, entity_exists))
+            Ok::<_, rusqlite::Error>((rows, display_label, entity_exists, ref_count))
         })
         .await
         .map_err(ApiError::from)?;
@@ -9047,6 +9104,7 @@ async fn inspect_entity_node(
     if let Some(display_label) = display_label {
         node.label = truncate_preview(&display_label, GRAPH_LABEL_CHARS);
     }
+    node.ref_count = Some(ref_count);
 
     Ok(GraphInspectResponse {
         node,
@@ -9570,6 +9628,7 @@ async fn neighbors_semantic_from_episode(
             source_type: None,
             salience: None,
             status: None,
+            ref_count: None,
         });
     }
     Ok((nodes, edges))
@@ -18705,6 +18764,47 @@ mod handler_tests {
         assert_eq!(solo["label"], "Solo Project");
         assert_eq!(solo["ts_ms"], 321);
         assert_eq!(solo["preview"], "Graph references: 0");
+        assert_eq!(solo["ref_count"], 0);
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn nodes_entity_synthesis_reports_active_reference_count() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        {
+            let conn = h.open_db();
+            let rowid = seed_episode(
+                &conn,
+                "dddddddd-0000-7000-8000-000000000302",
+                100,
+                "Alice knows Bob and Carol",
+            );
+            seed_triple_row(&conn, "t-ref-count-1", "Alice", "knows", "Bob", Some(rowid));
+            seed_triple_row(
+                &conn,
+                "t-ref-count-2",
+                "Alice",
+                "knows",
+                "Carol",
+                Some(rowid),
+            );
+        }
+
+        let (status, body) = runtime.block_on(call(
+            h.router.clone(),
+            "GET",
+            "/v1/graph/nodes?kind=entity",
+            None,
+        ));
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let alice = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "ent:Alice")
+            .unwrap_or_else(|| panic!("Alice entity missing: {body}"));
+        assert_eq!(alice["ref_count"], 2, "{body}");
         h.shutdown(&runtime);
     }
 
@@ -20204,6 +20304,7 @@ mod handler_tests {
         assert_eq!(status, StatusCode::OK, "body: {body}");
         assert_eq!(body["node"]["kind"], "entity");
         assert_eq!(body["node"]["id"], "ent:Alice");
+        assert_eq!(body["node"]["ref_count"], 5);
         assert!(
             body["full_text"].is_null(),
             "entity full_text must be null (entities have no body): {body}"
@@ -20262,6 +20363,7 @@ mod handler_tests {
         assert_eq!(body["node"]["kind"], "entity");
         assert_eq!(body["node"]["id"], "ent:Solo");
         assert_eq!(body["node"]["label"], "Solo Project");
+        assert_eq!(body["node"]["ref_count"], 0);
         assert!(body["triples_in"].as_array().unwrap().is_empty());
         assert!(body["triples_out"].as_array().unwrap().is_empty());
         assert!(
@@ -20270,6 +20372,55 @@ mod handler_tests {
                 .map(|facts| facts.is_empty())
                 .unwrap_or(true)
         );
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn inspect_entity_self_reference_count_matches_graph_catalog() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        {
+            let conn = h.open_db();
+            let rowid = seed_episode(
+                &conn,
+                "e5550000-0000-7000-8000-000000000002",
+                100,
+                "Alice reflects on herself",
+            );
+            seed_triple_row(
+                &conn,
+                "t-ent-self",
+                "Alice",
+                "reflects_on",
+                "Alice",
+                Some(rowid),
+            );
+        }
+
+        let (nodes_status, nodes_body) = runtime.block_on(call(
+            h.router.clone(),
+            "GET",
+            "/v1/graph/nodes?kind=entity",
+            None,
+        ));
+        assert_eq!(nodes_status, StatusCode::OK, "body: {nodes_body}");
+        let catalog_count = nodes_body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "ent:Alice")
+            .and_then(|node| node["ref_count"].as_i64())
+            .unwrap_or_else(|| panic!("Alice entity missing: {nodes_body}"));
+
+        let (inspect_status, inspect_body) = runtime.block_on(call(
+            h.router.clone(),
+            "GET",
+            &inspect_uri("ent:Alice"),
+            None,
+        ));
+        assert_eq!(inspect_status, StatusCode::OK, "body: {inspect_body}");
+        assert_eq!(catalog_count, 2, "body: {nodes_body}");
+        assert_eq!(inspect_body["node"]["ref_count"], catalog_count);
         h.shutdown(&runtime);
     }
 
