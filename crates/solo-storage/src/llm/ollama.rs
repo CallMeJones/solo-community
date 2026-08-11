@@ -77,6 +77,9 @@ pub struct OllamaChatClient {
     model: String,
     keep_alive: String,
     display_name: String,
+    bearer_token: Option<String>,
+    structured_outputs: bool,
+    allow_format_fallback: bool,
 }
 
 impl OllamaChatClient {
@@ -92,11 +95,34 @@ impl OllamaChatClient {
             keep_alive: keep_alive_from_env(),
             display_name: format!("ollama:{model}"),
             model,
+            bearer_token: None,
+            structured_outputs: true,
+            allow_format_fallback: true,
         })
     }
 
     pub fn with_keep_alive(mut self, keep_alive: impl AsRef<str>) -> Self {
         self.keep_alive = normalize_keep_alive(keep_alive.as_ref());
+        self
+    }
+
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_token = Some(token.into());
+        self
+    }
+
+    pub fn with_structured_outputs(mut self, enabled: bool) -> Self {
+        self.structured_outputs = enabled;
+        self
+    }
+
+    pub fn with_format_fallback(mut self, enabled: bool) -> Self {
+        self.allow_format_fallback = enabled;
+        self
+    }
+
+    pub fn with_display_prefix(mut self, prefix: &str) -> Self {
+        self.display_name = format!("{prefix}:{}", self.model);
         self
     }
 
@@ -116,24 +142,57 @@ impl LlmClient for OllamaChatClient {
     }
 
     async fn complete(&self, messages: &[Message]) -> Result<Message> {
-        let body = OllamaChatRequest {
-            model: &self.model,
-            messages: messages.iter().map(to_ollama_message).collect(),
-            stream: false,
-            response_format: "json",
-            keep_alive: &self.keep_alive,
-            options: OllamaChatOptions { temperature: 0.0 },
-        };
-        let url = format!("{}/api/chat", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::llm(format!("ollama chat request: {e}")))?;
+        let response = self.send_with_format_fallback(messages).await?;
+        let content = self.parse_chat_response(response).await?;
+        if serde_json::from_str::<serde_json::Value>(&content).is_ok() {
+            return Ok(Message {
+                role: Role::Assistant,
+                content,
+            });
+        }
 
+        // Ollama Cloud currently does not support the native `format`
+        // parameter. Keep the prompt-based JSON contract dependable by
+        // giving an otherwise-successful non-JSON response one bounded
+        // repair attempt. This is intentionally local to the Steward's
+        // JSON-only client rather than a general conversational retry.
+        let mut repair_messages = messages.to_vec();
+        repair_messages.push(Message {
+            role: Role::User,
+            content: "The previous response was not valid JSON. Return only one valid JSON value that satisfies the original request, with no markdown fences or commentary."
+                .to_string(),
+        });
+        let repaired = self
+            .parse_chat_response(self.send_with_format_fallback(&repair_messages).await?)
+            .await?;
+        serde_json::from_str::<serde_json::Value>(&repaired).map_err(|error| {
+            Error::llm(format!(
+                "ollama chat returned invalid JSON after one repair attempt: {error}"
+            ))
+        })?;
+        Ok(Message {
+            role: Role::Assistant,
+            content: repaired,
+        })
+    }
+}
+
+impl OllamaChatClient {
+    async fn send_with_format_fallback(&self, messages: &[Message]) -> Result<reqwest::Response> {
+        let response = self.send_chat(messages, self.structured_outputs).await?;
+        let status = response.status();
+        if !status.is_success()
+            && self.structured_outputs
+            && self.allow_format_fallback
+            && matches!(status.as_u16(), 400 | 404 | 422)
+        {
+            self.send_chat(messages, false).await
+        } else {
+            Ok(response)
+        }
+    }
+
+    async fn parse_chat_response(&self, response: reqwest::Response) -> Result<String> {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -148,11 +207,35 @@ impl LlmClient for OllamaChatClient {
             .json()
             .await
             .map_err(|e| Error::llm(format!("ollama chat response parse: {e}")))?;
-        let content = parsed.message.content;
-        Ok(Message {
-            role: Role::Assistant,
-            content,
-        })
+        Ok(parsed.message.content)
+    }
+
+    async fn send_chat(
+        &self,
+        messages: &[Message],
+        structured_outputs: bool,
+    ) -> Result<reqwest::Response> {
+        let body = OllamaChatRequest {
+            model: &self.model,
+            messages: messages.iter().map(to_ollama_message).collect(),
+            stream: false,
+            response_format: structured_outputs.then_some("json"),
+            keep_alive: &self.keep_alive,
+            options: OllamaChatOptions { temperature: 0.0 },
+        };
+        let url = format!("{}/api/chat", self.base_url);
+        let mut request = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&body);
+        if let Some(token) = self.bearer_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        request
+            .send()
+            .await
+            .map_err(|e| Error::llm(format!("ollama chat request: {e}")))
     }
 }
 
@@ -210,8 +293,8 @@ struct OllamaChatRequest<'a> {
     model: &'a str,
     messages: Vec<OllamaChatMessage>,
     stream: bool,
-    #[serde(rename = "format")]
-    response_format: &'static str,
+    #[serde(rename = "format", skip_serializing_if = "Option::is_none")]
+    response_format: Option<&'static str>,
     keep_alive: &'a str,
     options: OllamaChatOptions,
 }
@@ -314,6 +397,8 @@ pub fn is_ollama_base_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn detects_default_ollama_url() {
@@ -359,7 +444,7 @@ mod tests {
                 content: "hi".to_string(),
             }],
             stream: false,
-            response_format: "json",
+            response_format: Some("json"),
             keep_alive: "30s",
             options: OllamaChatOptions { temperature: 0.0 },
         };
@@ -394,5 +479,91 @@ mod tests {
         assert_eq!(wrapped.name(), "ollama:llama3.3:8b");
         // Inner is shared — model() reflects the same source.
         assert_eq!(inner.model(), "llama3.3:8b");
+    }
+
+    #[tokio::test]
+    async fn cloud_request_uses_bearer_auth_and_omits_unsupported_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(header("authorization", "Bearer cloud-secret"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-oss:120b-cloud",
+                "messages": [{"role": "user", "content": "extract"}],
+                "stream": false,
+                "keep_alive": "30s",
+                "options": {"temperature": 0.0}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {"content": "{\"facts\":[]}"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OllamaChatClient::new(server.uri(), "gpt-oss:120b-cloud")
+            .unwrap()
+            .with_bearer_token("cloud-secret")
+            .with_structured_outputs(false)
+            .with_format_fallback(false)
+            .with_display_prefix("ollama-cloud");
+        let response = client
+            .complete(&[Message {
+                role: Role::User,
+                content: "extract".to_string(),
+            }])
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "{\"facts\":[]}");
+        assert_eq!(client.name(), "ollama-cloud:gpt-oss:120b-cloud");
+    }
+
+    #[tokio::test]
+    async fn non_json_cloud_response_gets_one_repair_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_json(serde_json::json!({
+                "model": "cloud-model",
+                "messages": [{"role": "user", "content": "extract"}],
+                "stream": false,
+                "keep_alive": "30s",
+                "options": {"temperature": 0.0}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {"content": "not json"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "messages": [
+                    {"role": "user", "content": "extract"},
+                    {"role": "user", "content": "The previous response was not valid JSON. Return only one valid JSON value that satisfies the original request, with no markdown fences or commentary."}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {"content": "{\"repaired\":true}"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OllamaChatClient::new(server.uri(), "cloud-model")
+            .unwrap()
+            .with_structured_outputs(false)
+            .with_format_fallback(false);
+        let response = client
+            .complete(&[Message {
+                role: Role::User,
+                content: "extract".to_string(),
+            }])
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "{\"repaired\":true}");
     }
 }

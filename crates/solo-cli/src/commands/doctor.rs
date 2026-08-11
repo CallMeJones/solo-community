@@ -46,6 +46,17 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub with_stats: bool,
 
+    /// Prove write -> embed -> index -> semantic recall using an isolated
+    /// temporary encrypted database. The real memory library is never opened
+    /// or modified.
+    #[arg(long)]
+    pub round_trip: bool,
+
+    /// Live daemon base URL used when --with-stats detects that the daemon
+    /// owns solo.lock.
+    #[arg(long, default_value = "http://127.0.0.1:17821")]
+    pub daemon_url: String,
+
     /// Print a per-provider MCP tool-name compatibility report (does
     /// not open the database, does not require a passphrase). Exits 1
     /// if any tool name would be rejected by Anthropic / OpenAI /
@@ -99,6 +110,9 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
 
     if !data_dir.is_dir() {
         println!("status         : not initialized (run `solo init`)");
+        if args.round_trip {
+            run_isolated_round_trip().await?;
+        }
         return Ok(());
     }
 
@@ -108,13 +122,192 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
 
     if args.with_stats {
         println!();
-        report_stats(&data_dir).await?;
+        if live_lock_pid(&data_dir).is_some() {
+            report_live_daemon_stats(&data_dir, &args.daemon_url).await?;
+        } else {
+            report_stats(&data_dir).await?;
+        }
     } else {
         println!();
         println!("(pass --with-stats to open the database for live counts)");
     }
 
+    if args.round_trip {
+        run_isolated_round_trip().await?;
+    }
+
     Ok(())
+}
+
+fn live_lock_pid(data_dir: &Path) -> Option<u32> {
+    let body = fs::read_to_string(data_dir.join("solo.lock")).ok()?;
+    let pid = body.trim().parse::<u32>().ok()?;
+    is_pid_alive(pid).then_some(pid)
+}
+
+async fn report_live_daemon_stats(data_dir: &Path, daemon_url: &str) -> Result<()> {
+    let config = solo_storage::SoloConfig::read(&data_dir.join("solo.config.toml"))
+        .context("read config for live daemon diagnostics")?;
+    let url = format!("{}/v1/status", daemon_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("build doctor live-daemon client")?;
+    let mut request = client.get(&url);
+    if let Some(solo_storage::AuthSettings::Bearer { token }) = config.auth.as_ref() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("query live Solo daemon at {url}"))?;
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "live Solo daemon returned HTTP {} for {}; use the daemon's authenticated URL or run doctor without --with-stats",
+            response.status(),
+            url
+        );
+    }
+    let status: serde_json::Value = response
+        .json()
+        .await
+        .context("decode live Solo daemon status")?;
+    let coverage = &status["steward"]["coverage"];
+    println!("live daemon     : {} (database lock is healthy)", url);
+    println!(
+        "library         : {}",
+        status["library"]["name"]
+            .as_str()
+            .unwrap_or("Community Memory Library")
+    );
+    println!(
+        "active episodes : {}",
+        coverage["active_episodes"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "clusters        : {}",
+        coverage["clusters"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "abstractions    : {}",
+        coverage["abstractions"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "pending clusters: {}",
+        coverage["pending_clusters"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "triples         : {}",
+        coverage["triples"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "entities        : {}",
+        coverage["entities"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "relationships   : {}",
+        coverage["relationships"].as_u64().unwrap_or(0)
+    );
+    if let Some(name) = status["embedder"]["name"].as_str() {
+        println!("embedder        : {name}");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "bundled-embedder")]
+async fn run_isolated_round_trip() -> Result<()> {
+    use solo_core::{Confidence, Embedder, EncodingContext, Episode, MemoryId, Tier};
+    use solo_storage::{
+        BundledEmbedder, HnswParams, InitParams, KeyMaterial, MemoryLibrary, MemoryLibraryParams,
+    };
+    use std::sync::Arc;
+    use zeroize::Zeroizing;
+
+    println!();
+    println!("isolated round-trip:");
+    let tmp = tempfile::tempdir().context("create isolated doctor data dir")?;
+    let passphrase = Zeroizing::new("solo-doctor-temporary-round-trip".to_string());
+    let embedder = Arc::new(BundledEmbedder::new());
+    let embedder_config = solo_storage::EmbedderConfig {
+        name: solo_storage::BUNDLED_EMBEDDER_NAME.to_string(),
+        version: solo_storage::BUNDLED_EMBEDDER_VERSION.to_string(),
+        dim: solo_storage::BUNDLED_EMBEDDER_DIM as u32,
+        dtype: "f32".to_string(),
+    };
+    let initialized = solo_storage::init(InitParams {
+        data_dir: tmp.path().to_path_buf(),
+        passphrase: passphrase.clone(),
+        force: false,
+        embedder: embedder_config,
+    })
+    .context("initialize isolated doctor database")?;
+    let config = solo_storage::SoloConfig::read(&initialized.config_path)?;
+    let key = KeyMaterial::derive(&passphrase, &config.salt_bytes()?)?;
+    let library = MemoryLibrary::open(MemoryLibraryParams {
+        data_dir: tmp.path().to_path_buf(),
+        key,
+        embedder: embedder.clone(),
+        hnsw_params: HnswParams::default(),
+        steward: None,
+        runtime_handle: Some(tokio::runtime::Handle::current()),
+        steward_factory: None,
+        triples_batch_signal: None,
+    })?;
+    let handle = library.handle().await?;
+    let content =
+        "Solo's diagnostic validator stores this memory only in an isolated temporary library.";
+    let embedding = embedder
+        .embed(content)
+        .await
+        .context("embed temporary memory")?;
+    let memory_id = handle
+        .write()
+        .remember(
+            Episode {
+                memory_id: MemoryId::new(),
+                ts_ms: chrono::Utc::now().timestamp_millis(),
+                source_type: "doctor_round_trip".to_string(),
+                source_id: None,
+                content: content.to_string(),
+                encoding_context: EncodingContext::default(),
+                provenance: None,
+                confidence: Confidence::new(1.0).expect("valid confidence"),
+                strength: 1.0,
+                salience: 1.0,
+                tier: Tier::Hot,
+            },
+            embedding,
+        )
+        .await
+        .context("write temporary memory")?;
+    let recalled = solo_query::run_recall(
+        &handle,
+        None,
+        "Where did the validator put its disposable test record?",
+        3,
+    )
+    .await
+    .context("recall temporary memory")?;
+    anyhow::ensure!(
+        recalled
+            .hits
+            .iter()
+            .any(|hit| hit.memory_id == memory_id.to_string()),
+        "temporary memory was not recalled"
+    );
+    println!("  PASS write -> bundled MiniLM -> HNSW -> semantic recall");
+    println!("  data policy    : temporary database deleted after this check");
+    println!("  real library   : not opened or modified");
+    drop(handle);
+    library.shutdown_with_snapshot(false).await;
+    Ok(())
+}
+
+#[cfg(not(feature = "bundled-embedder"))]
+async fn run_isolated_round_trip() -> Result<()> {
+    anyhow::bail!(
+        "this Solo build does not include the bundled embedder required by doctor --round-trip"
+    )
 }
 
 // ---------------------------------------------------------------------------

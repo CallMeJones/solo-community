@@ -20,11 +20,7 @@ directory looks like:
 ├── hnsw_episodes.hnsw.graph     ← live HNSW snapshot graph
 ├── hnsw_episodes_bak.hnsw.data  ← backup HNSW snapshot data
 ├── hnsw_episodes_bak.hnsw.graph ← backup HNSW snapshot graph
-└── models/                      ← optional: BGE-M3 weights cache
-    └── BAAI/bge-m3/
-        ├── config.json
-        ├── tokenizer.json
-        └── model.safetensors
+└── assets/                       ← optional imported document assets
 ```
 
 What each file contributes:
@@ -37,7 +33,7 @@ What each file contributes:
 | `hnsw_episodes.hnsw.{data,graph}` | live HNSW snapshot for fast startup | YES (rebuilt from `embeddings` table on startup) |
 | `hnsw_episodes_bak.hnsw.{data,graph}` | backup snapshot, used if live is corrupt | YES (same as live) |
 | `solo.lock` | runtime mutex, present only while Solo is running | YES (ephemeral) |
-| `models/...` | embedder weights | YES (re-download with `solo download-model`) |
+| `assets/...` | original imported document assets when retention is enabled | NO if the originals are needed later |
 
 ## What to back up
 
@@ -48,11 +44,9 @@ solo.db
 solo.config.toml
 ```
 
-The HNSW snapshot files are recoverable from `solo.db` — if
-they're missing or corrupt, Solo rebuilds them on next
-startup (slower than loading a snapshot, but correct). The
-model weights are public files retrievable via `solo
-download-model`.
+The HNSW snapshot files are recoverable from `solo.db` — if they are missing
+or corrupt, Solo rebuilds them on next startup. Bundled MiniLM assets are part
+of the installed Windows/Linux package rather than private library data.
 
 If you want fast restores (no rebuild), include the snapshot
 files:
@@ -229,8 +223,7 @@ Three things need to come along:
      exercised yet (v0.3 is still the current major).
 
 ```bash
-# On the new machine:
-cargo binstall solo-cli                  # pre-built binary; same version family
+# On the new machine, install the matching Solo Windows/Ubuntu package first:
 mkdir -p ~/.solo
 cp /path/from/backup/solo.db ~/.solo/
 cp /path/from/backup/solo.config.toml ~/.solo/
@@ -239,19 +232,13 @@ cp /path/from/backup/solo.config.toml ~/.solo/
 SOLO_PASSPHRASE='...' solo doctor --with-stats
 ```
 
-If `cargo binstall` isn't available on the new machine, source
-compile via `cargo install solo-cli` — on Windows from Git Bash
-that needs the Strawberry Perl PATH prefix (msys's bundled Perl
-bombs OpenSSL's `Configure`):
+Normal users should restore into the official Windows or Ubuntu package. A
+source build must include the same bundled model feature/assets as the
+persisted embedder identity.
 
-```bash
-PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH" \
-  cargo install solo-cli
-```
-
-If the active embedder uses BGE-M3, also copy the model
-files (or `solo download-model` to fetch them on the new
-machine).
+Install the same or a compatible Solo package on the new machine so its bundled
+MiniLM assets match the persisted embedder identity. For an Ollama embedder,
+pull the configured model before opening the restored library.
 
 ### From a corrupt snapshot
 

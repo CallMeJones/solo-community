@@ -1,0 +1,113 @@
+{
+  "name": "retrieval-v1",
+  "description": "Gold corpus for bundled MiniLM plus BM25/RRF: semantic paraphrases, lexical rescue, entity ambiguity, corrections, privacy, and hard negatives.",
+  "version": 1,
+  "model_baseline": "bundled:all-MiniLM-L6-v2@v2",
+  "metrics": ["recall_at_3", "mrr", "forbidden_at_3", "vector_lexical_ablation"],
+  "passing_score": 0.85,
+  "cases": [
+    {
+      "id": "abstract_embedding_role",
+      "category": "semantic_paraphrase",
+      "query": "Which component turns language into coordinates so similar ideas land near one another?",
+      "max_results": 3,
+      "expected_memory_ids": ["embedder-role"],
+      "forbidden_memory_ids": ["steward-role"],
+      "memories": [
+        {"id": "embedder-role", "text": "The bundled all-MiniLM-L6-v2 encoder converts memory text into 384-dimensional vectors used for similarity retrieval.", "tier": "semantic", "importance": 0.9, "status": "active"},
+        {"id": "steward-role", "text": "The Steward uses a generative instruction model to extract themes, facts, entities, relationships, and contradictions.", "tier": "semantic", "importance": 0.9, "status": "active"},
+        {"id": "index-role", "text": "HNSW stores vectors and returns approximate nearest neighbours efficiently.", "tier": "semantic", "importance": 0.7, "status": "active"}
+      ]
+    },
+    {
+      "id": "preference_without_shared_wording",
+      "category": "semantic_paraphrase",
+      "query": "How does Priya like the interface after sunset?",
+      "max_results": 2,
+      "expected_memory_ids": ["priya-dark-mode"],
+      "forbidden_memory_ids": ["priya-morning-meeting"],
+      "memories": [
+        {"id": "priya-dark-mode", "text": "Priya prefers a low-luminance charcoal colour scheme for evening work.", "tier": "preference", "importance": 0.9, "status": "active"},
+        {"id": "priya-morning-meeting", "text": "Priya schedules planning calls early in the morning.", "tier": "semantic", "importance": 0.6, "status": "active"},
+        {"id": "theme-default", "text": "The application ships with a neutral light theme.", "tier": "semantic", "importance": 0.4, "status": "active"}
+      ]
+    },
+    {
+      "id": "entity_disambiguation",
+      "category": "entity_ambiguity",
+      "query": "Which Morgan owns the renewal negotiation for Acme?",
+      "max_results": 2,
+      "expected_memory_ids": ["morgan-lee-acme"],
+      "forbidden_memory_ids": ["morgan-city"],
+      "memories": [
+        {"id": "morgan-lee-acme", "text": "Morgan Lee is the commercial owner for Acme's contract renewal.", "tier": "semantic", "importance": 0.8, "status": "active"},
+        {"id": "morgan-city", "text": "Morgan City is a planned stop on the Louisiana road trip.", "tier": "episodic", "importance": 0.5, "status": "active"},
+        {"id": "acme-support", "text": "Acme support escalations are handled by the customer success queue.", "tier": "semantic", "importance": 0.5, "status": "active"}
+      ]
+    },
+    {
+      "id": "correction_wins",
+      "category": "correction",
+      "query": "Where are invoice archives kept now?",
+      "max_results": 2,
+      "expected_memory_ids": ["invoice-current"],
+      "forbidden_memory_ids": ["invoice-obsolete"],
+      "memories": [
+        {"id": "invoice-current", "text": "The approved location for invoice archives is the encrypted finance share.", "tier": "decision", "importance": 1.0, "status": "active"},
+        {"id": "invoice-obsolete", "text": "Invoice archives are stored in the operations Dropbox.", "tier": "decision", "importance": 1.0, "status": "forgotten"},
+        {"id": "invoice-template", "text": "Invoice templates include tax ID and purchase-order fields.", "tier": "semantic", "importance": 0.5, "status": "active"}
+      ]
+    },
+    {
+      "id": "rare_identifier_lexical_rescue",
+      "category": "lexical_rescue",
+      "query": "What happened to incident SRV-9Q7?",
+      "max_results": 2,
+      "expected_memory_ids": ["incident-9q7"],
+      "memories": [
+        {"id": "incident-9q7", "text": "SRV-9Q7 was resolved by restoring the expired signing certificate.", "tier": "episodic", "importance": 0.8, "status": "active"},
+        {"id": "incident-signing", "text": "Certificate rotation is owned by platform security.", "tier": "semantic", "importance": 0.7, "status": "active"},
+        {"id": "incident-database", "text": "A database failover caused a separate service interruption.", "tier": "episodic", "importance": 0.6, "status": "active"}
+      ]
+    },
+    {
+      "id": "privacy_processing_location",
+      "category": "product_semantics",
+      "query": "Which Steward choice keeps remembered text from leaving the computer?",
+      "max_results": 2,
+      "expected_memory_ids": ["local-ollama-privacy"],
+      "forbidden_memory_ids": ["ollama-cloud-privacy"],
+      "memories": [
+        {"id": "local-ollama-privacy", "text": "Local Ollama runs the knowledge-extraction model on the user's own device and sends no memory content to a hosted provider.", "tier": "decision", "importance": 0.9, "status": "active"},
+        {"id": "ollama-cloud-privacy", "text": "Ollama Cloud processes selected memory content off device and therefore requires explicit consent.", "tier": "decision", "importance": 0.9, "status": "active"},
+        {"id": "minilm-privacy", "text": "The bundled MiniLM embedding model runs locally for recall.", "tier": "semantic", "importance": 0.7, "status": "active"}
+      ]
+    },
+    {
+      "id": "relationship_question",
+      "category": "relationship",
+      "query": "Who reports to the engineering director?",
+      "max_results": 3,
+      "expected_memory_ids": ["sam-reports-riley"],
+      "forbidden_memory_ids": ["riley-reports-board"],
+      "memories": [
+        {"id": "sam-reports-riley", "text": "Sam's manager is Riley, the director of engineering.", "tier": "semantic", "importance": 0.8, "status": "active"},
+        {"id": "riley-reports-board", "text": "Riley presents the quarterly engineering review to the board.", "tier": "semantic", "importance": 0.6, "status": "active"},
+        {"id": "sam-location", "text": "Sam works from Cape Town on Tuesdays.", "tier": "semantic", "importance": 0.4, "status": "active"}
+      ]
+    },
+    {
+      "id": "negated_constraint",
+      "category": "negation",
+      "query": "Which deployment target is explicitly prohibited for customer data?",
+      "max_results": 2,
+      "expected_memory_ids": ["no-preview-data"],
+      "forbidden_memory_ids": ["preview-demo"],
+      "memories": [
+        {"id": "no-preview-data", "text": "Never upload customer records to the public preview environment.", "tier": "decision", "importance": 1.0, "status": "active"},
+        {"id": "preview-demo", "text": "The public preview environment is suitable for synthetic demonstration data.", "tier": "semantic", "importance": 0.7, "status": "active"},
+        {"id": "production-data", "text": "Production customer records are encrypted at rest.", "tier": "semantic", "importance": 0.7, "status": "active"}
+      ]
+    }
+  ]
+}

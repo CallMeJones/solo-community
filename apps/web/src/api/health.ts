@@ -43,6 +43,10 @@ export interface SoloStatus {
     config_mode: string;
     provider: string | null;
     model: string | null;
+    base_url: string | null;
+    endpoint: 'local' | 'cloud' | 'custom' | null;
+    processing_location: string;
+    hosted_processing_consent: boolean;
     runtime_llm: string | null;
     runtime_wired: boolean;
     runtime_has_llm: boolean;
@@ -62,6 +66,35 @@ export interface SoloStatus {
     last_triples_error: string | null;
     last_triples_timed_out: boolean;
     pending_clusters: number;
+    coverage: {
+      active_episodes: number;
+      clusters: number;
+      clustered_episodes: number;
+      abstractions: number;
+      pending_clusters: number;
+      triples: number;
+      entities: number;
+      relationships: number;
+      contradictions: number;
+    };
+    next_consolidation_run_at_ms: number | null;
+    last_consolidation_run_at_ms: number | null;
+    last_consolidation_error: string | null;
+    backfill: {
+      id: string;
+      status: string;
+      phase: string;
+      progress_percent: number;
+      started_at_ms: number;
+      updated_at_ms: number;
+      initial_pending_clusters: number;
+      pending_clusters: number;
+      clusters_built: number;
+      abstractions_built: number;
+      triples_extracted: number;
+      error: string | null;
+      note: string;
+    } | null;
     last_triples_batch: {
       ran: boolean;
       limit: number;
@@ -75,6 +108,18 @@ export interface SoloStatus {
     } | null;
     note: string;
   };
+  capabilities: Record<
+    | 'memory_recall'
+    | 'documents'
+    | 'clustering'
+    | 'knowledge_extraction'
+    | 'themes'
+    | 'facts'
+    | 'entities'
+    | 'graph'
+    | 'contradictions',
+    { state: 'ready' | 'disabled' | 'pending' | 'empty' | 'failed'; explanation: string }
+  >;
   runtime?: {
     pid?: number;
     platform?: string;

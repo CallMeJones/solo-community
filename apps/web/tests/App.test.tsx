@@ -42,6 +42,10 @@ vi.mock('../src/api/health', () => ({
       config_mode: 'none',
       provider: null,
       model: null,
+      base_url: null,
+      endpoint: null,
+      processing_location: 'knowledge extraction disabled',
+      hosted_processing_consent: false,
       runtime_llm: null,
       runtime_wired: false,
       runtime_has_llm: false,
@@ -59,6 +63,21 @@ vi.mock('../src/api/health', () => ({
       last_triples_error: null,
       last_triples_timed_out: false,
       pending_clusters: 7,
+      coverage: {
+        active_episodes: 89,
+        clusters: 7,
+        clustered_episodes: 80,
+        abstractions: 0,
+        pending_clusters: 7,
+        triples: 0,
+        entities: 0,
+        relationships: 0,
+        contradictions: 0,
+      },
+      next_consolidation_run_at_ms: Date.UTC(2026, 5, 14, 12, 0),
+      last_consolidation_run_at_ms: Date.UTC(2026, 5, 14, 11, 0),
+      last_consolidation_error: null,
+      backfill: null,
       last_triples_batch: {
         ran: true,
         limit: 50,
@@ -71,6 +90,17 @@ vi.mock('../src/api/health', () => ({
         note: 'batch complete',
       },
       note: 'no Steward is wired in this daemon; clustering can run but triples will stay at zero',
+    },
+    capabilities: {
+      memory_recall: { state: 'ready', explanation: 'Bundled local recall is ready.' },
+      documents: { state: 'ready', explanation: 'Document memory is ready.' },
+      clustering: { state: 'ready', explanation: 'Clustering has run.' },
+      knowledge_extraction: { state: 'disabled', explanation: 'No Steward model is active.' },
+      themes: { state: 'ready', explanation: 'Seven themes are available.' },
+      facts: { state: 'disabled', explanation: 'No Steward model is active.' },
+      entities: { state: 'disabled', explanation: 'No Steward model is active.' },
+      graph: { state: 'disabled', explanation: 'No Steward model is active.' },
+      contradictions: { state: 'disabled', explanation: 'No Steward model is active.' },
     },
     runtime: {
       pid: 4242,
@@ -519,6 +549,9 @@ describe('App desktop shell', () => {
     expect(screen.getByRole('button', { name: 'Copy Claude Desktop' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy migration command' })).toBeInTheDocument();
     expect(screen.getByText('Steward LLM')).toBeInTheDocument();
+    expect(screen.getByText('Memory Capabilities')).toBeInTheDocument();
+    expect(screen.getByText('Bundled local recall is ready.')).toBeInTheDocument();
+    expect(screen.getAllByText('No Steward model is active.').length).toBeGreaterThanOrEqual(1);
     const stewardPanel = screen.getByText('Steward LLM').closest('section');
     expect(stewardPanel).not.toBeNull();
     expect(
@@ -537,6 +570,18 @@ describe('App desktop shell', () => {
       within(stewardPanel as HTMLElement).getByText('Runtime verification'),
     ).toBeInTheDocument();
     fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Ollama' }));
+    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Cloud' }));
+    expect(
+      within(stewardPanel as HTMLElement).getByText(/processed off device by Ollama Cloud/),
+    ).toBeInTheDocument();
+    expect(
+      within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
+    ).toBeDisabled();
+    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('checkbox'));
+    expect(
+      within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
+    ).toBeEnabled();
+    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Local' }));
     fireEvent.click(
       within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
     );

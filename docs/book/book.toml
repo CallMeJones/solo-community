@@ -1,6 +1,6 @@
 [book]
 title = "Solo — User Guide"
-description = "Local-first personal memory for AI assistants. One binary, one encrypted SQLite file, no cloud."
+description = "Local-first personal memory for AI assistants. One encrypted Community library with optional consent-based Steward providers."
 authors = ["Solo project"]
 language = "en"
 src = "src"

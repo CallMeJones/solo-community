@@ -6282,6 +6282,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "nix 0.29.0",
+ "reqwest",
  "rpassword",
  "rusqlite",
  "serde_json",

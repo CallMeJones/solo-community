@@ -49,6 +49,7 @@ pub struct MemoryContextSections {
 pub struct MemoryContextSectionHealth {
     pub status: String,
     pub count: usize,
+    pub explanation: String,
     pub warning: Option<String>,
 }
 
@@ -137,7 +138,7 @@ pub async fn memory_context(
     window_days: Option<i64>,
     limit: usize,
 ) -> Result<MemoryContextResult> {
-    let result = memory_context_inner(
+    let mut result = memory_context_inner(
         tenant.embedder(),
         tenant.hnsw(),
         tenant.read(),
@@ -148,6 +149,18 @@ pub async fn memory_context(
         limit,
     )
     .await;
+    if let Ok(bundle) = result.as_mut() {
+        let runtime_has_llm = tenant
+            .steward_slot()
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|steward| steward.has_llm());
+        match solo_storage::read_derived_coverage(tenant.read()).await {
+            Ok(coverage) => apply_readiness_states(bundle, coverage, runtime_has_llm),
+            Err(error) => apply_readiness_failure(bundle, &error.to_string()),
+        }
+    }
     match &result {
         Ok(bundle) => {
             tenant
@@ -878,25 +891,172 @@ fn graph_params(seeds: &[String]) -> Vec<Box<dyn rusqlite::ToSql>> {
 
 fn section_ok(count: usize) -> MemoryContextSectionHealth {
     MemoryContextSectionHealth {
-        status: "ok".to_string(),
+        status: if count == 0 { "empty" } else { "ready" }.to_string(),
         count,
+        explanation: if count == 0 {
+            "The section is available but this query returned no results.".to_string()
+        } else {
+            format!(
+                "{count} result{} available.",
+                if count == 1 { "" } else { "s" }
+            )
+        },
         warning: None,
     }
 }
 
 fn section_skipped(reason: impl Into<String>) -> MemoryContextSectionHealth {
     MemoryContextSectionHealth {
-        status: "skipped".to_string(),
+        status: "empty".to_string(),
         count: 0,
-        warning: Some(reason.into()),
+        explanation: reason.into(),
+        warning: None,
     }
 }
 
 fn section_degraded(warning: impl Into<String>) -> MemoryContextSectionHealth {
     MemoryContextSectionHealth {
-        status: "degraded".to_string(),
+        status: "failed".to_string(),
         count: 0,
-        warning: Some(warning.into()),
+        explanation: warning.into(),
+        warning: None,
+    }
+}
+
+fn apply_readiness_states(
+    bundle: &mut MemoryContextResult,
+    coverage: solo_storage::DerivedCoverageSnapshot,
+    runtime_has_llm: bool,
+) {
+    if bundle.sections.themes.status != "failed" {
+        bundle.sections.themes = if coverage.active_episodes == 0 {
+            section_state(
+                "empty",
+                bundle.themes.len(),
+                "No memories exist to cluster into themes.",
+            )
+        } else if coverage.clusters == 0 {
+            section_state(
+                "pending",
+                bundle.themes.len(),
+                format!(
+                    "Clustering has not produced a cluster yet; {} active memories are available for a scheduled or manual pass.",
+                    coverage.active_episodes
+                ),
+            )
+        } else {
+            section_ready_or_empty(
+                bundle.themes.len(),
+                "Clustering completed, but no matching theme was found.",
+            )
+        };
+    }
+
+    for (section, count, empty_reason) in [
+        (
+            &mut bundle.sections.entities,
+            bundle.entities.len(),
+            "Extraction completed, but no matching entity was found.",
+        ),
+        (
+            &mut bundle.sections.facts,
+            bundle.facts.len(),
+            if bundle.subject.is_some() {
+                "Extraction completed, but no facts were found for this subject."
+            } else {
+                "No subject was supplied, so subject facts were not queried."
+            },
+        ),
+        (
+            &mut bundle.sections.contradictions,
+            bundle.contradictions.len(),
+            "Extraction completed and no contradictions were detected.",
+        ),
+        (
+            &mut bundle.sections.graph,
+            graph_result_count(&bundle.graph),
+            "Extraction completed, but no connected graph knowledge was found.",
+        ),
+    ] {
+        if section.status == "failed" {
+            continue;
+        }
+        let warning = section.warning.take();
+        let mut next = if !runtime_has_llm {
+            section_state(
+                "disabled",
+                count,
+                "Knowledge extraction is off because no Steward model is active. Raw recall and documents remain available.",
+            )
+        } else if coverage.pending_clusters > 0 {
+            section_state(
+                "pending",
+                count,
+                format!(
+                    "Knowledge extraction is active, but {} cluster{} still await processing.",
+                    coverage.pending_clusters,
+                    if coverage.pending_clusters == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ),
+            )
+        } else {
+            section_ready_or_empty(count, empty_reason)
+        };
+        next.warning = warning;
+        *section = next;
+    }
+}
+
+fn graph_result_count(graph: &MemoryGraphContext) -> usize {
+    graph.relationship_facts.len()
+        + graph.literal_facts.len()
+        + graph.relationship_paths.len()
+        + graph.review_warnings.len()
+}
+
+fn section_ready_or_empty(count: usize, empty_reason: &str) -> MemoryContextSectionHealth {
+    if count == 0 {
+        section_state("empty", 0, empty_reason)
+    } else {
+        section_state(
+            "ready",
+            count,
+            format!(
+                "{count} result{} available.",
+                if count == 1 { "" } else { "s" }
+            ),
+        )
+    }
+}
+
+fn section_state(
+    status: &str,
+    count: usize,
+    explanation: impl Into<String>,
+) -> MemoryContextSectionHealth {
+    MemoryContextSectionHealth {
+        status: status.to_string(),
+        count,
+        explanation: explanation.into(),
+        warning: None,
+    }
+}
+
+fn apply_readiness_failure(bundle: &mut MemoryContextResult, error: &str) {
+    let explanation = format!("Derived-memory readiness check failed: {error}");
+    for section in [
+        &mut bundle.sections.themes,
+        &mut bundle.sections.entities,
+        &mut bundle.sections.facts,
+        &mut bundle.sections.contradictions,
+        &mut bundle.sections.graph,
+    ] {
+        if section.status != "failed" {
+            *section = section_state("failed", section.count, explanation.clone());
+        }
     }
 }
 
@@ -990,9 +1150,9 @@ mod tests {
             assert!(result.subject.is_none());
             assert_eq!(result.recall.hits.len(), 1);
             assert_eq!(result.recall.hits[0].content, "project context alpha");
-            assert_eq!(result.sections.recall.status, "ok");
+            assert_eq!(result.sections.recall.status, "ready");
             assert_eq!(result.sections.recall.count, 1);
-            assert_eq!(result.sections.facts.status, "skipped");
+            assert_eq!(result.sections.facts.status, "empty");
             assert!(result.themes.is_empty());
             assert!(result.facts.is_empty());
             assert!(result.contradictions.is_empty());
@@ -1149,7 +1309,7 @@ mod tests {
             .unwrap();
 
             assert_eq!(result.resolved_subject.as_deref(), Some("solo"));
-            assert_eq!(result.sections.graph.status, "ok");
+            assert_eq!(result.sections.graph.status, "ready");
             assert_eq!(result.graph.seed_entities[0], "solo");
             let ollama_fact = result
                 .graph

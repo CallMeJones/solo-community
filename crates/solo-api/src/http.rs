@@ -168,12 +168,16 @@ pub struct StewardRuntimeStatus {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct StewardRuntimeSnapshot {
+    pub next_consolidation_run_at_ms: Option<i64>,
+    pub last_consolidation_run_at_ms: Option<i64>,
+    pub last_consolidation_error: Option<String>,
     pub next_triples_run_at_ms: Option<i64>,
     pub last_triples_run_at_ms: Option<i64>,
     pub last_triples_trigger: Option<String>,
     pub last_triples_error: Option<String>,
     pub last_triples_timed_out: bool,
     pub last_triples_batch: Option<StewardTriplesBatchStatus>,
+    pub backfill: Option<StewardBackfillStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +193,23 @@ pub struct StewardTriplesBatchStatus {
     pub note: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StewardBackfillStatus {
+    pub id: String,
+    pub status: String,
+    pub phase: String,
+    pub progress_percent: u8,
+    pub started_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub initial_pending_clusters: usize,
+    pub pending_clusters: usize,
+    pub clusters_built: usize,
+    pub abstractions_built: usize,
+    pub triples_extracted: usize,
+    pub error: Option<String>,
+    pub note: String,
+}
+
 impl StewardRuntimeStatus {
     pub fn new() -> Self {
         Self::default()
@@ -200,6 +221,22 @@ impl StewardRuntimeStatus {
 
     pub async fn set_next_triples_run_at_ms(&self, next: Option<i64>) {
         self.inner.write().await.next_triples_run_at_ms = next;
+    }
+
+    pub async fn set_next_consolidation_run_at_ms(&self, next: Option<i64>) {
+        self.inner.write().await.next_consolidation_run_at_ms = next;
+    }
+
+    pub async fn record_consolidation_success(&self) {
+        let mut guard = self.inner.write().await;
+        guard.last_consolidation_run_at_ms = Some(now_unix_ms());
+        guard.last_consolidation_error = None;
+    }
+
+    pub async fn record_consolidation_error(&self, error: impl Into<String>) {
+        let mut guard = self.inner.write().await;
+        guard.last_consolidation_run_at_ms = Some(now_unix_ms());
+        guard.last_consolidation_error = Some(error.into());
     }
 
     pub async fn record_triples_batch(&self, trigger: &str, batch: StewardTriplesBatchStatus) {
@@ -221,6 +258,49 @@ impl StewardRuntimeStatus {
         guard.last_triples_trigger = Some(trigger.to_string());
         guard.last_triples_error = Some(message);
         guard.last_triples_timed_out = timed_out;
+    }
+
+    pub async fn start_backfill(
+        &self,
+        initial_pending_clusters: usize,
+    ) -> Result<StewardBackfillStatus, String> {
+        let mut guard = self.inner.write().await;
+        if guard
+            .backfill
+            .as_ref()
+            .is_some_and(|current| current.status == "running")
+        {
+            return Err("A derived-memory backfill is already running.".to_string());
+        }
+        let now = now_unix_ms();
+        let status = StewardBackfillStatus {
+            id: solo_core::MemoryId::new().to_string(),
+            status: "running".to_string(),
+            phase: "clustering".to_string(),
+            progress_percent: 5,
+            started_at_ms: now,
+            updated_at_ms: now,
+            initial_pending_clusters,
+            pending_clusters: initial_pending_clusters,
+            clusters_built: 0,
+            abstractions_built: 0,
+            triples_extracted: 0,
+            error: None,
+            note: "Clustering existing memories.".to_string(),
+        };
+        guard.backfill = Some(status.clone());
+        Ok(status)
+    }
+
+    pub async fn update_backfill(&self, status: StewardBackfillStatus) {
+        let mut guard = self.inner.write().await;
+        if guard
+            .backfill
+            .as_ref()
+            .is_some_and(|current| current.id == status.id)
+        {
+            guard.backfill = Some(status);
+        }
     }
 }
 
@@ -376,6 +456,10 @@ pub fn router_with_host_routes(
         .route("/memory/context", post(memory_context_handler))
         .route("/memory/consolidate", post(consolidate_handler))
         .route("/memory/triples/extract", post(triples_extract_handler))
+        .route(
+            "/v1/steward/backfill",
+            get(steward_backfill_status_handler).post(steward_backfill_start_handler),
+        )
         .route("/memory/derived/repair", post(derived_repair_handler))
         .route(
             "/memory/{id}",
@@ -1925,7 +2009,7 @@ pub fn openapi_spec() -> serde_json::Value {
                 },
                 "StatusResponse": {
                     "type": "object",
-                    "required": ["ok", "version", "build", "library", "embedder", "mcp", "steward", "runtime"],
+                    "required": ["ok", "version", "build", "library", "embedder", "mcp", "steward", "capabilities", "runtime"],
                     "properties": {
                         "ok": { "type": "boolean" },
                         "version": {
@@ -1983,6 +2067,7 @@ pub fn openapi_spec() -> serde_json::Value {
                             }
                         },
                         "steward": { "$ref": "#/components/schemas/StatusSteward" },
+                        "capabilities": { "$ref": "#/components/schemas/StatusCapabilities" },
                         "runtime": {
                             "type": "object",
                             "required": ["pid", "platform", "data_dir"],
@@ -2001,6 +2086,10 @@ pub fn openapi_spec() -> serde_json::Value {
                         "config_mode",
                         "provider",
                         "model",
+                        "base_url",
+                        "endpoint",
+                        "processing_location",
+                        "hosted_processing_consent",
                         "runtime_llm",
                         "runtime_wired",
                         "runtime_has_llm",
@@ -2020,6 +2109,11 @@ pub fn openapi_spec() -> serde_json::Value {
                         "last_triples_error",
                         "last_triples_timed_out",
                         "pending_clusters",
+                        "coverage",
+                        "next_consolidation_run_at_ms",
+                        "last_consolidation_run_at_ms",
+                        "last_consolidation_error",
+                        "backfill",
                         "last_triples_batch",
                         "note"
                     ],
@@ -2028,6 +2122,10 @@ pub fn openapi_spec() -> serde_json::Value {
                         "config_mode": { "type": "string" },
                         "provider": { "type": ["string", "null"] },
                         "model": { "type": ["string", "null"] },
+                        "base_url": { "type": ["string", "null"] },
+                        "endpoint": { "type": ["string", "null"], "enum": ["local", "cloud", "custom", null] },
+                        "processing_location": { "type": "string" },
+                        "hosted_processing_consent": { "type": "boolean" },
                         "runtime_llm": { "type": ["string", "null"] },
                         "runtime_wired": { "type": "boolean" },
                         "runtime_has_llm": { "type": "boolean" },
@@ -2047,6 +2145,16 @@ pub fn openapi_spec() -> serde_json::Value {
                         "last_triples_error": { "type": ["string", "null"] },
                         "last_triples_timed_out": { "type": "boolean" },
                         "pending_clusters": { "type": "integer", "minimum": 0 },
+                        "coverage": { "$ref": "#/components/schemas/DerivedCoverage" },
+                        "next_consolidation_run_at_ms": { "type": ["integer", "null"], "format": "int64" },
+                        "last_consolidation_run_at_ms": { "type": ["integer", "null"], "format": "int64" },
+                        "last_consolidation_error": { "type": ["string", "null"] },
+                        "backfill": {
+                            "oneOf": [
+                                { "$ref": "#/components/schemas/StewardBackfillStatus" },
+                                { "type": "null" }
+                            ]
+                        },
                         "last_triples_batch": {
                             "type": ["object", "null"],
                             "required": [
@@ -2071,6 +2179,85 @@ pub fn openapi_spec() -> serde_json::Value {
                                 "clusters_deferred": { "type": "integer", "minimum": 0 },
                                 "note": { "type": "string" }
                             }
+                        },
+                        "note": { "type": "string" }
+                    }
+                },
+                "DerivedCoverage": {
+                    "type": "object",
+                    "required": ["active_episodes", "clusters", "clustered_episodes", "abstractions", "pending_clusters", "triples", "entities", "relationships", "contradictions"],
+                    "properties": {
+                        "active_episodes": { "type": "integer", "minimum": 0 },
+                        "clusters": { "type": "integer", "minimum": 0 },
+                        "clustered_episodes": { "type": "integer", "minimum": 0 },
+                        "abstractions": { "type": "integer", "minimum": 0 },
+                        "pending_clusters": { "type": "integer", "minimum": 0 },
+                        "triples": { "type": "integer", "minimum": 0 },
+                        "entities": { "type": "integer", "minimum": 0 },
+                        "relationships": { "type": "integer", "minimum": 0 },
+                        "contradictions": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "StatusCapability": {
+                    "type": "object",
+                    "required": ["state", "explanation"],
+                    "properties": {
+                        "state": { "type": "string", "enum": ["ready", "disabled", "pending", "empty", "failed"] },
+                        "explanation": { "type": "string" }
+                    }
+                },
+                "StatusCapabilities": {
+                    "type": "object",
+                    "required": ["memory_recall", "documents", "clustering", "knowledge_extraction", "themes", "facts", "entities", "graph", "contradictions"],
+                    "properties": {
+                        "memory_recall": { "$ref": "#/components/schemas/StatusCapability" },
+                        "documents": { "$ref": "#/components/schemas/StatusCapability" },
+                        "clustering": { "$ref": "#/components/schemas/StatusCapability" },
+                        "knowledge_extraction": { "$ref": "#/components/schemas/StatusCapability" },
+                        "themes": { "$ref": "#/components/schemas/StatusCapability" },
+                        "facts": { "$ref": "#/components/schemas/StatusCapability" },
+                        "entities": { "$ref": "#/components/schemas/StatusCapability" },
+                        "graph": { "$ref": "#/components/schemas/StatusCapability" },
+                        "contradictions": { "$ref": "#/components/schemas/StatusCapability" }
+                    }
+                },
+                "StewardBackfillStatus": {
+                    "type": "object",
+                    "required": ["id", "status", "phase", "progress_percent", "started_at_ms", "updated_at_ms", "initial_pending_clusters", "pending_clusters", "clusters_built", "abstractions_built", "triples_extracted", "error", "note"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "status": { "type": "string", "enum": ["running", "completed", "failed"] },
+                        "phase": { "type": "string" },
+                        "progress_percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+                        "started_at_ms": { "type": "integer", "format": "int64" },
+                        "updated_at_ms": { "type": "integer", "format": "int64" },
+                        "initial_pending_clusters": { "type": "integer", "minimum": 0 },
+                        "pending_clusters": { "type": "integer", "minimum": 0 },
+                        "clusters_built": { "type": "integer", "minimum": 0 },
+                        "abstractions_built": { "type": "integer", "minimum": 0 },
+                        "triples_extracted": { "type": "integer", "minimum": 0 },
+                        "error": { "type": ["string", "null"] },
+                        "note": { "type": "string" }
+                    }
+                },
+                "StewardBackfillRequest": {
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1, "maximum": TRIPLES_EXTRACT_MAX_LIMIT, "default": TRIPLES_EXTRACT_DEFAULT_LIMIT },
+                        "max_batches": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+                    },
+                    "additionalProperties": false
+                },
+                "StewardBackfillResponse": {
+                    "type": "object",
+                    "required": ["accepted", "backfill", "note"],
+                    "properties": {
+                        "accepted": { "type": "boolean" },
+                        "backfill": {
+                            "oneOf": [
+                                { "$ref": "#/components/schemas/StewardBackfillStatus" },
+                                { "type": "null" }
+                            ]
                         },
                         "note": { "type": "string" }
                     }
@@ -2135,19 +2322,24 @@ pub fn openapi_spec() -> serde_json::Value {
                         "mode": { "type": "string", "enum": ["none", "anthropic", "openai", "ollama"] },
                         "model": { "type": ["string", "null"], "description": "Provider model id. Defaults depend on mode." },
                         "base_url": { "type": ["string", "null"], "default": "http://localhost:11434", "description": "Ollama base URL when mode=ollama." },
-                        "api_key_env": { "type": ["string", "null"], "description": "Environment variable name carrying the hosted provider API key." }
+                        "api_key_env": { "type": ["string", "null"], "description": "Environment variable name carrying the hosted provider API key; the secret value is never persisted." },
+                        "endpoint": { "type": ["string", "null"], "enum": ["local", "cloud", "custom", null], "description": "Ollama transport. Cloud can target ollama.com directly or a signed-in local daemon." },
+                        "hosted_processing_consent": { "type": ["boolean", "null"], "description": "Must be true after explicit user consent whenever selected memory content will be processed off device." }
                     },
                     "additionalProperties": false
                 },
                 "LlmSettingsSummary": {
                     "type": "object",
-                    "required": ["mode", "provider", "model", "base_url", "api_key_env"],
+                    "required": ["mode", "provider", "model", "base_url", "api_key_env", "endpoint", "processing_location", "hosted_processing_consent"],
                     "properties": {
                         "mode": { "type": "string" },
                         "provider": { "type": ["string", "null"] },
                         "model": { "type": ["string", "null"] },
                         "base_url": { "type": ["string", "null"] },
-                        "api_key_env": { "type": ["string", "null"] }
+                        "api_key_env": { "type": ["string", "null"] },
+                        "endpoint": { "type": ["string", "null"] },
+                        "processing_location": { "type": "string" },
+                        "hosted_processing_consent": { "type": "boolean" }
                     }
                 },
                 "SwitchLlmResponse": {
@@ -3396,6 +3588,32 @@ pub fn openapi_spec() -> serde_json::Value {
                     "responses": {
                         "200": { "description": "Solo status payload.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StatusResponse" } } } },
                         "401": { "description": "Missing or invalid bearer token (LAN-bound deployments only)." }
+                    }
+                }
+            },
+            "/v1/steward/backfill": {
+                "get": {
+                    "summary": "Inspect derived-memory backfill progress",
+                    "description": "Returns the current or most recent clustering and knowledge-extraction backfill state.",
+                    "security": [{ "bearerAuth": [] }, {}],
+                    "responses": {
+                        "200": { "description": "Current backfill state, or null before the first run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StewardBackfillResponse" } } } },
+                        "401": { "description": "Missing or invalid bearer token (LAN-bound deployments only)." }
+                    }
+                },
+                "post": {
+                    "summary": "Backfill derived memory now",
+                    "description": "Starts an asynchronous bounded pass that clusters existing raw memories and extracts abstractions, facts, entities, relationships, and contradictions with the active Steward model.",
+                    "security": [{ "bearerAuth": [] }, {}],
+                    "requestBody": {
+                        "required": false,
+                        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StewardBackfillRequest" } } }
+                    },
+                    "responses": {
+                        "202": { "description": "Backfill accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StewardBackfillResponse" } } } },
+                        "400": { "description": "Invalid safety limit.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } },
+                        "401": { "description": "Missing or invalid bearer token (LAN-bound deployments only)." },
+                        "409": { "description": "No Steward model is active or another backfill is already running.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } }
                     }
                 }
             },
@@ -5805,6 +6023,7 @@ fn parse_memory_review_state(raw: Option<&str>) -> Result<Option<MemoryReviewSta
 }
 
 async fn consolidate_handler(
+    State(state): State<SoloHttpState>,
     TenantExtractor(tenant): TenantExtractor,
     AuditPrincipal(principal): AuditPrincipal,
     body: axum::body::Bytes,
@@ -5820,11 +6039,20 @@ async fn consolidate_handler(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::bad_request(format!("invalid JSON: {e}")))?
     };
-    let report = tenant
-        .write()
-        .consolidate_as(principal, scope)
-        .await
-        .map_err(ApiError::from)?;
+    let report = tenant.write().consolidate_as(principal, scope).await;
+    let report = match report {
+        Ok(report) => {
+            state.steward_runtime.record_consolidation_success().await;
+            report
+        }
+        Err(error) => {
+            state
+                .steward_runtime
+                .record_consolidation_error(error.to_string())
+                .await;
+            return Err(ApiError::from(error));
+        }
+    };
     Ok(Json(report))
 }
 
@@ -9917,7 +10145,7 @@ struct StatusEmbedder {
     runtime: Option<StatusEmbedderRuntime>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct StatusEmbedderRuntime {
     running: bool,
     status: String,
@@ -9942,6 +10170,10 @@ struct StatusSteward {
     config_mode: String,
     provider: Option<String>,
     model: Option<String>,
+    base_url: Option<String>,
+    endpoint: Option<String>,
+    processing_location: String,
+    hosted_processing_consent: bool,
     runtime_llm: Option<String>,
     runtime_wired: bool,
     runtime_has_llm: bool,
@@ -9961,8 +10193,261 @@ struct StatusSteward {
     last_triples_error: Option<String>,
     last_triples_timed_out: bool,
     pending_clusters: usize,
+    coverage: solo_storage::DerivedCoverageSnapshot,
+    next_consolidation_run_at_ms: Option<i64>,
+    last_consolidation_run_at_ms: Option<i64>,
+    last_consolidation_error: Option<String>,
+    backfill: Option<StewardBackfillStatus>,
     last_triples_batch: Option<StewardTriplesBatchStatus>,
     note: String,
+}
+
+async fn steward_backfill_status_handler(
+    State(state): State<SoloHttpState>,
+) -> Json<StewardBackfillResponse> {
+    let snapshot = state.steward_runtime.snapshot().await;
+    Json(StewardBackfillResponse {
+        accepted: false,
+        backfill: snapshot.backfill,
+        note: "Current derived-memory backfill state.".to_string(),
+    })
+}
+
+async fn steward_backfill_start_handler(
+    State(state): State<SoloHttpState>,
+    TenantExtractor(tenant): TenantExtractor,
+    AuditPrincipal(principal): AuditPrincipal,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<StewardBackfillResponse>), ApiError> {
+    let request: StewardBackfillRequest = if body.is_empty() {
+        StewardBackfillRequest::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|error| ApiError::bad_request(format!("invalid JSON: {error}")))?
+    };
+    let limit = request.limit.unwrap_or(TRIPLES_EXTRACT_DEFAULT_LIMIT);
+    if limit == 0 || limit > TRIPLES_EXTRACT_MAX_LIMIT {
+        return Err(ApiError::bad_request(format!(
+            "limit must be between 1 and {TRIPLES_EXTRACT_MAX_LIMIT}"
+        )));
+    }
+    let max_batches = request.max_batches.unwrap_or(20);
+    if max_batches == 0 || max_batches > 100 {
+        return Err(ApiError::bad_request(
+            "max_batches must be between 1 and 100",
+        ));
+    }
+    {
+        let steward = tenant.steward_slot().read().await;
+        if !steward.as_ref().is_some_and(|steward| steward.has_llm()) {
+            return Err(ApiError::conflict(
+                "Knowledge extraction is disabled. Configure a Steward model, restart Solo, then start the backfill.",
+            ));
+        }
+    }
+    let coverage = solo_storage::read_derived_coverage(tenant.read())
+        .await
+        .map_err(ApiError::from)?;
+    let backfill = state
+        .steward_runtime
+        .start_backfill(coverage.pending_clusters)
+        .await
+        .map_err(ApiError::conflict)?;
+
+    let runtime = state.steward_runtime.clone();
+    let cluster_timeout_secs = tenant.config().triples.cluster_timeout_secs;
+    let accepted_backfill = backfill.clone();
+    tokio::spawn(async move {
+        run_steward_backfill(
+            tenant,
+            runtime,
+            principal,
+            backfill,
+            limit,
+            max_batches,
+            cluster_timeout_secs,
+        )
+        .await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(StewardBackfillResponse {
+            accepted: true,
+            backfill: Some(accepted_backfill),
+            note: "Derived-memory backfill started. Poll this endpoint or /v1/status for progress."
+                .to_string(),
+        }),
+    ))
+}
+
+async fn run_steward_backfill(
+    tenant: Arc<LibraryHandle>,
+    runtime: StewardRuntimeStatus,
+    principal: Option<String>,
+    mut status: StewardBackfillStatus,
+    limit: usize,
+    max_batches: usize,
+    cluster_timeout_secs: u64,
+) {
+    let fail = |status: &mut StewardBackfillStatus, error: String| {
+        status.status = "failed".to_string();
+        status.phase = "failed".to_string();
+        status.updated_at_ms = now_unix_ms();
+        status.error = Some(compact_status_detail(&error));
+        status.note = "Backfill stopped. Existing derived memory was preserved; retry after resolving the reported problem."
+            .to_string();
+    };
+
+    match tenant
+        .write()
+        .consolidate_as(
+            principal.clone(),
+            solo_storage::ConsolidationScope::default(),
+        )
+        .await
+    {
+        Ok(report) => {
+            runtime.record_consolidation_success().await;
+            status.clusters_built = report.clusters_built;
+            status.phase = "knowledge_extraction".to_string();
+            status.progress_percent = 35;
+            status.updated_at_ms = now_unix_ms();
+            status.note = "Clustering complete; extracting abstractions, facts, entities, relationships, and contradictions."
+                .to_string();
+            if let Ok(coverage) = solo_storage::read_derived_coverage(tenant.read()).await {
+                status.pending_clusters = coverage.pending_clusters;
+                status.initial_pending_clusters = coverage.pending_clusters;
+            }
+            runtime.update_backfill(status.clone()).await;
+        }
+        Err(error) => {
+            runtime.record_consolidation_error(error.to_string()).await;
+            fail(&mut status, error.to_string());
+            runtime.update_backfill(status).await;
+            return;
+        }
+    }
+
+    for _ in 0..max_batches {
+        let before = match solo_storage::read_derived_coverage(tenant.read()).await {
+            Ok(coverage) => coverage.pending_clusters,
+            Err(error) => {
+                fail(&mut status, error.to_string());
+                runtime.update_backfill(status).await;
+                return;
+            }
+        };
+        if before == 0 {
+            status.status = "completed".to_string();
+            status.phase = "completed".to_string();
+            status.progress_percent = 100;
+            status.pending_clusters = 0;
+            status.updated_at_ms = now_unix_ms();
+            status.note =
+                "Existing memories are fully covered by the current derived-memory pipeline."
+                    .to_string();
+            runtime.update_backfill(status).await;
+            return;
+        }
+
+        let report = solo_storage::triples_batch::run_triples_batch_tick(
+            tenant.read(),
+            tenant.write(),
+            tenant.steward_slot(),
+            tenant.embedder_id(),
+            limit,
+            Duration::from_secs(cluster_timeout_secs),
+            principal.clone(),
+        )
+        .await;
+        let report = match report {
+            Ok(Some(report)) => report,
+            Ok(None) => {
+                fail(
+                    &mut status,
+                    "Pending clusters remain, but the Steward found no runnable extraction work."
+                        .to_string(),
+                );
+                runtime.update_backfill(status).await;
+                return;
+            }
+            Err(error) => {
+                runtime
+                    .record_triples_error("backfill", error.to_string())
+                    .await;
+                fail(&mut status, error.to_string());
+                runtime.update_backfill(status).await;
+                return;
+            }
+        };
+        status.abstractions_built += report.abstractions_built;
+        status.triples_extracted += report.triples_extracted;
+        let after = solo_storage::read_derived_coverage(tenant.read())
+            .await
+            .map(|coverage| coverage.pending_clusters)
+            .unwrap_or(before);
+        status.pending_clusters = after;
+        let initial = status.initial_pending_clusters.max(1);
+        let processed = initial.saturating_sub(after).min(initial);
+        status.progress_percent = (35 + (processed.saturating_mul(60) / initial)).min(95) as u8;
+        status.updated_at_ms = now_unix_ms();
+        status.note = format!(
+            "Extracted {} abstractions and {} facts; {} clusters remain.",
+            status.abstractions_built, status.triples_extracted, after
+        );
+        runtime
+            .record_triples_batch(
+                "backfill",
+                StewardTriplesBatchStatus {
+                    ran: true,
+                    limit,
+                    cluster_timeout_secs,
+                    abstractions_built: report.abstractions_built,
+                    triples_extracted: report.triples_extracted,
+                    triples_quarantined: report.triples_quarantined,
+                    clusters_failed: report.clusters_failed,
+                    clusters_deferred: report.clusters_deferred,
+                    note: status.note.clone(),
+                },
+            )
+            .await;
+        runtime.update_backfill(status.clone()).await;
+        if after >= before && report.abstractions_built == 0 {
+            fail(
+                &mut status,
+                "Knowledge extraction made no progress; failed or deferred clusters require attention."
+                    .to_string(),
+            );
+            runtime.update_backfill(status).await;
+            return;
+        }
+    }
+
+    fail(
+        &mut status,
+        format!("Backfill reached its safety limit of {max_batches} batches."),
+    );
+    runtime.update_backfill(status).await;
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StatusCapability {
+    state: &'static str,
+    explanation: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusCapabilities {
+    memory_recall: StatusCapability,
+    documents: StatusCapability,
+    clustering: StatusCapability,
+    knowledge_extraction: StatusCapability,
+    themes: StatusCapability,
+    facts: StatusCapability,
+    entities: StatusCapability,
+    graph: StatusCapability,
+    contradictions: StatusCapability,
 }
 
 #[derive(Debug, Serialize)]
@@ -9981,6 +10466,7 @@ struct StatusResponse {
     embedder: StatusEmbedder,
     mcp: StatusMcp,
     steward: StatusSteward,
+    capabilities: StatusCapabilities,
     runtime: StatusRuntime,
 }
 
@@ -10011,6 +10497,8 @@ struct SwitchLlmRequest {
     model: Option<String>,
     base_url: Option<String>,
     api_key_env: Option<String>,
+    endpoint: Option<String>,
+    hosted_processing_consent: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -10020,6 +10508,9 @@ struct LlmSettingsSummary {
     model: Option<String>,
     base_url: Option<String>,
     api_key_env: Option<String>,
+    endpoint: Option<String>,
+    processing_location: String,
+    hosted_processing_consent: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -10133,11 +10624,19 @@ async fn status_handler(
         .as_ref()
         .map(|steward| steward.llm_name().to_string());
     drop(steward_slot);
-    let pending_clusters =
-        solo_storage::triples_batch::count_clusters_without_abstractions(tenant.read())
-            .await
-            .map_err(ApiError::from)?;
+    let coverage = solo_storage::read_derived_coverage(tenant.read())
+        .await
+        .map_err(ApiError::from)?;
     let steward_runtime = state.steward_runtime.snapshot().await;
+    let steward = status_steward_from_config(
+        tenant.config(),
+        runtime_wired,
+        runtime_has_llm,
+        runtime_llm,
+        steward_runtime,
+        coverage,
+    );
+    let capabilities = status_capabilities(&embedder_runtime, &steward);
     Ok(Json(StatusResponse {
         ok: true,
         version: solo_core::build_info::version_with_build_metadata(),
@@ -10156,14 +10655,8 @@ async fn status_handler(
         mcp: StatusMcp {
             sessions: state.mcp_sessions.len(),
         },
-        steward: status_steward_from_config(
-            tenant.config(),
-            runtime_wired,
-            runtime_has_llm,
-            runtime_llm,
-            steward_runtime,
-            pending_clusters,
-        ),
+        steward,
+        capabilities,
         runtime: StatusRuntime {
             pid: std::process::id(),
             platform: std::env::consts::OS,
@@ -10313,20 +10806,55 @@ async fn switch_llm_handler(
     Json(req): Json<SwitchLlmRequest>,
 ) -> Result<Json<SwitchLlmResponse>, ApiError> {
     let mode = req.mode.trim().to_ascii_lowercase();
+    let consent = req.hosted_processing_consent.unwrap_or(false);
     let next = match mode.as_str() {
         "none" => LlmSettings::None,
-        "anthropic" => LlmSettings::Anthropic {
-            api_key_env: normalize_env_var_name(req.api_key_env, "ANTHROPIC_API_KEY")?,
-            model: normalize_llm_model(req.model, "claude-sonnet-4-6")?,
-        },
-        "openai" => LlmSettings::Openai {
-            api_key_env: normalize_env_var_name(req.api_key_env, "OPENAI_API_KEY")?,
-            model: normalize_llm_model(req.model, "gpt-5o")?,
-        },
-        "ollama" => LlmSettings::Ollama {
-            base_url: normalize_ollama_base_url(req.base_url)?,
-            model: normalize_llm_model(req.model, "qwen2.5-coder:7b")?,
-        },
+        "anthropic" => {
+            require_hosted_processing_consent(consent, "Anthropic")?;
+            LlmSettings::Anthropic {
+                api_key_env: normalize_env_var_name(req.api_key_env, "ANTHROPIC_API_KEY")?,
+                model: normalize_llm_model(req.model, "claude-sonnet-4-6")?,
+                hosted_processing_consent: consent,
+            }
+        }
+        "openai" => {
+            require_hosted_processing_consent(consent, "OpenAI")?;
+            LlmSettings::Openai {
+                api_key_env: normalize_env_var_name(req.api_key_env, "OPENAI_API_KEY")?,
+                model: normalize_llm_model(req.model, "gpt-5o")?,
+                hosted_processing_consent: consent,
+            }
+        }
+        "ollama" => {
+            let endpoint = normalize_ollama_endpoint(req.endpoint.as_deref())?;
+            let default_base_url = if matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud) {
+                "https://ollama.com"
+            } else {
+                DEFAULT_OLLAMA_BASE_URL
+            };
+            let base_url = normalize_llm_base_url(req.base_url, default_base_url)?;
+            let model = normalize_llm_model(req.model, "qwen3:8b")?;
+            let hosted = ollama_processes_off_device(endpoint, &base_url, &model);
+            if hosted {
+                require_hosted_processing_consent(consent, "Ollama")?;
+            }
+            let api_key_env = if matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud)
+                && !is_loopback_url(&base_url)
+            {
+                Some(normalize_env_var_name(req.api_key_env, "OLLAMA_API_KEY")?)
+            } else {
+                req.api_key_env
+                    .map(|name| normalize_env_var_name(Some(name), "OLLAMA_API_KEY"))
+                    .transpose()?
+            };
+            LlmSettings::Ollama {
+                endpoint,
+                base_url,
+                model,
+                api_key_env,
+                hosted_processing_consent: consent,
+            }
+        }
         "mcp_sampling" => {
             return Err(ApiError::bad_request(
                 "`mcp_sampling` requires an MCP stdio peer and is not configurable from the daemon settings API",
@@ -10499,6 +11027,23 @@ struct LlmDisplay {
     config_mode: String,
     provider: Option<String>,
     model: Option<String>,
+    base_url: Option<String>,
+    endpoint: Option<String>,
+    processing_location: String,
+    hosted_processing_consent: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct StewardBackfillRequest {
+    limit: Option<usize>,
+    max_batches: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct StewardBackfillResponse {
+    accepted: bool,
+    backfill: Option<StewardBackfillStatus>,
+    note: String,
 }
 
 fn status_steward_from_config(
@@ -10507,7 +11052,7 @@ fn status_steward_from_config(
     runtime_has_llm: bool,
     runtime_llm: Option<String>,
     runtime: StewardRuntimeSnapshot,
-    pending_clusters: usize,
+    coverage: solo_storage::DerivedCoverageSnapshot,
 ) -> StatusSteward {
     let llm = llm_display_from_config(config.llm.as_ref());
     let automatic =
@@ -10526,6 +11071,10 @@ fn status_steward_from_config(
         config_mode: llm.config_mode,
         provider: llm.provider,
         model: llm.model,
+        base_url: llm.base_url,
+        endpoint: llm.endpoint,
+        processing_location: llm.processing_location,
+        hosted_processing_consent: llm.hosted_processing_consent,
         runtime_llm,
         runtime_wired,
         runtime_has_llm,
@@ -10544,7 +11093,12 @@ fn status_steward_from_config(
         last_triples_trigger: runtime.last_triples_trigger,
         last_triples_error: runtime.last_triples_error,
         last_triples_timed_out: runtime.last_triples_timed_out,
-        pending_clusters,
+        pending_clusters: coverage.pending_clusters,
+        coverage,
+        next_consolidation_run_at_ms: runtime.next_consolidation_run_at_ms,
+        last_consolidation_run_at_ms: runtime.last_consolidation_run_at_ms,
+        last_consolidation_error: runtime.last_consolidation_error,
+        backfill: runtime.backfill,
         last_triples_batch: runtime.last_triples_batch,
         note: steward_status_note(can_write_triples, runtime_wired, runtime_has_llm, automatic),
     }
@@ -10578,30 +11132,56 @@ fn llm_display_from_config(llm: Option<&LlmSettings>) -> LlmDisplay {
             config_mode: "anthropic".to_string(),
             provider: Some("anthropic".to_string()),
             model: Some(model.clone()),
+            base_url: None,
+            endpoint: None,
+            processing_location: "Anthropic API (off device)".to_string(),
+            hosted_processing_consent: llm.is_some_and(LlmSettings::hosted_processing_consent),
         },
         Some(LlmSettings::Openai { model, .. }) => LlmDisplay {
             configured: true,
             config_mode: "openai".to_string(),
             provider: Some("openai".to_string()),
             model: Some(model.clone()),
+            base_url: None,
+            endpoint: None,
+            processing_location: "OpenAI API (off device)".to_string(),
+            hosted_processing_consent: llm.is_some_and(LlmSettings::hosted_processing_consent),
         },
-        Some(LlmSettings::Ollama { model, .. }) => LlmDisplay {
+        Some(LlmSettings::Ollama {
+            endpoint,
+            base_url,
+            model,
+            hosted_processing_consent,
+            ..
+        }) => LlmDisplay {
             configured: true,
             config_mode: "ollama".to_string(),
             provider: Some("ollama".to_string()),
             model: Some(model.clone()),
+            base_url: Some(base_url.clone()),
+            endpoint: Some(endpoint.as_str().to_string()),
+            processing_location: ollama_processing_location(*endpoint, base_url, model),
+            hosted_processing_consent: *hosted_processing_consent,
         },
         Some(LlmSettings::McpSampling) => LlmDisplay {
             configured: true,
             config_mode: "mcp_sampling".to_string(),
             provider: Some("mcp_sampling".to_string()),
             model: None,
+            base_url: None,
+            endpoint: None,
+            processing_location: "connected MCP client".to_string(),
+            hosted_processing_consent: false,
         },
         Some(LlmSettings::None) => LlmDisplay {
             configured: false,
             config_mode: "none".to_string(),
             provider: None,
             model: None,
+            base_url: None,
+            endpoint: None,
+            processing_location: "not processed".to_string(),
+            hosted_processing_consent: false,
         },
         None => llm_display_from_env(),
     }
@@ -10616,6 +11196,10 @@ fn llm_display_from_env() -> LlmDisplay {
             model: std::env::var("ANTHROPIC_MODEL")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            base_url: None,
+            endpoint: None,
+            processing_location: "Anthropic API (legacy environment config)".to_string(),
+            hosted_processing_consent: env_truthy("SOLO_HOSTED_PROCESSING_CONSENT"),
         };
     }
     if env_non_empty("OPENAI_API_KEY") {
@@ -10630,6 +11214,17 @@ fn llm_display_from_env() -> LlmDisplay {
             config_mode: "env".to_string(),
             provider: Some(provider.to_string()),
             model: std::env::var("OPENAI_MODEL").ok().filter(|s| !s.is_empty()),
+            base_url: std::env::var("OPENAI_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            endpoint: None,
+            processing_location: if provider == "ollama" {
+                "legacy Ollama endpoint"
+            } else {
+                "OpenAI API (legacy environment config)"
+            }
+            .to_string(),
+            hosted_processing_consent: env_truthy("SOLO_HOSTED_PROCESSING_CONSENT"),
         };
     }
     LlmDisplay {
@@ -10637,6 +11232,10 @@ fn llm_display_from_env() -> LlmDisplay {
         config_mode: "env".to_string(),
         provider: None,
         model: None,
+        base_url: None,
+        endpoint: None,
+        processing_location: "not processed".to_string(),
+        hosted_processing_consent: false,
     }
 }
 
@@ -10644,6 +11243,267 @@ fn env_non_empty(key: &str) -> bool {
     std::env::var(key)
         .ok()
         .is_some_and(|value| !value.is_empty())
+}
+
+fn status_capabilities(
+    embedder: &StatusEmbedderRuntime,
+    steward: &StatusSteward,
+) -> StatusCapabilities {
+    let memory_recall = if embedder.running {
+        StatusCapability {
+            state: "ready",
+            explanation: format!(
+                "Bundled/local embedding retrieval is ready: {}",
+                embedder.detail
+            ),
+        }
+    } else {
+        StatusCapability {
+            state: "failed",
+            explanation: embedder.detail.clone(),
+        }
+    };
+    let documents = StatusCapability {
+        state: "ready",
+        explanation: "Document ingest, chunking, search, and inspection are available.".to_string(),
+    };
+    let clustering = if let Some(error) = steward.last_consolidation_error.as_deref() {
+        StatusCapability {
+            state: "failed",
+            explanation: format!(
+                "The last clustering pass failed: {}",
+                compact_status_detail(error)
+            ),
+        }
+    } else if steward.coverage.active_episodes == 0 {
+        StatusCapability {
+            state: "empty",
+            explanation: "Clustering is ready; add memories before a cluster can be formed."
+                .to_string(),
+        }
+    } else if steward.last_consolidation_run_at_ms.is_none() && steward.coverage.clusters == 0 {
+        StatusCapability {
+            state: "pending",
+            explanation: format!(
+                "{} active memories are waiting for their first clustering pass; next scheduled pass: {}.",
+                steward.coverage.active_episodes,
+                time_or_status(steward.next_consolidation_run_at_ms, "not scheduled")
+            ),
+        }
+    } else {
+        StatusCapability {
+            state: "ready",
+            explanation: format!(
+                "Clustering last ran {}; {} of {} active memories are in clusters. Unclustered memories can be valid until enough related material exists.",
+                time_or_status(
+                    steward.last_consolidation_run_at_ms,
+                    "before this daemon session"
+                ),
+                steward.coverage.clustered_episodes,
+                steward.coverage.active_episodes
+            ),
+        }
+    };
+
+    let knowledge_extraction = if !steward.runtime_has_llm {
+        StatusCapability {
+            state: "disabled",
+            explanation: "No Steward model is active. Choose local Ollama, Ollama Cloud, Anthropic, or OpenAI to generate abstractions and graph knowledge.".to_string(),
+        }
+    } else if let Some(error) = steward.last_triples_error.as_deref() {
+        StatusCapability {
+            state: "failed",
+            explanation: format!(
+                "The last knowledge-extraction pass failed: {}",
+                compact_status_detail(error)
+            ),
+        }
+    } else if steward.coverage.pending_clusters > 0 {
+        StatusCapability {
+            state: "pending",
+            explanation: format!(
+                "{} cluster{} await{} extraction; next scheduled pass: {}.",
+                steward.coverage.pending_clusters,
+                if steward.coverage.pending_clusters == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                if steward.coverage.pending_clusters == 1 {
+                    "s"
+                } else {
+                    ""
+                },
+                time_or_status(steward.next_triples_run_at_ms, "not scheduled")
+            ),
+        }
+    } else if steward.coverage.clusters == 0 {
+        StatusCapability {
+            state: "empty",
+            explanation: "The Steward model is ready; no clusters exist to extract yet."
+                .to_string(),
+        }
+    } else {
+        StatusCapability {
+            state: "ready",
+            explanation: format!(
+                "Knowledge extraction covers all {} clusters; last pass: {}.",
+                steward.coverage.clusters,
+                time_or_status(steward.last_triples_run_at_ms, "not recorded")
+            ),
+        }
+    };
+
+    let themes = derived_capability(
+        &clustering,
+        steward.coverage.clusters,
+        "theme",
+        "Clustering has not produced themes yet.",
+    );
+    let facts = derived_capability(
+        &knowledge_extraction,
+        steward.coverage.triples,
+        "fact",
+        "Extraction completed but produced no active facts.",
+    );
+    let entities = derived_capability(
+        &knowledge_extraction,
+        steward.coverage.entities,
+        "entity",
+        "Extraction completed but produced no entities.",
+    );
+    let graph = derived_capability(
+        &knowledge_extraction,
+        steward.coverage.relationships,
+        "relationship",
+        "Extraction completed but produced no graph relationships.",
+    );
+    let contradictions = derived_capability(
+        &knowledge_extraction,
+        steward.coverage.contradictions,
+        "contradiction",
+        "Extraction is complete and no contradictions were detected.",
+    );
+
+    StatusCapabilities {
+        memory_recall,
+        documents,
+        clustering,
+        knowledge_extraction,
+        themes,
+        facts,
+        entities,
+        graph,
+        contradictions,
+    }
+}
+
+fn derived_capability(
+    dependency: &StatusCapability,
+    count: usize,
+    noun: &str,
+    empty_explanation: &str,
+) -> StatusCapability {
+    if matches!(dependency.state, "disabled" | "pending" | "failed") {
+        return dependency.clone();
+    }
+    if count == 0 {
+        return StatusCapability {
+            state: "empty",
+            explanation: empty_explanation.to_string(),
+        };
+    }
+    StatusCapability {
+        state: "ready",
+        explanation: format!(
+            "{count} {noun}{} available.",
+            if count == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+fn time_or_status(value: Option<i64>, fallback: &str) -> String {
+    value
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
+}
+
+fn require_hosted_processing_consent(consent: bool, provider: &str) -> Result<(), ApiError> {
+    if consent {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(format!(
+        "{provider} processes selected memory content off device. Set hosted_processing_consent=true only after the user explicitly agrees."
+    )))
+}
+
+fn normalize_ollama_endpoint(
+    endpoint: Option<&str>,
+) -> Result<solo_storage::OllamaEndpointKind, ApiError> {
+    match endpoint
+        .unwrap_or("local")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "local" => Ok(solo_storage::OllamaEndpointKind::Local),
+        "cloud" => Ok(solo_storage::OllamaEndpointKind::Cloud),
+        "custom" => Ok(solo_storage::OllamaEndpointKind::Custom),
+        _ => Err(ApiError::bad_request(
+            "Ollama endpoint must be one of `local`, `cloud`, or `custom`",
+        )),
+    }
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"))
+}
+
+fn ollama_processes_off_device(
+    endpoint: solo_storage::OllamaEndpointKind,
+    base_url: &str,
+    model: &str,
+) -> bool {
+    match endpoint {
+        solo_storage::OllamaEndpointKind::Cloud => true,
+        solo_storage::OllamaEndpointKind::Local => model.ends_with("-cloud"),
+        solo_storage::OllamaEndpointKind::Custom => !is_loopback_url(base_url),
+    }
+}
+
+fn ollama_processing_location(
+    endpoint: solo_storage::OllamaEndpointKind,
+    base_url: &str,
+    model: &str,
+) -> String {
+    match endpoint {
+        solo_storage::OllamaEndpointKind::Local => {
+            if model.ends_with("-cloud") {
+                "Ollama Cloud through the local signed-in daemon (off device)".to_string()
+            } else {
+                format!("this device through {base_url}")
+            }
+        }
+        solo_storage::OllamaEndpointKind::Cloud => {
+            format!("Ollama Cloud through {base_url} (off device)")
+        }
+        solo_storage::OllamaEndpointKind::Custom => {
+            format!("custom Ollama endpoint {base_url} (operator controlled)")
+        }
+    }
 }
 
 fn steward_status_note(
@@ -10679,26 +11539,49 @@ fn status_embedder_from_config(config: EmbedderConfig) -> StatusEmbedder {
 
 fn llm_settings_summary(llm: Option<&LlmSettings>) -> LlmSettingsSummary {
     match llm {
-        Some(LlmSettings::Anthropic { api_key_env, model }) => LlmSettingsSummary {
+        Some(LlmSettings::Anthropic {
+            api_key_env,
+            model,
+            hosted_processing_consent,
+        }) => LlmSettingsSummary {
             mode: "anthropic".to_string(),
             provider: Some("anthropic".to_string()),
             model: Some(model.clone()),
             base_url: None,
             api_key_env: Some(api_key_env.clone()),
+            endpoint: None,
+            processing_location: "Anthropic API (off device)".to_string(),
+            hosted_processing_consent: *hosted_processing_consent,
         },
-        Some(LlmSettings::Openai { api_key_env, model }) => LlmSettingsSummary {
+        Some(LlmSettings::Openai {
+            api_key_env,
+            model,
+            hosted_processing_consent,
+        }) => LlmSettingsSummary {
             mode: "openai".to_string(),
             provider: Some("openai".to_string()),
             model: Some(model.clone()),
             base_url: None,
             api_key_env: Some(api_key_env.clone()),
+            endpoint: None,
+            processing_location: "OpenAI API (off device)".to_string(),
+            hosted_processing_consent: *hosted_processing_consent,
         },
-        Some(LlmSettings::Ollama { base_url, model }) => LlmSettingsSummary {
+        Some(LlmSettings::Ollama {
+            endpoint,
+            base_url,
+            model,
+            api_key_env,
+            hosted_processing_consent,
+        }) => LlmSettingsSummary {
             mode: "ollama".to_string(),
             provider: Some("ollama".to_string()),
             model: Some(model.clone()),
             base_url: Some(base_url.clone()),
-            api_key_env: None,
+            api_key_env: api_key_env.clone(),
+            endpoint: Some(endpoint.as_str().to_string()),
+            processing_location: ollama_processing_location(*endpoint, base_url, model),
+            hosted_processing_consent: *hosted_processing_consent,
         },
         Some(LlmSettings::McpSampling) => LlmSettingsSummary {
             mode: "mcp_sampling".to_string(),
@@ -10706,6 +11589,9 @@ fn llm_settings_summary(llm: Option<&LlmSettings>) -> LlmSettingsSummary {
             model: None,
             base_url: None,
             api_key_env: None,
+            endpoint: None,
+            processing_location: "connected MCP client".to_string(),
+            hosted_processing_consent: false,
         },
         Some(LlmSettings::None) => LlmSettingsSummary {
             mode: "none".to_string(),
@@ -10713,6 +11599,9 @@ fn llm_settings_summary(llm: Option<&LlmSettings>) -> LlmSettingsSummary {
             model: None,
             base_url: None,
             api_key_env: None,
+            endpoint: None,
+            processing_location: "not processed".to_string(),
+            hosted_processing_consent: false,
         },
         None => {
             let display = llm_display_from_env();
@@ -10722,6 +11611,9 @@ fn llm_settings_summary(llm: Option<&LlmSettings>) -> LlmSettingsSummary {
                 model: display.model,
                 base_url: None,
                 api_key_env: None,
+                endpoint: display.endpoint,
+                processing_location: display.processing_location,
+                hosted_processing_consent: display.hosted_processing_consent,
             }
         }
     }
@@ -10792,14 +11684,22 @@ fn llm_environment_commands(llm: &LlmSettings) -> Vec<String> {
         LlmSettings::Openai { api_key_env, .. } => {
             vec![format!("setx {api_key_env} <your-openai-api-key>")]
         }
-        LlmSettings::Ollama { base_url, model } => vec![
-            format!("ollama pull {model}"),
-            format!(
-                "setx OPENAI_BASE_URL {}",
-                openai_compatible_ollama_url(base_url)
-            ),
-            format!("setx OPENAI_MODEL {model}"),
-        ],
+        LlmSettings::Ollama {
+            endpoint,
+            base_url,
+            model,
+            api_key_env,
+            ..
+        } => {
+            let mut commands = Vec::new();
+            if matches!(endpoint, solo_storage::OllamaEndpointKind::Local) {
+                commands.push(format!("ollama pull {model}"));
+            } else if let Some(api_key_env) = api_key_env {
+                commands.push(format!("setx {api_key_env} <your-ollama-api-key>"));
+            }
+            commands.push(format!("# Ollama endpoint: {base_url}"));
+            commands
+        }
         LlmSettings::None => Vec::new(),
         LlmSettings::McpSampling => Vec::new(),
     }
@@ -10813,10 +11713,20 @@ fn llm_next_steps(llm: &LlmSettings) -> Vec<String> {
         LlmSettings::Openai { api_key_env, .. } => vec![format!(
             "Make sure {api_key_env} is set in the environment that launches Solo."
         )],
-        LlmSettings::Ollama { base_url, model } => vec![
-            format!("Make sure Ollama is running at {base_url}."),
-            format!("Pull the local Steward model if needed: ollama pull {model}."),
-        ],
+        LlmSettings::Ollama { endpoint, base_url, model, api_key_env, .. } => match endpoint {
+            solo_storage::OllamaEndpointKind::Local => vec![
+                format!("Make sure Ollama is running at {base_url}."),
+                format!("Pull the local Steward model if needed: ollama pull {model}."),
+            ],
+            solo_storage::OllamaEndpointKind::Cloud => vec![
+                format!("Memory content will be processed by Ollama Cloud through {base_url}."),
+                api_key_env.as_ref().map(|name| format!("Make sure {name} is set in the environment that launches Solo.")).unwrap_or_else(|| "Make sure the local Ollama daemon is signed in for cloud-model access.".to_string()),
+            ],
+            solo_storage::OllamaEndpointKind::Custom => vec![
+                format!("Confirm the custom Ollama endpoint is reachable at {base_url}."),
+                "Verify the endpoint operator's storage, logging, and retention policy before backfilling memories.".to_string(),
+            ],
+        },
         LlmSettings::None => vec![
             "Solo will cluster memories only; triples and abstractions stay disabled.".to_string(),
         ],
@@ -10829,15 +11739,6 @@ fn llm_next_steps(llm: &LlmSettings) -> Vec<String> {
         "Run consolidation or wait for the configured triples/consolidation cadence.".to_string(),
     );
     steps
-}
-
-fn openai_compatible_ollama_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    if base.ends_with("/v1") {
-        base.to_string()
-    } else {
-        format!("{base}/v1")
-    }
 }
 
 fn normalize_ollama_model(model: Option<String>) -> Result<String, ApiError> {
@@ -10897,6 +11798,10 @@ fn normalize_ollama_base_url(base_url: Option<String>) -> Result<String, ApiErro
         ));
     }
     Ok(base_url)
+}
+
+fn normalize_llm_base_url(base_url: Option<String>, default: &str) -> Result<String, ApiError> {
+    normalize_ollama_base_url(Some(base_url.unwrap_or_else(|| default.to_string())))
 }
 
 fn normalize_llm_model(model: Option<String>, default: &str) -> Result<String, ApiError> {
@@ -12683,6 +13588,7 @@ mod handler_tests {
             "/v1/inbox",
             "/v1/inbox/{id}/review",
             "/v1/status",
+            "/v1/steward/backfill",
             "/v1/settings/embedder/ollama",
             "/v1/settings/llm",
             "/v1/settings/steward/cadence",
@@ -12817,6 +13723,12 @@ mod handler_tests {
             "LogsResponse",
             "StatusResponse",
             "StatusSteward",
+            "StatusCapability",
+            "StatusCapabilities",
+            "DerivedCoverage",
+            "StewardBackfillRequest",
+            "StewardBackfillStatus",
+            "StewardBackfillResponse",
             "OllamaEmbedderSwitchRequest",
             "OllamaEmbedderSwitchResponse",
             "SwitchLlmRequest",
@@ -21647,6 +22559,36 @@ mod handler_tests {
                     .and_then(|v| v.as_u64()),
                 Some(0)
             );
+            assert_eq!(
+                body.pointer("/capabilities/memory_recall/state")
+                    .and_then(|v| v.as_str()),
+                Some("ready")
+            );
+            assert_eq!(
+                body.pointer("/capabilities/documents/state")
+                    .and_then(|v| v.as_str()),
+                Some("ready")
+            );
+            assert_eq!(
+                body.pointer("/capabilities/knowledge_extraction/state")
+                    .and_then(|v| v.as_str()),
+                Some("disabled")
+            );
+            assert_eq!(
+                body.pointer("/capabilities/graph/state")
+                    .and_then(|v| v.as_str()),
+                Some("disabled")
+            );
+            assert_eq!(
+                body.pointer("/steward/coverage/active_episodes")
+                    .and_then(|v| v.as_u64()),
+                Some(0)
+            );
+            assert!(
+                body.pointer("/steward/backfill")
+                    .is_some_and(|v| v.is_null()),
+                "status should expose empty backfill history as null: {body}"
+            );
             assert!(
                 body.pointer("/steward/next_triples_run_at_ms")
                     .is_some_and(|v| v.is_null()),
@@ -21689,6 +22631,35 @@ mod handler_tests {
                 call_with_auth(r, "GET", "/v1/status", None, Some("Bearer status-secret")).await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
             assert_eq!(body["ok"].as_bool(), Some(true));
+        });
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn steward_backfill_reports_idle_and_refuses_without_a_model() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        let r = h.router.clone();
+        runtime.block_on(async {
+            let (status, body) = call(r.clone(), "GET", "/v1/steward/backfill", None).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["accepted"].as_bool(), Some(false));
+            assert!(body["backfill"].is_null(), "body: {body}");
+
+            let (status, body) = call(
+                r,
+                "POST",
+                "/v1/steward/backfill",
+                Some(json!({"limit": 10, "max_batches": 2})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("Steward model")),
+                "body: {body}"
+            );
         });
         h.shutdown(&runtime);
     }
@@ -21951,8 +22922,9 @@ mod handler_tests {
                 .as_array()
                 .expect("environment_commands");
             assert!(
-                commands.iter().any(|command| command.as_str()
-                    == Some("setx OPENAI_BASE_URL http://localhost:11434/v1")),
+                commands
+                    .iter()
+                    .any(|command| command.as_str() == Some("ollama pull qwen2.5-coder:7b")),
                 "body: {body}"
             );
         });
@@ -21961,8 +22933,11 @@ mod handler_tests {
         assert_eq!(
             cfg.llm,
             Some(LlmSettings::Ollama {
+                endpoint: solo_storage::OllamaEndpointKind::Local,
                 base_url: "http://localhost:11434".into(),
                 model: "qwen2.5-coder:7b".into(),
+                api_key_env: None,
+                hosted_processing_consent: false,
             })
         );
         h.shutdown(&runtime);
@@ -21986,6 +22961,86 @@ mod handler_tests {
                 body["error"]
                     .as_str()
                     .is_some_and(|err| err.contains("mode")),
+                "body: {body}"
+            );
+        });
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn switch_llm_cloud_requires_consent_and_persists_only_secret_reference() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        let r = h.router.clone();
+        let config_path = h._tmp.path().join("solo.config.toml");
+        runtime.block_on(async {
+            let (status, body) = call(
+                r.clone(),
+                "POST",
+                "/v1/settings/llm",
+                Some(json!({
+                    "mode": "ollama",
+                    "endpoint": "cloud",
+                    "model": "gpt-oss:120b-cloud",
+                    "base_url": "https://ollama.com",
+                    "api_key_env": "MY_OLLAMA_KEY"
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+            let (status, body) = call(
+                r,
+                "POST",
+                "/v1/settings/llm",
+                Some(json!({
+                    "mode": "ollama",
+                    "endpoint": "cloud",
+                    "model": "gpt-oss:120b-cloud",
+                    "base_url": "https://ollama.com",
+                    "api_key_env": "MY_OLLAMA_KEY",
+                    "hosted_processing_consent": true
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(body["next"]["endpoint"], "cloud");
+            assert_eq!(body["next"]["api_key_env"], "MY_OLLAMA_KEY");
+            assert_eq!(body["next"]["hosted_processing_consent"], true);
+        });
+
+        let config_text = std::fs::read_to_string(config_path).expect("config text");
+        assert!(config_text.contains("api_key_env = \"MY_OLLAMA_KEY\""));
+        assert!(!config_text.contains("actual-cloud-secret"));
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn switch_llm_supports_cloud_through_a_signed_in_local_daemon() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        let r = h.router.clone();
+        runtime.block_on(async {
+            let (status, body) = call(
+                r,
+                "POST",
+                "/v1/settings/llm",
+                Some(json!({
+                    "mode": "ollama",
+                    "endpoint": "cloud",
+                    "model": "gpt-oss:120b-cloud",
+                    "base_url": "http://localhost:11434",
+                    "hosted_processing_consent": true
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert!(body["next"]["api_key_env"].is_null(), "body: {body}");
+            assert_eq!(body["next"]["endpoint"], "cloud");
+            assert!(
+                body["next"]["processing_location"]
+                    .as_str()
+                    .is_some_and(|location| location.contains("off device")),
                 "body: {body}"
             );
         });

@@ -144,12 +144,15 @@ export interface OllamaEmbedderSwitchResponse {
 }
 
 export type StewardLlmMode = 'none' | 'anthropic' | 'openai' | 'ollama';
+export type OllamaEndpoint = 'local' | 'cloud' | 'custom';
 
 export interface StewardLlmSwitchRequest {
   mode: StewardLlmMode;
   model?: string;
   base_url?: string;
   api_key_env?: string;
+  endpoint?: OllamaEndpoint;
+  hosted_processing_consent?: boolean;
 }
 
 export interface LlmSettingsSummary {
@@ -158,6 +161,31 @@ export interface LlmSettingsSummary {
   model: string | null;
   base_url: string | null;
   api_key_env: string | null;
+  endpoint: OllamaEndpoint | null;
+  processing_location: string;
+  hosted_processing_consent: boolean;
+}
+
+export interface StewardBackfillStatus {
+  id: string;
+  status: string;
+  phase: string;
+  progress_percent: number;
+  started_at_ms: number;
+  updated_at_ms: number;
+  initial_pending_clusters: number;
+  pending_clusters: number;
+  clusters_built: number;
+  abstractions_built: number;
+  triples_extracted: number;
+  error: string | null;
+  note: string;
+}
+
+export interface StewardBackfillResponse {
+  accepted: boolean;
+  backfill: StewardBackfillStatus | null;
+  note: string;
 }
 
 export interface StewardLlmSwitchResponse {
@@ -1559,6 +1587,24 @@ export async function extractTriplesNow(opts: RequestOptions = {}): Promise<Trip
     ...opts,
     method: 'POST',
   });
+}
+
+/** Start or inspect the immediate derived-memory backfill job. */
+export async function startStewardBackfill(
+  body: { limit?: number; max_batches?: number } = {},
+  opts: RequestOptions = {},
+): Promise<StewardBackfillResponse> {
+  return jsonRequest<StewardBackfillResponse>('/v1/steward/backfill', {
+    ...opts,
+    method: 'POST',
+    body,
+  });
+}
+
+export async function fetchStewardBackfill(
+  opts: RequestOptions = {},
+): Promise<StewardBackfillResponse> {
+  return jsonFetch<StewardBackfillResponse>('/v1/steward/backfill', opts);
 }
 
 /** POST /memory/derived/repair */

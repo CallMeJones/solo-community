@@ -113,34 +113,14 @@ pub fn default_embedder() -> EmbedderConfig {
     }
 }
 
-/// v0.9.0 P1 (plan BLOCKER 2 resolution): pick the `[llm]` block default
-/// for a freshly-initialised data dir based on the surrounding env.
-///
-/// Precedence:
-///   1. `ANTHROPIC_API_KEY` non-empty → `Anthropic` variant with
-///      `api_key_env = "ANTHROPIC_API_KEY"` and the plan's
-///      `claude-sonnet-4-6` default model.
-///   2. (Future P1 follow-up may add `OPENAI_API_KEY` here; for v0.9.0
-///      P1 we keep the surface minimal — the operator edits the file if
-///      they want OpenAI, Ollama, or MCP-sampling.)
-///   3. otherwise → `None` variant. The Steward runs cluster-only.
-///
-/// Empty values are treated as unset — guards against shells that set
-/// vars to the empty string to mean "leave default".
+/// Fresh libraries start with knowledge extraction explicitly disabled.
+/// API keys inherited from the environment never imply permission to send
+/// memory content to a hosted model.
 pub fn default_llm_settings_from_env() -> LlmSettings {
-    fn env_non_empty(name: &str) -> bool {
-        std::env::var(name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    }
-    if env_non_empty("ANTHROPIC_API_KEY") {
-        LlmSettings::Anthropic {
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-        }
-    } else {
-        LlmSettings::None
-    }
+    // Never infer permission to send memory content off device from an
+    // inherited API key. The setup flow records an explicit provider choice
+    // and hosted-processing consent after initialization.
+    LlmSettings::None
 }
 
 /// Outcome reported back to the CLI layer for human-readable success output.
@@ -342,6 +322,14 @@ mod community_tests {
             outcome.schema_version,
             migration::current_per_tenant_schema_version()
         );
+    }
+
+    #[test]
+    fn fresh_init_requires_an_explicit_steward_choice() {
+        let temp = TempDir::new().unwrap();
+        let outcome = init(params(temp.path())).unwrap();
+        let config = SoloConfig::read(&outcome.config_path).unwrap();
+        assert_eq!(config.llm, Some(LlmSettings::None));
     }
 
     #[test]

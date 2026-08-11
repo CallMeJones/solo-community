@@ -31,12 +31,10 @@ Two consequences:
   - The clustering algorithm gives the same answer on the same
     inputs, every time. If you re-run `consolidate` with no
     new data, the cluster set is unchanged.
-  - The threshold is the only knob. It defaults to a value
-    that's tuned for BGE-M3 + typical conversational
-    memories. If you switch to a different embedder, the
-    "right" threshold may differ; today this isn't user-
-    exposed (it's a `StewardConfig` field). Open an issue
-    if your corpus needs tuning.
+  - The similarity threshold and minimum cluster size default to values tuned
+    for bundled MiniLM and a small personal corpus. They are exposed through
+    `[steward]` and Solo Web settings. Evaluate changes against representative
+    memories; lower thresholds can create broad, incoherent clusters.
 
 Each newly-formed cluster gets:
 
@@ -316,22 +314,16 @@ daemon triples-batch path can walk already-clustered rows
 and generate abstractions/triples for them. No embedder
 migration or reimport is needed.
 
-## What you can't tune today
+## Configuration boundaries
 
-  - **Cosine thresholds** (cluster, merge, absorb) — set
-    inside `StewardConfig`. Reasonable defaults for BGE-M3
-    + conversational memories. CLI flags would be a
-    follow-up if real-world corpora need tuning.
-  - **Per-cluster max episode count** — there's no upper
-    bound; very-popular themes accumulate without bound. In
-    practice this hasn't been a recall-quality issue.
-  - **Re-consolidation cadence** — the four passes are part
-    of every consolidate. You can't run "just the merge
-    passes" or "just the regen pass." `--force-merge` is
-    the closest thing to a partial-run flag.
-
-If any of these limitations bite, file an issue with your
-use case.
+- **Cluster threshold and minimum size** are configurable in `[steward]` and
+  Solo Web.
+- **Background consolidation/extraction cadence and per-cluster timeout** are
+  configurable in `[triples]` and Solo Web.
+- **Maximum cluster size** is bounded in code to keep prompts specific and
+  auditable; it is not a normal user-facing tuning knob.
+- `--force-merge` requests merge/regeneration work during a manual
+  consolidation. The individual internal passes are not separate CLI jobs.
 
 ## What lives where
 

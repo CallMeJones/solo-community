@@ -1,122 +1,184 @@
 # Configuration File
 
-`solo init` writes one configuration file at the root of the
-data directory: `solo.config.toml`. It's plaintext on
-purpose — Solo needs to read the Argon2 salt and the
-embedder identity **before** opening the encrypted database
-to derive the key.
+`solo init` writes `solo.config.toml` in the Solo data directory. The file is
+plaintext because Solo must read the Argon2 salt and embedder identity before
+it can open the encrypted SQLCipher database.
+
+Never place passphrases or API-key values in this file.
+
+## Typical Community configuration
+
+Official Windows and Linux packages initialize the bundled MiniLM embedder and
+leave knowledge extraction disabled until the user chooses a Steward model:
 
 ```toml
 schema_version = 1
 salt_hex = "c1bd1d1985c6a5fe3a0c4b8d6a18f9e2"
 
 [embedder]
-name    = "BAAI/bge-m3"
-version = "v1"
-dim     = 1024
-dtype   = "f32"
+name = "bundled:all-MiniLM-L6-v2"
+version = "v2"
+dim = 384
+dtype = "f32"
+
+[llm]
+mode = "none"
 ```
+
+The exact file can contain additional default blocks written by the installed
+version. Preserve unknown fields when editing by hand.
 
 ## Top-level fields
 
-| field | type | meaning |
-|---|---|---|
-| `schema_version` | u32 | Version of the config-file schema itself, **not** the database schema. Bumping this lets future Solo versions migrate old config files in-place. Currently always `1`. |
-| `salt_hex` | string | 32-character lowercase hex string of the 16-byte Argon2 salt used to derive the SQLCipher key from your passphrase. Generated fresh on first `solo init`; stable forever after. **Do not edit** — changing it breaks the existing database. |
-| `embedder` | table | Embedder identity persisted on first init. Solo refuses to start if the active embedder doesn't match (see below). |
-| `workspace_file_access` | table | Optional allow-list for daemon-side document/file ingestion. Omit it for legacy unrestricted local behavior. |
+| Field | Meaning |
+|---|---|
+| `schema_version` | Version of the config-file schema, not the database schema. |
+| `salt_hex` | Stable Argon2 salt used with the user's passphrase. Changing it makes the existing database unreadable. |
+| `embedder` | Persisted vector-model identity. Changing it requires a supervised re-embed. |
+| `llm` | Optional Steward provider selection and privacy consent. |
+| `triples` | Background clustering/extraction cadence and batch controls. |
+| `steward` | Clustering threshold and minimum cluster-size overrides. |
+| `documents` | Document chunking, retention, and extension settings. |
+| `workspace_file_access` | Optional allow-list for daemon-side file ingestion. |
+| `auth`, `audit`, `redaction` | HTTP access and local governance controls. |
 
-## `[embedder]` fields
+## `[embedder]`
 
-| field | type | meaning |
-|---|---|---|
-| `name` | string | Embedder name. Default `"BAAI/bge-m3"` (the name is used regardless of whether you actually have BGE-M3 weights — StubEmbedder uses the same identity for compatibility). |
-| `version` | string | Embedder version. Default `"v1"`. |
-| `dim` | u32 | Embedding dimension. Default `1024`. |
-| `dtype` | string | Element type. One of `"f32"` (default), `"f16"`, `"i8"`, `"binary"`. v0.3.x writes only `"f32"`; the others are reserved for future quantised embedders. |
+The identity is tied to vectors stored in SQL and HNSW. Official packages use:
 
-The embedder identity is what makes embedder migration safe.
-When you switch from StubEmbedder to BGE-M3, the persisted
-identity stays the same (both write `BAAI/bge-m3 v1`),
-but the **vector space** changes. Solo emits a warning at
-startup when it detects a likely mode switch against a
-non-empty database.
+```toml
+[embedder]
+name = "bundled:all-MiniLM-L6-v2"
+version = "v2"
+dim = 384
+dtype = "f32"
+```
 
-If you genuinely want to switch to a different embedder,
-use the supervised migration path instead of editing this
-file directly:
+To switch a populated library to an Ollama embedding model, use the supervised
+migration instead of editing these fields:
 
 ```bash
+ollama pull nomic-embed-text
 solo migrate-embedder ollama --model nomic-embed-text
 ```
 
-That command validates Ollama, backs up config and HNSW
-snapshots, writes the new embedder identity, re-embeds the Memory
-Library, garbage-collects stale embedding rows, and
-deletes stale HNSW snapshots so the next daemon start rebuilds
-from SQL embeddings.
+Solo validates the endpoint, backs up config and HNSW snapshots, rewrites all
+vectors, removes stale vector rows, and rebuilds the index from SQL.
 
-Editing `solo.config.toml`'s embedder fields directly is
-**not** supported and will likely produce incoherent
-recall.
+## `[llm]`
 
-## `[workspace_file_access]` fields
+The Steward is independent from the embedder. MiniLM powers recall; a
+generative Steward model creates the advanced knowledge layer.
 
-This optional block constrains file-reading import paths served by the
-daemon. It applies to HTTP document ingest/import and MCP
-`memory_ingest_document` before Solo opens the requested file.
+Disabled:
+
+```toml
+[llm]
+mode = "none"
+```
+
+Local Ollama:
+
+```toml
+[llm]
+mode = "ollama"
+endpoint = "local"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+hosted_processing_consent = false
+```
+
+Direct Ollama Cloud:
+
+```toml
+[llm]
+mode = "ollama"
+endpoint = "cloud"
+base_url = "https://ollama.com"
+model = "gpt-oss:120b-cloud"
+api_key_env = "OLLAMA_API_KEY"
+hosted_processing_consent = true
+```
+
+Ollama Cloud through a signed-in local daemon uses `endpoint = "cloud"`, a
+loopback `base_url`, a `-cloud` model, and can omit `api_key_env`. Although the
+HTTP hop is local, model processing is off device and consent is still
+required.
+
+Hosted Anthropic or OpenAI:
+
+```toml
+[llm]
+mode = "anthropic" # or "openai"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-4-6"
+hosted_processing_consent = true
+```
+
+`api_key_env` is the name of an environment variable, not the key itself.
+Solo refuses hosted processing until `hosted_processing_consent = true` has
+been recorded through an explicit user choice.
+
+Use **Solo Web → Settings → Steward LLM** when possible. The setup flow explains
+the processing location, validates consent, and offers an immediate backfill.
+
+## `[triples]` and `[steward]`
+
+These blocks control when derived work runs and how clustering is formed. The
+Web settings screen is the supported editing surface. Set an interval or count
+to zero only when intentionally disabling that trigger.
+
+```toml
+[triples]
+trigger_interval_secs = 3600
+trigger_episode_count = 50
+consolidate_interval_secs = 3600
+cluster_timeout_secs = 60
+
+[steward]
+cluster_min_size = 2
+cluster_cosine_threshold = 0.55
+```
+
+After changing runtime provider or cadence settings, restart Solo so the daemon
+loads the new configuration.
+
+## `[workspace_file_access]`
+
+Restrict daemon-side document/file ingestion to known roots:
 
 ```toml
 [workspace_file_access]
-allowed_roots = ["C:\\Users\\Example\\Projects\\solo-community"]
+allowed_roots = ["C:\\Users\\Example\\Projects"]
 ```
 
-When `allowed_roots` is absent, Solo keeps the historical unrestricted
-loopback behavior. When it is present, every requested file or directory
-must live under one of those roots. An explicit empty list disables
-daemon-side file ingestion:
+On Linux:
 
 ```toml
 [workspace_file_access]
-allowed_roots = []
+allowed_roots = ["/home/example/projects"]
 ```
 
-For one run, `SOLO_WORKSPACE_FILE_ROOTS` can override the config value.
-It uses the operating system path-list separator, so `;` on Windows and
-`:` on macOS/Linux.
+An explicit empty list disables daemon-side file reads. If the field is absent,
+Solo retains the historical unrestricted loopback behavior.
 
-## What's deliberately NOT stored
+## What is not stored
 
-  - **Passphrase / key.** Never. The config file is
-    plaintext; storing the key (or any plaintext-derivable
-    form of it) would defeat the SQLCipher encryption. The
-    Argon2 salt + your passphrase + the Argon2 cost
-    parameters together are enough to re-derive the key on
-    every startup.
-  - **API keys, model names, base URLs.** All LLM /
-    embedder runtime config is via env vars, not the file.
-    The persisted file describes only **what's true about
-    the data on disk**, not how a future run should
-    interpret it.
-  - **CLI flag defaults, daemon intervals.** Per-run /
-    per-deployment configuration; not persisted.
+- The SQLCipher passphrase or derived key.
+- LLM API-key values. LLM configuration stores only environment-variable
+  names. A configured HTTP bearer token is a separate local access-control
+  setting and makes `solo.config.toml` sensitive; prefer a protected token file
+  when exposing HTTP beyond loopback.
+- Hosted-provider consent inferred from an inherited API key. Fresh installs
+  always start with knowledge extraction disabled.
 
-## Backup considerations
+## Backup
 
-To restore a Solo data dir on a new machine, you need:
+To restore a Community library, retain:
 
-  - `solo.db` (the encrypted database).
-  - `solo.config.toml` (the salt + embedder identity).
-  - Optionally the HNSW snapshot files (`hnsw_episodes*` —
-    Solo will rebuild from `embeddings` if absent, just
-    slower on first startup).
-  - Your passphrase (in your head or your password
-    manager — **not** in the data dir).
+- `solo.db`;
+- `solo.config.toml`;
+- optionally the HNSW snapshots (otherwise Solo rebuilds them from SQL);
+- the passphrase in a password manager, never in the data directory.
 
-`solo.config.toml` is small (~150 bytes) — back it up with
-the database, or your restore won't be able to derive the
-key even with the right passphrase.
-
-`solo.lock` is runtime-only and should NOT be in your
-backup; it'll prevent startup if it lingers from a previous
-machine.
+Do not back up a live `solo.lock`; it is runtime-only.

@@ -376,6 +376,7 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let interval = Duration::from_secs(effective_consolidate_interval_secs);
         let window = args.consolidate_window_days;
         let force_merge = args.force_merge_on_timer;
+        let consolidate_runtime = steward_runtime.clone();
         tracing::info!(
             interval_secs = effective_consolidate_interval_secs,
             window_days = ?window,
@@ -389,7 +390,13 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         Some(tokio::spawn(async move {
             loop {
                 let h = h.clone();
-                let inner = tokio::spawn(consolidate_timer(h, interval, window, force_merge));
+                let inner = tokio::spawn(consolidate_timer(
+                    h,
+                    interval,
+                    window,
+                    force_merge,
+                    consolidate_runtime.clone(),
+                ));
                 match inner.await {
                     Ok(()) => return,
                     Err(e) if e.is_panic() => {
@@ -1092,17 +1099,25 @@ async fn consolidate_timer(
     interval: Duration,
     window_days: Option<i64>,
     force_merge: bool,
+    steward_runtime: solo_api::StewardRuntimeStatus,
 ) {
+    steward_runtime
+        .set_next_consolidation_run_at_ms(Some(solo_api::unix_ms_after(interval)))
+        .await;
     let mut tick = tokio::time::interval(interval);
     tick.tick().await; // skip first
     loop {
         tick.tick().await;
+        steward_runtime
+            .set_next_consolidation_run_at_ms(Some(solo_api::unix_ms_after(interval)))
+            .await;
         let scope = ConsolidationScope {
             window_days,
             force_merge,
         };
         match handle.consolidate(scope).await {
             Ok(report) => {
+                steward_runtime.record_consolidation_success().await;
                 if report.episodes_seen > 0 {
                     tracing::info!(
                         seen = report.episodes_seen,
@@ -1117,6 +1132,9 @@ async fn consolidate_timer(
                 }
             }
             Err(e) => {
+                steward_runtime
+                    .record_consolidation_error(e.to_string())
+                    .await;
                 tracing::warn!(error = %e, "scheduled consolidate failed");
             }
         }
@@ -1409,6 +1427,7 @@ mod tests {
         let cfg = config_with_llm(Some(LlmSettings::Anthropic {
             api_key_env: "ANTHROPIC_API_KEY".into(),
             model: "claude-sonnet-4-6".into(),
+            hosted_processing_consent: true,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }
@@ -1419,6 +1438,7 @@ mod tests {
         let cfg = config_with_llm(Some(LlmSettings::Openai {
             api_key_env: "OPENAI_API_KEY".into(),
             model: "gpt-5o".into(),
+            hosted_processing_consent: true,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }
@@ -1427,8 +1447,11 @@ mod tests {
     #[test]
     fn daemon_startup_allows_ollama_mode() {
         let cfg = config_with_llm(Some(LlmSettings::Ollama {
+            endpoint: solo_storage::OllamaEndpointKind::Local,
             base_url: "http://localhost:11434".into(),
-            model: "qwen3-coder:30b".into(),
+            model: "qwen3:8b".into(),
+            api_key_env: None,
+            hosted_processing_consent: false,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");
     }

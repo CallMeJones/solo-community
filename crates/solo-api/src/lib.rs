@@ -55,7 +55,7 @@ pub mod test_support;
 pub use auth::{AuthConfig, AuthError, AuthenticatedPrincipal};
 pub use http::{
     RuntimeControl, RuntimeControlCommand, RuntimeRestartResponse, SoloHttpState,
-    StewardRuntimeStatus, StewardTriplesBatchStatus, openapi_spec,
+    StewardBackfillStatus, StewardRuntimeStatus, StewardTriplesBatchStatus, openapi_spec,
     router_with_authenticated_routes, router_with_host_routes, serve_http, unix_ms_after,
 };
 pub use llm::{SamplingClient, SamplingError, SamplingLlmClient};

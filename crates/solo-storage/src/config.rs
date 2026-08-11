@@ -2,10 +2,12 @@
 
 //! `solo.config.toml` reader/writer.
 //!
-//! The config file lives alongside `solo.db` and stores everything Solo needs
-//! to re-open the database on startup but does NOT need to keep secret. The
-//! Argon2 salt is the load-bearing field — without it, the same passphrase
-//! produces a different key, so the SQLCipher database becomes unreadable.
+//! The config file lives alongside `solo.db` and stores the Argon2 salt,
+//! persisted model identities, and operational settings. It never stores the
+//! SQLCipher passphrase or LLM API-key values, but it can contain an HTTP
+//! bearer token when config-driven bearer auth is enabled, so protect its file
+//! permissions. Without the salt, the same passphrase produces a different
+//! key and the SQLCipher database becomes unreadable.
 //!
 //! Layout (TOML):
 //! ```toml
@@ -57,46 +59,19 @@ pub enum AuthSettings {
     },
 }
 
-/// LLM-backend config persisted under `[llm]` in `solo.config.toml`
-/// (v0.9.0 P0b scaffold; wiring lands in v0.9.0 P1+).
+/// Steward model selection persisted under `[llm]`.
 ///
-/// Mirrors the [`AuthSettings`] shape: one enum, `#[serde(tag = "mode",
-/// rename_all = "snake_case")]`, lives in `solo-storage` as the canonical
-/// on-disk owner. The `solo-api`-side runtime mirror (used for transport-
-/// adjacent wiring like the MCP-sampling capability gate) is added in
-/// v0.9.0 P1 alongside the actual `build_llm_client_from_config` builder.
-///
-/// Five modes:
-///   * **`none`** — Steward runs without an LLM. Clustering still
-///     happens; abstractions + contradictions are skipped. Semantically
-///     equivalent to the v0.8.x `NoopLlmClient` path with
-///     `is_real_llm() == false`. Default when no env var hints at a
-///     specific backend (v0.9.0 P1 implements the env-detected default
-///     in `solo init`).
-///   * **`anthropic`** — hosted Anthropic Claude via API key. The
-///     `api_key_env` field names the env var that carries the key (so
-///     the config file itself does NOT contain secrets); `model` selects
-///     the model id used at request time.
-///   * **`openai`** — hosted OpenAI Chat Completions; same env-var shape.
-///   * **`ollama`** — local Ollama daemon at `base_url`; `model` is the
-///     ollama model tag (e.g. `qwen3-coder:30b`).
-///   * **`mcp_sampling`** — the LLM lives on the *connected MCP client*
-///     and is called back via `sampling/createMessage`. v0.9.0 P0b
-///     scaffolds the variant; v0.9.0 P2 wires the actual rmcp-backed
-///     `LlmClient` impl, the capability gate at `mcp.initialize`, and
-///     the daemon-mode validation that refuses-to-start when no MCP
-///     peer is available.
-///
-/// Backward compatibility: when `[llm]` is absent, v0.9.x continues to
-/// honor the v0.8.x env-var precedence (`ANTHROPIC_API_KEY`,
-/// `OPENAI_API_KEY`) emitted with a one-time deprecation warning at
-/// daemon start. v0.10.0 removes the env-var-only path.
+/// Fresh installs write [`LlmSettings::None`] so an inherited API key never
+/// opts memory content into hosted processing. Hosted variants persist only
+/// an environment-variable name and require explicit processing consent.
+/// Ollama supports local, Cloud, and operator-controlled endpoints.
+/// `McpSampling` remains parseable only to return an actionable retirement
+/// error for older configurations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum LlmSettings {
     /// Cluster-only: the Steward runs but skips every LLM call.
-    /// Default — fresh installs land here when no env-var hint
-    /// surfaces a backend.
+    /// Default — fresh installs land here until the user selects a provider.
     #[default]
     None,
     /// Hosted Anthropic Claude via API key.
@@ -105,6 +80,8 @@ pub enum LlmSettings {
         api_key_env: String,
         #[serde(default = "default_anthropic_model")]
         model: String,
+        #[serde(default)]
+        hosted_processing_consent: bool,
     },
     /// Hosted OpenAI Chat Completions via API key.
     Openai {
@@ -112,20 +89,43 @@ pub enum LlmSettings {
         api_key_env: String,
         #[serde(default = "default_openai_model")]
         model: String,
+        #[serde(default)]
+        hosted_processing_consent: bool,
     },
-    /// Local Ollama daemon.
+    /// Local Ollama, Ollama Cloud, or an operator-controlled remote endpoint.
     Ollama {
+        #[serde(default)]
+        endpoint: OllamaEndpointKind,
         #[serde(default = "default_ollama_base_url")]
         base_url: String,
         #[serde(default = "default_ollama_model")]
         model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_env: Option<String>,
+        #[serde(default)]
+        hosted_processing_consent: bool,
     },
-    /// MCP-sampling — call back to the connected MCP client. Requires
-    /// a peer that advertises the `sampling` capability at initialize;
-    /// daemon-only deployments (no MCP peer at all) refuse to start
-    /// when this variant is configured. v0.9.0 P2 implements both
-    /// gates; this variant is scaffold-only at P0b.
+    /// Retired MCP-sampling mode retained for actionable config diagnostics.
     McpSampling,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OllamaEndpointKind {
+    #[default]
+    Local,
+    Cloud,
+    Custom,
+}
+
+impl OllamaEndpointKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+            Self::Custom => "custom",
+        }
+    }
 }
 
 fn default_anthropic_api_key_env() -> String {
@@ -149,7 +149,7 @@ fn default_ollama_base_url() -> String {
 }
 
 fn default_ollama_model() -> String {
-    "qwen3-coder:30b".to_string()
+    "qwen3:8b".to_string()
 }
 
 impl LlmSettings {
@@ -180,6 +180,24 @@ impl LlmSettings {
     /// `[llm]` block requests `mcp_sampling`).
     pub fn requires_mcp_peer(&self) -> bool {
         matches!(self, LlmSettings::McpSampling)
+    }
+
+    pub fn hosted_processing_consent(&self) -> bool {
+        match self {
+            LlmSettings::Anthropic {
+                hosted_processing_consent,
+                ..
+            }
+            | LlmSettings::Openai {
+                hosted_processing_consent,
+                ..
+            }
+            | LlmSettings::Ollama {
+                hosted_processing_consent,
+                ..
+            } => *hosted_processing_consent,
+            LlmSettings::None | LlmSettings::McpSampling => false,
+        }
     }
 
     /// Reject the retired `mcp_sampling` backend on every transport while
@@ -1400,9 +1418,11 @@ dtype = "f32"
             LlmSettings::Anthropic {
                 ref api_key_env,
                 ref model,
+                hosted_processing_consent,
             } => {
                 assert_eq!(api_key_env, "ANTHROPIC_API_KEY");
                 assert_eq!(model, "claude-sonnet-4-6");
+                assert!(!hosted_processing_consent);
             }
             other => panic!("expected Anthropic, got {other:?}"),
         }
@@ -1425,6 +1445,7 @@ model = "gpt-5o-mini"
             LlmSettings::Openai {
                 api_key_env: "MY_OAI_KEY".into(),
                 model: "gpt-5o-mini".into(),
+                hosted_processing_consent: false,
             }
         );
         assert_eq!(parsed.mode_str(), "openai");
@@ -1438,11 +1459,17 @@ model = "gpt-5o-mini"
         let parsed: LlmSettings = toml::from_str(toml_in).expect("parse");
         match parsed {
             LlmSettings::Ollama {
+                endpoint,
                 ref base_url,
                 ref model,
+                ref api_key_env,
+                hosted_processing_consent,
             } => {
+                assert_eq!(endpoint, OllamaEndpointKind::Local);
                 assert_eq!(base_url, "http://localhost:11434");
-                assert_eq!(model, "qwen3-coder:30b");
+                assert_eq!(model, "qwen3:8b");
+                assert_eq!(api_key_env, &None);
+                assert!(!hosted_processing_consent);
             }
             other => panic!("expected Ollama, got {other:?}"),
         }
@@ -1524,14 +1551,19 @@ model = "gpt-5o-mini"
             LlmSettings::Anthropic {
                 api_key_env: "X".into(),
                 model: "y".into(),
+                hosted_processing_consent: true,
             },
             LlmSettings::Openai {
                 api_key_env: "X".into(),
                 model: "y".into(),
+                hosted_processing_consent: true,
             },
             LlmSettings::Ollama {
+                endpoint: OllamaEndpointKind::Local,
                 base_url: "http://x".into(),
                 model: "y".into(),
+                api_key_env: None,
+                hosted_processing_consent: false,
             },
         ] {
             cfg.validate_against_transport(false)
@@ -1574,6 +1606,7 @@ model = "claude-sonnet-4-6"
             Some(LlmSettings::Anthropic {
                 api_key_env: "ANTHROPIC_API_KEY".into(),
                 model: "claude-sonnet-4-6".into(),
+                hosted_processing_consent: false,
             })
         );
     }

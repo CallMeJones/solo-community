@@ -10,6 +10,7 @@ import {
   fetchLogs,
   fetchMemoryQualityAudit,
   fetchProjectFacts,
+  fetchStewardBackfill,
   forgetDocument,
   forgetMemory,
   forgetRetainedAsset,
@@ -28,6 +29,7 @@ import {
   switchStewardCadence,
   switchOllamaEmbedder,
   switchStewardLlm,
+  startStewardBackfill,
   extractTriplesNow,
   updateMemory,
   updateMemoryQualityReview,
@@ -617,7 +619,7 @@ describe('api client', () => {
     );
   });
 
-  it('switchStewardLlm posts provider config to /v1/settings/llm', async () => {
+  it('switchStewardLlm posts Ollama Cloud location, secret reference, and consent', async () => {
     useSettingsStore.getState().setAll({
       apiUrl: 'http://solo.test',
       bearerToken: 'secret-token',
@@ -631,16 +633,22 @@ describe('api client', () => {
         model: null,
         base_url: null,
         api_key_env: null,
+        endpoint: null,
+        processing_location: 'knowledge extraction disabled',
+        hosted_processing_consent: false,
       },
       next: {
         mode: 'ollama',
         provider: 'ollama',
-        model: 'qwen2.5-coder:7b',
-        base_url: 'http://localhost:11434',
-        api_key_env: null,
+        model: 'gpt-oss:120b-cloud',
+        base_url: 'https://ollama.com',
+        api_key_env: 'OLLAMA_API_KEY',
+        endpoint: 'cloud',
+        processing_location: 'Ollama Cloud through https://ollama.com (off device)',
+        hosted_processing_consent: true,
       },
       restart_required: true,
-      environment_commands: ['ollama pull qwen2.5-coder:7b'],
+      environment_commands: ['setx OLLAMA_API_KEY <your-ollama-api-key>'],
       next_steps: ['Restart Solo from Solo Controls.'],
       note: 'Config saved.',
     };
@@ -651,8 +659,11 @@ describe('api client', () => {
       switchStewardLlm(
         {
           mode: 'ollama',
-          model: 'qwen2.5-coder:7b',
-          base_url: 'http://localhost:11434',
+          endpoint: 'cloud',
+          model: 'gpt-oss:120b-cloud',
+          base_url: 'https://ollama.com',
+          api_key_env: 'OLLAMA_API_KEY',
+          hosted_processing_consent: true,
         },
         {},
       ),
@@ -669,9 +680,65 @@ describe('api client', () => {
         }),
         body: JSON.stringify({
           mode: 'ollama',
-          model: 'qwen2.5-coder:7b',
-          base_url: 'http://localhost:11434',
+          endpoint: 'cloud',
+          model: 'gpt-oss:120b-cloud',
+          base_url: 'https://ollama.com',
+          api_key_env: 'OLLAMA_API_KEY',
+          hosted_processing_consent: true,
         }),
+      }),
+    );
+  });
+
+  it('starts and reads a derived-memory backfill with bearer auth', async () => {
+    useSettingsStore.getState().setAll({
+      apiUrl: 'http://solo.test',
+      bearerToken: 'secret-token',
+    });
+    const running = {
+      id: '019f-backfill',
+      status: 'running',
+      phase: 'knowledge_extraction',
+      progress_percent: 55,
+      started_at_ms: 1,
+      updated_at_ms: 2,
+      initial_pending_clusters: 4,
+      pending_clusters: 2,
+      clusters_built: 1,
+      abstractions_built: 2,
+      triples_extracted: 7,
+      error: null,
+      note: 'Extracting knowledge.',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ accepted: true, backfill: running, note: 'started' }))
+      .mockResolvedValueOnce(jsonResponse({ accepted: false, backfill: running, note: 'current' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(startStewardBackfill({ limit: 25, max_batches: 10 })).resolves.toMatchObject({
+      accepted: true,
+      backfill: running,
+    });
+    await expect(fetchStewardBackfill()).resolves.toMatchObject({
+      accepted: false,
+      backfill: running,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://solo.test/v1/steward/backfill',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer secret-token' }),
+        body: JSON.stringify({ limit: 25, max_batches: 10 }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://solo.test/v1/steward/backfill',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer secret-token' }),
       }),
     );
   });
