@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import {
+  captureApiConnection,
   fetchContradictions,
   fetchInbox,
   fetchInspect,
@@ -218,11 +219,13 @@ export function InboxView({ onSelectEpisode }: InboxViewProps) {
   const handleBulkReview = async (state: MemoryReviewRequestState) => {
     const targets = bulkReviewTargets(visibleEpisodes, state);
     if (targets.length === 0) return;
+    const connection = captureApiConnection();
     setEpisodeActionError(null);
     setBulkReviewingState(state);
     try {
       for (const episode of targets) {
         await reviewMemory(episode.memory_id, state, {
+          connection,
           note: bulkReviewNoteFor(state),
         });
       }

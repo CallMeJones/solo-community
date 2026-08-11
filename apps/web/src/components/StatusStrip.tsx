@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchSoloStatus, type SoloStatus } from '../api/health';
+import type { NodeKind } from '../api/types';
 import { DEFAULT_SOLO_API_URL, MCP_BRIDGE_URL } from '../config/defaults';
 import { useGraphData } from '../hooks/useGraphData';
+import { buildGraphPresentation } from '../lib/graphPresentation';
 import { COMMUNITY_LIBRARY_NAME, useGraphStore } from '../store/graphStore';
 import { useSettingsStore } from '../store/settingsStore';
 
@@ -141,7 +143,7 @@ function statusOf(
   return fetchStatus === 'fetching' ? 'checking' : 'offline';
 }
 
-function graphStatusText(graph: GraphStatus, visibleKinds: ReadonlySet<string>): string {
+function graphStatusText(graph: GraphStatus, visibleKinds: ReadonlySet<NodeKind>): string {
   if (graph.isError) {
     return `Graph error: ${graph.error instanceof Error ? graph.error.message : String(graph.error)}`;
   }
@@ -166,15 +168,10 @@ function graphStatusText(graph: GraphStatus, visibleKinds: ReadonlySet<string>):
 
 function countVisibleGraphItems(
   graph: LoadedGraph,
-  visibleKinds: ReadonlySet<string>,
+  visibleKinds: ReadonlySet<NodeKind>,
 ): { nodes: number; links: number } {
-  const visibleNodeIds = new Set(
-    graph.nodes.filter((node) => visibleKinds.has(node.kind)).map((node) => node.id),
-  );
-  const links = graph.edges.filter(
-    (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
-  ).length;
-  return { nodes: visibleNodeIds.size, links };
+  const presented = buildGraphPresentation(graph, visibleKinds, new Set(), '');
+  return { nodes: presented.nodes.length, links: presented.links.length };
 }
 
 function soloStatusDetail(status: SoloStatus): string {

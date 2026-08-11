@@ -1412,7 +1412,7 @@ export async function reviewMemory(
 ): Promise<MemoryReviewReport> {
   const memoryId = stripGraphPrefix(id, 'ep:');
   return jsonRequest<MemoryReviewReport>(`/v1/inbox/${encodeURIComponent(memoryId)}/review`, {
-    signal: opts.signal,
+    ...opts,
     method: 'POST',
     body: {
       state,
