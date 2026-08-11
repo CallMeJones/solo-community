@@ -16,8 +16,10 @@ pub struct DerivedCoverageSnapshot {
     pub clusters: usize,
     pub clustered_episodes: usize,
     pub abstractions: usize,
+    pub abstraction_covered_clusters: usize,
     pub pending_clusters: usize,
     pub triples: usize,
+    pub graph_covered_clusters: usize,
     pub entities: usize,
     pub relationships: usize,
     pub contradictions: usize,
@@ -29,7 +31,11 @@ impl DerivedCoverageSnapshot {
     }
 
     pub fn abstraction_coverage_percent(self) -> u8 {
-        percentage(self.abstractions, self.clusters)
+        percentage(self.abstraction_covered_clusters, self.clusters)
+    }
+
+    pub fn graph_coverage_percent(self) -> u8 {
+        percentage(self.graph_covered_clusters, self.clusters)
     }
 }
 
@@ -54,6 +60,10 @@ pub async fn read_derived_coverage(reader: &ReaderPool) -> Result<DerivedCoverag
                       WHERE e.status = 'active'",
                 )?,
                 abstractions: count(conn, "SELECT COUNT(*) FROM semantic_abstractions")?,
+                abstraction_covered_clusters: count(
+                    conn,
+                    "SELECT COUNT(DISTINCT cluster_id) FROM semantic_abstractions",
+                )?,
                 pending_clusters: count(
                     conn,
                     "SELECT COUNT(*)
@@ -64,6 +74,12 @@ pub async fn read_derived_coverage(reader: &ReaderPool) -> Result<DerivedCoverag
                       )",
                 )?,
                 triples: count(conn, "SELECT COUNT(*) FROM triples WHERE status = 'active'")?,
+                graph_covered_clusters: count(
+                    conn,
+                    "SELECT COUNT(DISTINCT cluster_id)
+                       FROM triples
+                      WHERE status = 'active' AND cluster_id IS NOT NULL",
+                )?,
                 entities: count(
                     conn,
                     "SELECT COUNT(*) FROM entities WHERE status IN ('candidate', 'active')",
@@ -101,5 +117,6 @@ mod tests {
         assert_eq!(snapshot, DerivedCoverageSnapshot::default());
         assert_eq!(snapshot.cluster_coverage_percent(), 100);
         assert_eq!(snapshot.abstraction_coverage_percent(), 100);
+        assert_eq!(snapshot.graph_coverage_percent(), 100);
     }
 }

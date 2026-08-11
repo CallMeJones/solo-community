@@ -215,7 +215,7 @@ pub fn sampling_capability_missing_error_message() -> String {
         "  [llm]",
         "  mode = \"openai\"",
         "  api_key_env = \"OPENAI_API_KEY\"",
-        "  model = \"gpt-5o\"",
+        "  model = \"gpt-5.6-terra\"",
         "",
         "  # Ollama (local daemon):",
         "  [llm]",

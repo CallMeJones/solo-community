@@ -66,6 +66,7 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+serde = { workspace = true }
 # `ureq` drives the daemon's HTTP transport from
 # `tests/process_lifecycle.rs::mid_write_kill9_recovery`. Synchronous +
 # self-contained (no async runtime / hyper) — the integration test is

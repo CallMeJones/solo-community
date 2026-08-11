@@ -108,6 +108,17 @@ api_key_env = "OLLAMA_API_KEY"
 hosted_processing_consent = true
 ```
 
+For a signed-in local daemon, use the distinct local transport configuration:
+
+```toml
+[llm]
+mode = "ollama"
+endpoint = "local"
+base_url = "http://localhost:11434"
+model = "gpt-oss:120b-cloud"
+hosted_processing_consent = true
+```
+
 Ollama Cloud currently does not support the local API's structured-output
 switch. Solo prompts for JSON, validates it, and makes one bounded repair
 attempt. Persistent invalid output is reported as a failed extraction; raw
@@ -117,7 +128,8 @@ memory is preserved.
 
 A custom loopback endpoint is treated as local. A non-loopback custom endpoint
 is treated as off-device and requires consent. Review the endpoint operator's
-logging, retention, and training policy before enabling it.
+logging, retention, and training policy before enabling it. Use HTTPS for
+off-device endpoints; plain HTTP can expose memory content in transit.
 
 ### Anthropic and OpenAI
 
@@ -140,7 +152,7 @@ hosted_processing_consent = true
 [llm]
 mode = "openai"
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-5o"
+model = "gpt-5.6-terra"
 hosted_processing_consent = true
 ```
 

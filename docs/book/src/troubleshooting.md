@@ -126,9 +126,9 @@ OLLAMA_API_KEY=<secret>
 ```
 
 The config must contain `api_key_env = "OLLAMA_API_KEY"`, not the secret. To
-use a signed-in local daemon instead, select Cloud, use the loopback base URL,
-choose a `-cloud` model, and leave the key reference blank. Consent is required
-in both cases because inference is off device.
+use a signed-in local daemon instead, select **Cloud via local**, choose a
+`-cloud` model, and leave the key reference blank. Consent is required in both
+cases because inference is off device.
 
 ### Hosted configuration is refused
 

@@ -42,6 +42,36 @@ use solo_core::{LlmClient, Result};
 
 use crate::config::{LlmSettings, OllamaEndpointKind};
 
+const MAX_LLM_RESPONSE_BYTES: usize = 1024 * 1024;
+
+async fn bounded_response_bytes(
+    mut response: reqwest::Response,
+    provider: &str,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_LLM_RESPONSE_BYTES as u64)
+    {
+        return Err(solo_core::Error::llm(format!(
+            "{provider} response exceeded {MAX_LLM_RESPONSE_BYTES} bytes"
+        )));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| solo_core::Error::llm(format!("read {provider} response: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_LLM_RESPONSE_BYTES {
+            return Err(solo_core::Error::llm(format!(
+                "{provider} response exceeded {MAX_LLM_RESPONSE_BYTES} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 /// Build an [`LlmClient`] from environment variables, applying the
 /// precedence documented at the module level: **Anthropic first**,
 /// then **OpenAI**, then `None`.
@@ -64,7 +94,8 @@ pub fn build_llm_client_from_env() -> Result<Option<Arc<dyn LlmClient>>> {
     }
     if let Some(client) = build_openai_client_from_env()? {
         let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-        if !is_loopback_url(&base_url) {
+        // An absent base URL means OpenAI's hosted default, not localhost.
+        if base_url.trim().is_empty() || !is_loopback_url(&base_url) {
             require_legacy_hosted_consent("OpenAI")?;
         }
         return Ok(Some(client));
@@ -128,27 +159,39 @@ pub fn build_llm_client_from_settings(
                 Some(env_var) => read_configured_key(env_var),
                 None => None,
             };
-            if matches!(endpoint, OllamaEndpointKind::Cloud)
-                && !is_loopback_url(base_url)
-                && token.is_none()
-            {
-                return Ok(None);
+            if matches!(endpoint, OllamaEndpointKind::Cloud) {
+                if is_loopback_url(base_url) {
+                    return Err(solo_core::Error::invalid_input(
+                        "direct Ollama Cloud must use a remote base URL; configure endpoint=local with a -cloud model for a signed-in local Ollama daemon",
+                    ));
+                }
+                if token.is_none() {
+                    return Ok(None);
+                }
+            }
+            if matches!(endpoint, OllamaEndpointKind::Local) && !is_loopback_url(base_url) {
+                return Err(solo_core::Error::invalid_input(
+                    "local Ollama must use a loopback base URL; configure endpoint=custom for another host",
+                ));
             }
             let mut client = OllamaChatClient::new(base_url, model.clone())?;
             if let Some(token) = token {
                 client = client.with_bearer_token(token);
             }
-            client = match endpoint {
-                OllamaEndpointKind::Local if model.ends_with("-cloud") => client
+            client = if model.ends_with("-cloud") {
+                client
                     .with_structured_outputs(false)
                     .with_format_fallback(false)
-                    .with_display_prefix("ollama-cloud"),
-                OllamaEndpointKind::Local => client.with_display_prefix("ollama-local"),
-                OllamaEndpointKind::Cloud => client
-                    .with_structured_outputs(false)
-                    .with_format_fallback(false)
-                    .with_display_prefix("ollama-cloud"),
-                OllamaEndpointKind::Custom => client.with_display_prefix("ollama-remote"),
+                    .with_display_prefix("ollama-cloud")
+            } else {
+                match endpoint {
+                    OllamaEndpointKind::Local => client.with_display_prefix("ollama-local"),
+                    OllamaEndpointKind::Cloud => client
+                        .with_structured_outputs(false)
+                        .with_format_fallback(false)
+                        .with_display_prefix("ollama-cloud"),
+                    OllamaEndpointKind::Custom => client.with_display_prefix("ollama-remote"),
+                }
             };
             Ok(Some(Arc::new(client)))
         }
@@ -185,14 +228,27 @@ fn is_loopback_url(url: &str) -> bool {
     reqwest::Url::parse(trimmed)
         .ok()
         .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"))
+        .is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 fn ollama_processes_off_device(endpoint: OllamaEndpointKind, base_url: &str, model: &str) -> bool {
+    // Classify by the actual destination as well as the UI preset. A hand-
+    // edited `endpoint = "local"` must not bypass consent for a remote URL.
+    if !is_loopback_url(base_url) {
+        return true;
+    }
+    if model.ends_with("-cloud") {
+        return true;
+    }
     match endpoint {
         OllamaEndpointKind::Cloud => true,
-        OllamaEndpointKind::Local => model.ends_with("-cloud"),
-        OllamaEndpointKind::Custom => !is_loopback_url(base_url),
+        OllamaEndpointKind::Local | OllamaEndpointKind::Custom => false,
     }
 }
 
@@ -310,6 +366,19 @@ mod settings_tests {
     }
 
     #[test]
+    fn local_ollama_endpoint_rejects_remote_urls_even_with_consent() {
+        let settings = |consent| LlmSettings::Ollama {
+            endpoint: OllamaEndpointKind::Local,
+            base_url: "https://ollama.example.test".to_string(),
+            model: "qwen3:8b".to_string(),
+            api_key_env: None,
+            hosted_processing_consent: consent,
+        };
+        assert!(build_llm_client_from_settings(Some(&settings(false))).is_err());
+        assert!(build_llm_client_from_settings(Some(&settings(true))).is_err());
+    }
+
+    #[test]
     fn signed_in_local_daemon_cloud_model_still_requires_hosted_consent() {
         let settings = |consent| LlmSettings::Ollama {
             endpoint: OllamaEndpointKind::Local,
@@ -324,5 +393,38 @@ mod settings_tests {
             .expect("build")
             .expect("client");
         assert_eq!(client.name(), "ollama-cloud:gpt-oss:120b-cloud");
+
+        let mut custom_loopback = LlmSettings::Ollama {
+            endpoint: OllamaEndpointKind::Custom,
+            base_url: "http://127.0.0.1:22434".to_string(),
+            model: "gpt-oss:120b-cloud".to_string(),
+            api_key_env: None,
+            hosted_processing_consent: false,
+        };
+        assert!(build_llm_client_from_settings(Some(&custom_loopback)).is_err());
+        if let LlmSettings::Ollama {
+            hosted_processing_consent,
+            ..
+        } = &mut custom_loopback
+        {
+            *hosted_processing_consent = true;
+        }
+        let custom_client = build_llm_client_from_settings(Some(&custom_loopback))
+            .expect("build")
+            .expect("client");
+        assert_eq!(custom_client.name(), "ollama-cloud:gpt-oss:120b-cloud");
+    }
+
+    #[test]
+    fn direct_cloud_endpoint_rejects_a_loopback_base_url() {
+        let settings = LlmSettings::Ollama {
+            endpoint: OllamaEndpointKind::Cloud,
+            base_url: "http://localhost:11434".to_string(),
+            model: "gpt-oss:120b-cloud".to_string(),
+            api_key_env: Some("OLLAMA_API_KEY".to_string()),
+            hosted_processing_consent: true,
+        };
+
+        assert!(build_llm_client_from_settings(Some(&settings)).is_err());
     }
 }

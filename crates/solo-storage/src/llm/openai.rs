@@ -51,13 +51,10 @@
 //! with backoff, no cost / usage tracking, no per-call token
 //! cap (max_tokens fixed at construction).
 //!
-//! Additionally: this client sends `max_tokens`, which the legacy
-//! Chat Completions surface accepts. OpenAI's **reasoning** models
-//! (o1, o3, …) require `max_completion_tokens` instead and will
-//! 400 if you point at one. The Steward's prompts are conventional
-//! chat — `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `gpt-3.5-turbo`
-//! all work today. Wiring `max_completion_tokens` for reasoning
-//! models is a future polish pass.
+//! Current OpenAI reasoning models use `max_completion_tokens`; legacy and
+//! OpenAI-compatible backends often still use `max_tokens`. Solo selects the
+//! current parameter for current OpenAI models and retries once with the
+//! alternate spelling only when the endpoint explicitly rejects it.
 //!
 //! ## OpenAI-compatible endpoints (e.g. local LM Studio, Ollama
 //! `/v1`-shim, Together, Groq, Mistral)
@@ -198,16 +195,26 @@ impl OpenAIClient {
         messages: &[Message],
         json_response_format: bool,
         temperature_enabled: bool,
+        use_max_completion_tokens: bool,
     ) -> OpenAIRequest<'a> {
         OpenAIRequest {
             model: &self.model,
-            max_tokens: self.max_tokens,
+            max_tokens: (!use_max_completion_tokens).then_some(self.max_tokens),
+            max_completion_tokens: use_max_completion_tokens.then_some(self.max_tokens),
             messages: messages.iter().map(to_openai_message).collect(),
             temperature: temperature_enabled.then_some(()).and(self.temperature),
             response_format: json_response_format.then_some(OpenAIResponseFormat {
                 response_type: "json_object",
             }),
         }
+    }
+
+    fn prefers_max_completion_tokens(&self) -> bool {
+        self.base_url == DEFAULT_BASE_URL
+            && (self.model.starts_with("gpt-5")
+                || self.model.starts_with("o1")
+                || self.model.starts_with("o3")
+                || self.model.starts_with("o4"))
     }
 }
 
@@ -223,12 +230,19 @@ impl LlmClient for OpenAIClient {
         let mut retried_without_json_response_format = false;
         let mut use_temperature = self.temperature.is_some();
         let mut retried_without_temperature = false;
+        let mut use_max_completion_tokens = self.prefers_max_completion_tokens();
+        let mut retried_with_alternate_token_limit = false;
 
         // Retry loop — same shape as the Anthropic client. See
         // `super::retry` for the policy definition.
         let mut attempt: u32 = 0;
         loop {
-            let body = self.request_body(messages, use_json_response_format, use_temperature);
+            let body = self.request_body(
+                messages,
+                use_json_response_format,
+                use_temperature,
+                use_max_completion_tokens,
+            );
             let send_res = self
                 .http
                 .post(&url)
@@ -241,10 +255,14 @@ impl LlmClient for OpenAIClient {
             match send_res {
                 Ok(resp) => {
                     let status = resp.status();
+                    let retry_after_hdr = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let response_bytes = super::bounded_response_bytes(resp, "openai").await?;
                     if status.is_success() {
-                        let parsed: OpenAIResponse = resp
-                            .json()
-                            .await
+                        let parsed: OpenAIResponse = serde_json::from_slice(&response_bytes)
                             .map_err(|e| Error::llm(format!("openai response parse: {e}")))?;
                         let text = parsed
                             .choices
@@ -262,12 +280,7 @@ impl LlmClient for OpenAIClient {
                         });
                     }
 
-                    let retry_after_hdr = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
-                    let body_text = resp.text().await.unwrap_or_default();
+                    let body_text = String::from_utf8_lossy(&response_bytes);
 
                     if use_json_response_format
                         && !retried_without_json_response_format
@@ -291,6 +304,22 @@ impl LlmClient for OpenAIClient {
                         );
                         use_temperature = false;
                         retried_without_temperature = true;
+                        continue;
+                    }
+                    if !retried_with_alternate_token_limit
+                        && is_token_limit_parameter_unsupported(
+                            status.as_u16(),
+                            &body_text,
+                            use_max_completion_tokens,
+                        )
+                    {
+                        use_max_completion_tokens = !use_max_completion_tokens;
+                        retried_with_alternate_token_limit = true;
+                        tracing::warn!(
+                            status = %status,
+                            parameter = if use_max_completion_tokens { "max_completion_tokens" } else { "max_tokens" },
+                            "openai-compatible backend rejected the token-limit parameter; retrying with the alternate spelling"
+                        );
                         continue;
                     }
 
@@ -408,7 +437,10 @@ fn is_ollama_placeholder_key(api_key: &str) -> bool {
 #[derive(Debug, Serialize)]
 struct OpenAIRequest<'a> {
     model: &'a str,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     messages: Vec<OpenAIMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -490,6 +522,29 @@ fn is_temperature_unsupported(status: u16, body_text: &str) -> bool {
         || lower.contains("invalid")
         || lower.contains("extra_forbidden");
     mentions_temperature && looks_unsupported
+}
+
+fn is_token_limit_parameter_unsupported(
+    status: u16,
+    body_text: &str,
+    used_max_completion_tokens: bool,
+) -> bool {
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+    let lower = body_text.to_ascii_lowercase();
+    let parameter = if used_max_completion_tokens {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    lower.contains(parameter)
+        && (lower.contains("unsupported")
+            || lower.contains("not support")
+            || lower.contains("not_supported")
+            || lower.contains("unrecognized")
+            || lower.contains("unknown")
+            || lower.contains("extra_forbidden"))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -600,7 +655,8 @@ mod tests {
             .with_temperature(0.0);
         let body = OpenAIRequest {
             model: c.model(),
-            max_tokens: c.max_tokens,
+            max_tokens: Some(c.max_tokens),
+            max_completion_tokens: None,
             messages: vec![OpenAIMessage {
                 role: "user",
                 content: "json please".to_string(),
@@ -613,6 +669,45 @@ mod tests {
         let value = serde_json::to_value(body).unwrap();
         assert_eq!(value["temperature"], 0.0);
         assert_eq!(value["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn current_openai_models_use_max_completion_tokens() {
+        let current = OpenAIClient::new("dummy", "gpt-5.6-terra").unwrap();
+        assert!(current.prefers_max_completion_tokens());
+        let body = current.request_body(&[Message::user("hi")], true, true, true);
+        let value = serde_json::to_value(body).unwrap();
+        assert_eq!(value["max_completion_tokens"], DEFAULT_MAX_TOKENS);
+        assert!(value.get("max_tokens").is_none());
+
+        let compatible = OpenAIClient::new("dummy", "gpt-5.6-terra")
+            .unwrap()
+            .with_base_url("https://compatible.example.test/v1");
+        assert!(!compatible.prefers_max_completion_tokens());
+    }
+
+    #[test]
+    fn token_limit_fallback_detection_is_specific() {
+        assert!(is_token_limit_parameter_unsupported(
+            400,
+            r#"{"error":{"message":"Unsupported parameter: max_completion_tokens"}}"#,
+            true,
+        ));
+        assert!(is_token_limit_parameter_unsupported(
+            422,
+            r#"{"detail":"extra_forbidden: max_tokens"}"#,
+            false,
+        ));
+        assert!(!is_token_limit_parameter_unsupported(
+            400,
+            r#"{"error":"max_tokens must be below 4096"}"#,
+            false,
+        ));
+        assert!(!is_token_limit_parameter_unsupported(
+            500,
+            r#"{"error":"max_completion_tokens unavailable"}"#,
+            true,
+        ));
     }
 
     #[test]

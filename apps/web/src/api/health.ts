@@ -44,6 +44,7 @@ export interface SoloStatus {
     provider: string | null;
     model: string | null;
     base_url: string | null;
+    api_key_env: string | null;
     endpoint: 'local' | 'cloud' | 'custom' | null;
     processing_location: string;
     hosted_processing_consent: boolean;
@@ -71,8 +72,10 @@ export interface SoloStatus {
       clusters: number;
       clustered_episodes: number;
       abstractions: number;
+      abstraction_covered_clusters: number;
       pending_clusters: number;
       triples: number;
+      graph_covered_clusters: number;
       entities: number;
       relationships: number;
       contradictions: number;

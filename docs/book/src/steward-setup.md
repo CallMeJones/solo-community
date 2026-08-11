@@ -22,7 +22,8 @@ do not mistake a disabled graph for a graph with no facts.
 |---|---|---|---|
 | Disabled | none | none | Recall and documents still work. |
 | Local Ollama | this device | none | Recommended privacy-first default; start with `qwen3:8b` or `qwen3:4b` on smaller machines. |
-| Ollama Cloud | Ollama Cloud | `OLLAMA_API_KEY` reference, or a signed-in local Ollama daemon | Requires explicit hosted-processing consent. |
+| Ollama Cloud direct | Ollama Cloud | `OLLAMA_API_KEY` reference | Connects to `ollama.com`; requires explicit hosted-processing consent. |
+| Ollama Cloud via local | Ollama Cloud through a signed-in loopback daemon | none | Uses a `-cloud` model; requires explicit hosted-processing consent. |
 | Custom Ollama | configured operator endpoint | optional environment reference | Non-loopback endpoints require consent. |
 | Anthropic | Anthropic API | environment reference | Requires consent; strong on ambiguous extraction. |
 | OpenAI | OpenAI API | environment reference | Requires consent; model is selectable. |

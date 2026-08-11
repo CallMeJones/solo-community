@@ -141,7 +141,7 @@ fn default_openai_api_key_env() -> String {
 }
 
 fn default_openai_model() -> String {
-    "gpt-5o".to_string()
+    "gpt-5.6-terra".to_string()
 }
 
 fn default_ollama_base_url() -> String {

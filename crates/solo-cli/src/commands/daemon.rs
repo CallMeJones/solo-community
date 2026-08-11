@@ -1437,7 +1437,7 @@ mod tests {
     fn daemon_startup_allows_openai_mode() {
         let cfg = config_with_llm(Some(LlmSettings::Openai {
             api_key_env: "OPENAI_API_KEY".into(),
-            model: "gpt-5o".into(),
+            model: "gpt-5.6-terra".into(),
             hosted_processing_consent: true,
         }));
         check_llm_config_for_daemon_mode(&cfg).expect("must allow");

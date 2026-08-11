@@ -1030,6 +1030,8 @@ function capabilityTone(state: string): string {
   return 'bg-slate-800 text-slate-300';
 }
 
+type OllamaSetupRoute = OllamaEndpoint | 'signed_cloud';
+
 function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) {
   const queryClient = useQueryClient();
   const [dirty, setDirty] = useState(false);
@@ -1037,7 +1039,7 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
   const [llmModel, setLlmModel] = useState('qwen3:8b');
   const [llmBaseUrl, setLlmBaseUrl] = useState('http://localhost:11434');
   const [llmApiKeyEnv, setLlmApiKeyEnv] = useState('ANTHROPIC_API_KEY');
-  const [ollamaEndpoint, setOllamaEndpoint] = useState<OllamaEndpoint>('local');
+  const [ollamaRoute, setOllamaRoute] = useState<OllamaSetupRoute>('local');
   const [hostedConsent, setHostedConsent] = useState(false);
   const [restartRequested, setRestartRequested] = useState(false);
 
@@ -1046,8 +1048,10 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
     const mode = stewardLlmMode(solo.data);
     setLlmMode(mode);
     setLlmModel(stewardLlmModel(solo.data, mode));
-    setLlmApiKeyEnv(defaultLlmApiKeyEnv(mode));
-    setOllamaEndpoint(solo.data?.steward?.endpoint ?? 'local');
+    setLlmApiKeyEnv(solo.data?.steward?.api_key_env ?? defaultLlmApiKeyEnv(mode));
+    const endpoint = solo.data?.steward?.endpoint ?? 'local';
+    const model = stewardLlmModel(solo.data, mode);
+    setOllamaRoute(endpoint === 'local' && model.endsWith('-cloud') ? 'signed_cloud' : endpoint);
     setLlmBaseUrl(stewardLlmBaseUrl(solo.data));
     setHostedConsent(solo.data?.steward?.hosted_processing_consent ?? false);
   }, [dirty, solo.data]);
@@ -1059,11 +1063,13 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
           mode: llmMode,
           ...(llmMode !== 'none' ? { model: llmModel.trim() } : {}),
           ...(llmMode === 'ollama' ? { base_url: llmBaseUrl.trim() } : {}),
-          ...(llmMode === 'ollama' ? { endpoint: ollamaEndpoint } : {}),
+          ...(llmMode === 'ollama'
+            ? { endpoint: ollamaRoute === 'signed_cloud' ? 'local' : ollamaRoute }
+            : {}),
           ...(llmMode === 'anthropic' ||
           llmMode === 'openai' ||
           (llmMode === 'ollama' &&
-            ollamaEndpoint !== 'local' &&
+            (ollamaRoute === 'cloud' || ollamaRoute === 'custom') &&
             llmApiKeyEnv.trim().length > 0)
             ? { api_key_env: llmApiKeyEnv.trim() }
             : {}),
@@ -1115,22 +1121,28 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
     setLlmApiKeyEnv(defaultLlmApiKeyEnv(mode));
     setHostedConsent(false);
   };
-  const chooseOllamaEndpoint = (endpoint: OllamaEndpoint) => {
+  const chooseOllamaRoute = (route: OllamaSetupRoute) => {
     setDirty(true);
-    setOllamaEndpoint(endpoint);
+    setOllamaRoute(route);
     setHostedConsent(false);
-    setLlmBaseUrl(endpoint === 'cloud' ? 'https://ollama.com' : 'http://localhost:11434');
-    setLlmModel(endpoint === 'cloud' ? 'gpt-oss:120b-cloud' : 'qwen3:8b');
-    setLlmApiKeyEnv(endpoint === 'cloud' ? 'OLLAMA_API_KEY' : '');
+    setLlmBaseUrl(route === 'cloud' ? 'https://ollama.com' : 'http://localhost:11434');
+    setLlmModel(route === 'cloud' || route === 'signed_cloud' ? 'gpt-oss:120b-cloud' : 'qwen3:8b');
+    setLlmApiKeyEnv(route === 'cloud' ? 'OLLAMA_API_KEY' : '');
   };
   const commands = llmSwitch.data?.environment_commands ?? [];
+  const normalizedLlmModel = llmModel.trim();
   const hostedProcessing =
     llmMode === 'anthropic' ||
     llmMode === 'openai' ||
     (llmMode === 'ollama' &&
-      (ollamaEndpoint === 'cloud' ||
-        (ollamaEndpoint === 'local' && llmModel.endsWith('-cloud')) ||
-        (ollamaEndpoint === 'custom' && !isLoopbackOllamaUrl(llmBaseUrl))));
+      (ollamaRoute === 'cloud' ||
+        ollamaRoute === 'signed_cloud' ||
+        normalizedLlmModel.endsWith('-cloud') ||
+        (ollamaRoute === 'custom' && !isLoopbackOllamaUrl(llmBaseUrl))));
+  const signedCloudModelInvalid =
+    llmMode === 'ollama' &&
+    ollamaRoute === 'signed_cloud' &&
+    !normalizedLlmModel.endsWith('-cloud');
   const backfillStatus = solo.data?.steward?.backfill;
 
   return (
@@ -1172,22 +1184,23 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       </div>
 
       {llmMode === 'ollama' && (
-        <div className="mt-4 grid grid-cols-3 gap-2">
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {([
-            ['local', 'Local'],
-            ['cloud', 'Cloud'],
+            ['local', 'Local model'],
+            ['signed_cloud', 'Cloud via local'],
+            ['cloud', 'Cloud direct'],
             ['custom', 'Custom'],
-          ] as const).map(([endpoint, label]) => (
+          ] as const).map(([route, label]) => (
             <button
-              key={endpoint}
+              key={route}
               type="button"
-              onClick={() => chooseOllamaEndpoint(endpoint)}
+              onClick={() => chooseOllamaRoute(route)}
               className={`rounded-md border px-3 py-2 text-xs ${
-                ollamaEndpoint === endpoint
+                ollamaRoute === route
                   ? 'border-emerald-500 bg-emerald-950/50 text-emerald-100'
                   : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
               }`}
-              aria-pressed={ollamaEndpoint === endpoint}
+              aria-pressed={ollamaRoute === route}
             >
               {label}
             </button>
@@ -1214,16 +1227,17 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
               Base URL
               <input
                 value={llmBaseUrl}
+                disabled={ollamaRoute !== 'custom'}
                 onChange={(event) => {
                   setDirty(true);
                   setLlmBaseUrl(event.target.value);
                 }}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-slate-500"
               />
             </label>
-            {ollamaEndpoint !== 'local' && (
+            {(ollamaRoute === 'cloud' || ollamaRoute === 'custom') && (
               <label className="text-xs font-medium uppercase text-slate-400">
-                API key env {(ollamaEndpoint === 'custom' || isLoopbackOllamaUrl(llmBaseUrl)) && '(optional)'}
+                API key env {ollamaRoute === 'custom' && '(optional)'}
                 <input
                   value={llmApiKeyEnv}
                   onChange={(event) => {
@@ -1232,11 +1246,6 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
                   }}
                   className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
                 />
-                {ollamaEndpoint === 'cloud' && isLoopbackOllamaUrl(llmBaseUrl) && (
-                  <span className="mt-1 block normal-case text-slate-500">
-                    Leave blank when the local Ollama daemon is already signed in; a <code>-cloud</code> model will still run off device.
-                  </span>
-                )}
               </label>
             )}
             </>
@@ -1256,11 +1265,17 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
         </div>
       )}
 
+      {signedCloudModelInvalid && (
+        <p className="mt-4 rounded-md border border-red-800/70 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+          Cloud via local requires an Ollama Cloud model whose name ends in <code>-cloud</code>.
+        </p>
+      )}
+
       {llmMode !== 'none' && (
         <div className={`mt-4 rounded-md border px-3 py-3 text-xs ${hostedProcessing ? 'border-amber-800/70 bg-amber-950/25 text-amber-100' : 'border-emerald-800/70 bg-emerald-950/25 text-emerald-100'}`}>
           <div className="font-medium">
             {hostedProcessing
-              ? `Memory content will be processed off device by ${llmMode === 'ollama' ? (ollamaEndpoint === 'cloud' || llmModel.endsWith('-cloud') ? 'Ollama Cloud' : 'the configured Ollama host') : llmMode === 'anthropic' ? 'Anthropic' : 'OpenAI'}.`
+              ? `Memory content will be processed off device by ${llmMode === 'ollama' ? (ollamaRoute === 'cloud' || ollamaRoute === 'signed_cloud' || normalizedLlmModel.endsWith('-cloud') ? 'Ollama Cloud' : 'the configured Ollama host') : llmMode === 'anthropic' ? 'Anthropic' : 'OpenAI'}.`
               : 'Memory content stays on this device and is processed by local Ollama.'}
           </div>
           {hostedProcessing && (
@@ -1354,10 +1369,14 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       )}
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => llmSwitch.mutate()}
-          disabled={llmSwitch.isPending || (hostedProcessing && !hostedConsent)}
+          <button
+            type="button"
+            onClick={() => llmSwitch.mutate()}
+            disabled={
+              llmSwitch.isPending ||
+              signedCloudModelInvalid ||
+              (hostedProcessing && !hostedConsent)
+            }
           className="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-700"
         >
           {llmSwitch.isPending ? 'Applying' : 'Apply LLM config'}
@@ -2421,8 +2440,8 @@ function stewardLlmBaseUrl(status?: SoloStatus): string {
 
 function isLoopbackOllamaUrl(value: string): boolean {
   try {
-    const host = new URL(value.trim()).hostname.toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+    const host = new URL(value.trim()).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
   } catch {
     return false;
   }
@@ -2430,7 +2449,7 @@ function isLoopbackOllamaUrl(value: string): boolean {
 
 function defaultLlmModel(mode: StewardLlmMode): string {
   if (mode === 'anthropic') return 'claude-sonnet-4-6';
-  if (mode === 'openai') return 'gpt-5o';
+  if (mode === 'openai') return 'gpt-5.6-terra';
   if (mode === 'ollama') return 'qwen3:8b';
   return '';
 }

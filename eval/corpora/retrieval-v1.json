@@ -3,8 +3,10 @@
   "description": "Gold corpus for bundled MiniLM plus BM25/RRF: semantic paraphrases, lexical rescue, entity ambiguity, corrections, privacy, and hard negatives.",
   "version": 1,
   "model_baseline": "bundled:all-MiniLM-L6-v2@v2",
-  "metrics": ["recall_at_3", "mrr", "forbidden_at_3", "vector_lexical_ablation"],
+  "metrics": ["recall_at_k", "mrr", "top_1_confusion", "vector_lexical_support"],
   "passing_score": 0.85,
+  "passing_mrr": 0.75,
+  "passing_top_1_safety": 0.85,
   "cases": [
     {
       "id": "abstract_embedding_role",

@@ -175,10 +175,14 @@ impl LlmClient for AnthropicClient {
             match send_res {
                 Ok(resp) => {
                     let status = resp.status();
+                    let retry_after_hdr = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let response_bytes = super::bounded_response_bytes(resp, "anthropic").await?;
                     if status.is_success() {
-                        let parsed: AnthropicResponse = resp
-                            .json()
-                            .await
+                        let parsed: AnthropicResponse = serde_json::from_slice(&response_bytes)
                             .map_err(|e| Error::llm(format!("anthropic response parse: {e}")))?;
                         let text = parsed
                             .content
@@ -199,14 +203,9 @@ impl LlmClient for AnthropicClient {
                     }
 
                     // Non-2xx. Decide retry.
-                    let retry_after_hdr = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string());
                     // Consume the response body for diagnostics
                     // (ignored on retry, surfaced on terminal).
-                    let body_text = resp.text().await.unwrap_or_default();
+                    let body_text = String::from_utf8_lossy(&response_bytes);
 
                     if attempt < self.retry.max_retries && is_retryable_status(status.as_u16()) {
                         let delay =

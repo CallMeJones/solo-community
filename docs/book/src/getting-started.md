@@ -137,8 +137,9 @@ Choose one of:
 
 - **Local Ollama** — processing stays on the device; `qwen3:8b` is the normal
   starting model and `qwen3:4b` is the lighter option.
-- **Ollama Cloud** — direct bearer-authenticated Cloud API or a signed-in local
-  daemon using a `-cloud` model.
+- **Ollama Cloud direct** — bearer-authenticated access to `ollama.com`.
+- **Ollama Cloud via local** — a signed-in loopback daemon using a `-cloud`
+  model; inference is still off device.
 - **Anthropic** or **OpenAI** — hosted providers referenced through environment
   variables.
 - **Disabled** — keep recall/documents/clustering without generative extraction.

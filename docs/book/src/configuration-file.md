@@ -100,10 +100,9 @@ api_key_env = "OLLAMA_API_KEY"
 hosted_processing_consent = true
 ```
 
-Ollama Cloud through a signed-in local daemon uses `endpoint = "cloud"`, a
-loopback `base_url`, a `-cloud` model, and can omit `api_key_env`. Although the
-HTTP hop is local, model processing is off device and consent is still
-required.
+Ollama Cloud through a signed-in local daemon uses `endpoint = "local"`, a
+loopback `base_url`, a `-cloud` model, and omits `api_key_env`. Although the HTTP
+hop is local, model processing is off device and consent is still required.
 
 Hosted Anthropic or OpenAI:
 

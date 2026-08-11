@@ -22,7 +22,7 @@ two API key vars (which gate optional features) and
 | `ANTHROPIC_API_KEY` | _none_ | Anthropic Claude API key. Persisted `[llm]` config stores this variable name, never the value. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Legacy environment-only Anthropic model override. |
 | `OPENAI_API_KEY` | _none_ | OpenAI API key. Persisted `[llm]` config stores this variable name, never the value. |
-| `OPENAI_MODEL` | `gpt-5o` | Legacy environment-only OpenAI/OpenAI-compatible model override. |
+| `OPENAI_MODEL` | `gpt-5.6-terra` | Legacy environment-only OpenAI/OpenAI-compatible model override. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Legacy OpenAI-compatible base URL override. Persisted Ollama settings use their native `base_url` field. |
 | `RUST_LOG` | _none_ (defaults to WARN) | Standard `tracing-subscriber` filter. Examples: `RUST_LOG=info`, `RUST_LOG=solo_storage=debug,info`. |
 

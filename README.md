@@ -393,7 +393,8 @@ models. In Solo Web, open **Settings → Steward LLM → Ollama** and choose:
   requires explicit consent and stores only an environment-variable reference
   such as `OLLAMA_API_KEY`, never the key itself.
 - **Custom** — an operator-controlled Ollama endpoint. Treat a non-loopback
-  endpoint as off-device processing and review its logging/retention policy.
+  endpoint as off-device processing, use HTTPS outside the local machine, and
+  review its logging/retention policy.
 
 ```bash
 # 1. Install Ollama (Linux/macOS one-liner; Windows installer at ollama.com)
@@ -429,9 +430,10 @@ the versioned retrieval and derivation corpus rather than assumed to help.
 
 Ollama Cloud can be reached in either supported form:
 
-- Directly at `https://ollama.com/api` using a bearer token held in
-  `OLLAMA_API_KEY`.
-- Through a signed-in local Ollama daemon using a `-cloud` model tag. The
+- Directly at `https://ollama.com/api` using `endpoint = "cloud"` and a bearer
+  token held in `OLLAMA_API_KEY`.
+- Through a signed-in local Ollama daemon using `endpoint = "local"` and a
+  `-cloud` model tag. The
   request still leaves the device, so Solo requires hosted-processing consent
   even though the API connection itself is loopback.
 
@@ -457,7 +459,7 @@ solo consolidate
 ```bash
 export OPENAI_API_KEY=sk-...
 export SOLO_HOSTED_PROCESSING_CONSENT=true
-export OPENAI_MODEL=gpt-5o                          # optional override
+export OPENAI_MODEL=gpt-5.6-terra                   # optional override
 solo consolidate
 ```
 

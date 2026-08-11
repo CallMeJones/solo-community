@@ -60,11 +60,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use solo_core::{Error, LlmClient, Message, Result, Role};
 
-use super::openai::OpenAIClient;
+use super::{bounded_response_bytes, openai::OpenAIClient};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_KEEP_ALIVE: &str = "30s";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const MAX_ERROR_PREVIEW_CHARS: usize = 2048;
 pub const ENV_OLLAMA_LLM_KEEP_ALIVE: &str = "SOLO_OLLAMA_LLM_KEEP_ALIVE";
 const ENV_OLLAMA_KEEP_ALIVE: &str = "SOLO_OLLAMA_KEEP_ALIVE";
 
@@ -85,13 +86,30 @@ pub struct OllamaChatClient {
 impl OllamaChatClient {
     pub fn new(base_url: impl AsRef<str>, model: impl Into<String>) -> Result<Self> {
         let model = model.into();
+        let base_url = native_ollama_base_url(base_url.as_ref());
+        let parsed = reqwest::Url::parse(&base_url)
+            .map_err(|_| Error::invalid_input("Ollama base URL is invalid"))?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err(Error::invalid_input(
+                "Ollama base URL must use http or https and include a host",
+            ));
+        }
+        if !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(Error::invalid_input(
+                "Ollama base URL must not contain credentials, a query, or a fragment",
+            ));
+        }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .build()
             .map_err(|e| Error::llm(format!("build Ollama reqwest client: {e}")))?;
         Ok(Self {
             http,
-            base_url: native_ollama_base_url(base_url.as_ref()),
+            base_url: parsed.as_str().trim_end_matches('/').to_string(),
             keep_alive: keep_alive_from_env(),
             display_name: format!("ollama:{model}"),
             model,
@@ -194,18 +212,18 @@ impl OllamaChatClient {
 
     async fn parse_chat_response(&self, response: reqwest::Response) -> Result<String> {
         let status = response.status();
+        let body = bounded_response_bytes(response, "ollama chat").await?;
+
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = String::from_utf8_lossy(&body);
             return Err(Error::llm(format!(
                 "ollama chat HTTP {}: {}",
                 status,
-                truncate(&body, 500)
+                truncate(&body, MAX_ERROR_PREVIEW_CHARS)
             )));
         }
 
-        let parsed: OllamaChatResponse = response
-            .json()
-            .await
+        let parsed: OllamaChatResponse = serde_json::from_slice(&body)
             .map_err(|e| Error::llm(format!("ollama chat response parse: {e}")))?;
         Ok(parsed.message.content)
     }
@@ -481,6 +499,12 @@ mod tests {
         assert_eq!(inner.model(), "llama3.3:8b");
     }
 
+    #[test]
+    fn chat_client_rejects_credentials_in_base_url() {
+        assert!(OllamaChatClient::new("https://token@example.test", "qwen3:8b").is_err());
+        assert!(OllamaChatClient::new("https://example.test?token=secret", "qwen3:8b").is_err());
+    }
+
     #[tokio::test]
     async fn cloud_request_uses_bearer_auth_and_omits_unsupported_format() {
         let server = MockServer::start().await;
@@ -565,5 +589,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.content, "{\"repaired\":true}");
+    }
+
+    #[tokio::test]
+    async fn oversized_chat_response_is_rejected_before_json_parsing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b'x';
+                super::super::MAX_LLM_RESPONSE_BYTES
+                    + 1
+            ]))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OllamaChatClient::new(server.uri(), "cloud-model")
+            .unwrap()
+            .with_structured_outputs(false)
+            .with_format_fallback(false);
+        let error = client
+            .complete(&[Message {
+                role: Role::User,
+                content: "extract".to_string(),
+            }])
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("response exceeded"));
     }
 }

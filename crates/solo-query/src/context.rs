@@ -952,6 +952,11 @@ fn apply_readiness_states(
         };
     }
 
+    let knowledge_was_extracted = coverage.abstractions > 0
+        || coverage.triples > 0
+        || coverage.entities > 0
+        || coverage.relationships > 0
+        || coverage.contradictions > 0;
     for (section, count, empty_reason) in [
         (
             &mut bundle.sections.entities,
@@ -982,7 +987,13 @@ fn apply_readiness_states(
             continue;
         }
         let warning = section.warning.take();
-        let mut next = if !runtime_has_llm {
+        let mut next = if !runtime_has_llm && (knowledge_was_extracted || count > 0) {
+            let mut available = section_ready_or_empty(count, empty_reason);
+            available.explanation.push_str(
+                " Existing derived data remains queryable, but new knowledge extraction is off until a Steward model is active.",
+            );
+            available
+        } else if !runtime_has_llm {
             section_state(
                 "disabled",
                 count,
@@ -1156,6 +1167,28 @@ mod tests {
             assert!(result.themes.is_empty());
             assert!(result.facts.is_empty());
             assert!(result.contradictions.is_empty());
+
+            let mut previously_extracted = result.clone();
+            apply_readiness_states(
+                &mut previously_extracted,
+                solo_storage::DerivedCoverageSnapshot {
+                    active_episodes: 1,
+                    clusters: 1,
+                    clustered_episodes: 1,
+                    abstractions: 1,
+                    ..Default::default()
+                },
+                false,
+            );
+            assert_eq!(previously_extracted.sections.facts.status, "empty");
+            assert!(
+                previously_extracted
+                    .sections
+                    .facts
+                    .explanation
+                    .contains("remains queryable")
+            );
+            assert_eq!(previously_extracted.sections.contradictions.status, "empty");
         });
         shutdown(&runtime, pool, handle, tmp, join);
     }

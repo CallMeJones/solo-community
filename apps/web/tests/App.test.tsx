@@ -570,7 +570,9 @@ describe('App desktop shell', () => {
       within(stewardPanel as HTMLElement).getByText('Runtime verification'),
     ).toBeInTheDocument();
     fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Ollama' }));
-    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Cloud' }));
+    fireEvent.click(
+      within(stewardPanel as HTMLElement).getByRole('button', { name: 'Cloud direct' }),
+    );
     expect(
       within(stewardPanel as HTMLElement).getByText(/processed off device by Ollama Cloud/),
     ).toBeInTheDocument();
@@ -581,7 +583,9 @@ describe('App desktop shell', () => {
     expect(
       within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
     ).toBeEnabled();
-    fireEvent.click(within(stewardPanel as HTMLElement).getByRole('button', { name: 'Local' }));
+    fireEvent.click(
+      within(stewardPanel as HTMLElement).getByRole('button', { name: 'Local model' }),
+    );
     fireEvent.click(
       within(stewardPanel as HTMLElement).getByRole('button', { name: 'Apply LLM config' }),
     );

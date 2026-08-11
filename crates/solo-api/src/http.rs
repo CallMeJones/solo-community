@@ -2087,6 +2087,7 @@ pub fn openapi_spec() -> serde_json::Value {
                         "provider",
                         "model",
                         "base_url",
+                        "api_key_env",
                         "endpoint",
                         "processing_location",
                         "hosted_processing_consent",
@@ -2123,6 +2124,7 @@ pub fn openapi_spec() -> serde_json::Value {
                         "provider": { "type": ["string", "null"] },
                         "model": { "type": ["string", "null"] },
                         "base_url": { "type": ["string", "null"] },
+                        "api_key_env": { "type": ["string", "null"], "description": "Environment-variable name only; secret values are never returned." },
                         "endpoint": { "type": ["string", "null"], "enum": ["local", "cloud", "custom", null] },
                         "processing_location": { "type": "string" },
                         "hosted_processing_consent": { "type": "boolean" },
@@ -2185,14 +2187,16 @@ pub fn openapi_spec() -> serde_json::Value {
                 },
                 "DerivedCoverage": {
                     "type": "object",
-                    "required": ["active_episodes", "clusters", "clustered_episodes", "abstractions", "pending_clusters", "triples", "entities", "relationships", "contradictions"],
+                    "required": ["active_episodes", "clusters", "clustered_episodes", "abstractions", "abstraction_covered_clusters", "pending_clusters", "triples", "graph_covered_clusters", "entities", "relationships", "contradictions"],
                     "properties": {
                         "active_episodes": { "type": "integer", "minimum": 0 },
                         "clusters": { "type": "integer", "minimum": 0 },
                         "clustered_episodes": { "type": "integer", "minimum": 0 },
                         "abstractions": { "type": "integer", "minimum": 0 },
+                        "abstraction_covered_clusters": { "type": "integer", "minimum": 0 },
                         "pending_clusters": { "type": "integer", "minimum": 0 },
                         "triples": { "type": "integer", "minimum": 0 },
+                        "graph_covered_clusters": { "type": "integer", "minimum": 0 },
                         "entities": { "type": "integer", "minimum": 0 },
                         "relationships": { "type": "integer", "minimum": 0 },
                         "contradictions": { "type": "integer", "minimum": 0 }
@@ -2323,7 +2327,7 @@ pub fn openapi_spec() -> serde_json::Value {
                         "model": { "type": ["string", "null"], "description": "Provider model id. Defaults depend on mode." },
                         "base_url": { "type": ["string", "null"], "default": "http://localhost:11434", "description": "Ollama base URL when mode=ollama." },
                         "api_key_env": { "type": ["string", "null"], "description": "Environment variable name carrying the hosted provider API key; the secret value is never persisted." },
-                        "endpoint": { "type": ["string", "null"], "enum": ["local", "cloud", "custom", null], "description": "Ollama transport. Cloud can target ollama.com directly or a signed-in local daemon." },
+                        "endpoint": { "type": ["string", "null"], "enum": ["local", "cloud", "custom", null], "description": "Ollama transport. Use cloud for direct ollama.com access, or local with a -cloud model for a signed-in local daemon." },
                         "hosted_processing_consent": { "type": ["boolean", "null"], "description": "Must be true after explicit user consent whenever selected memory content will be processed off device." }
                     },
                     "additionalProperties": false
@@ -10171,6 +10175,7 @@ struct StatusSteward {
     provider: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    api_key_env: Option<String>,
     endpoint: Option<String>,
     processing_location: String,
     hosted_processing_consent: bool,
@@ -10413,6 +10418,17 @@ async fn run_steward_backfill(
             )
             .await;
         runtime.update_backfill(status.clone()).await;
+        if after == 0 {
+            status.status = "completed".to_string();
+            status.phase = "completed".to_string();
+            status.progress_percent = 100;
+            status.updated_at_ms = now_unix_ms();
+            status.note =
+                "Existing memories are fully covered by the current derived-memory pipeline."
+                    .to_string();
+            runtime.update_backfill(status).await;
+            return;
+        }
         if after >= before && report.abstractions_built == 0 {
             fail(
                 &mut status,
@@ -10584,6 +10600,7 @@ const STEWARD_CADENCE_MAX_CLUSTER_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const EMBEDDER_STATUS_PROBE_TIMEOUT_SECS: u64 = 3;
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const ENV_OLLAMA_BASE_URL: &str = "SOLO_OLLAMA_BASE_URL";
+static CONFIG_UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Deserialize)]
 struct LogsQuery {
@@ -10743,6 +10760,7 @@ async fn switch_ollama_embedder_handler(
     State(state): State<SoloHttpState>,
     Json(req): Json<SwitchOllamaEmbedderRequest>,
 ) -> Result<Json<SwitchOllamaEmbedderResponse>, ApiError> {
+    let _config_update = lock_config_updates().await;
     let model = normalize_ollama_model(req.model)?;
     let dim = normalize_ollama_dim(req.dim)?;
     let base_url = normalize_ollama_base_url(req.base_url)?;
@@ -10805,6 +10823,7 @@ async fn switch_llm_handler(
     State(state): State<SoloHttpState>,
     Json(req): Json<SwitchLlmRequest>,
 ) -> Result<Json<SwitchLlmResponse>, ApiError> {
+    let _config_update = lock_config_updates().await;
     let mode = req.mode.trim().to_ascii_lowercase();
     let consent = req.hosted_processing_consent.unwrap_or(false);
     let next = match mode.as_str() {
@@ -10821,7 +10840,7 @@ async fn switch_llm_handler(
             require_hosted_processing_consent(consent, "OpenAI")?;
             LlmSettings::Openai {
                 api_key_env: normalize_env_var_name(req.api_key_env, "OPENAI_API_KEY")?,
-                model: normalize_llm_model(req.model, "gpt-5o")?,
+                model: normalize_llm_model(req.model, "gpt-5.6-terra")?,
                 hosted_processing_consent: consent,
             }
         }
@@ -10834,13 +10853,25 @@ async fn switch_llm_handler(
             };
             let base_url = normalize_llm_base_url(req.base_url, default_base_url)?;
             let model = normalize_llm_model(req.model, "qwen3:8b")?;
+            if matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud)
+                && is_loopback_url(&base_url)
+            {
+                return Err(ApiError::bad_request(
+                    "direct Ollama Cloud must use a remote base_url; use endpoint `local` with a `-cloud` model for a signed-in local Ollama daemon",
+                ));
+            }
+            if matches!(endpoint, solo_storage::OllamaEndpointKind::Local)
+                && !is_loopback_url(&base_url)
+            {
+                return Err(ApiError::bad_request(
+                    "local Ollama must use a loopback base_url; use endpoint `custom` for another host",
+                ));
+            }
             let hosted = ollama_processes_off_device(endpoint, &base_url, &model);
             if hosted {
                 require_hosted_processing_consent(consent, "Ollama")?;
             }
-            let api_key_env = if matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud)
-                && !is_loopback_url(&base_url)
-            {
+            let api_key_env = if matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud) {
                 Some(normalize_env_var_name(req.api_key_env, "OLLAMA_API_KEY")?)
             } else {
                 req.api_key_env
@@ -10892,6 +10923,7 @@ async fn switch_steward_cadence_handler(
     State(state): State<SoloHttpState>,
     Json(req): Json<StewardCadenceSettingsRequest>,
 ) -> Result<Json<StewardCadenceSettingsResponse>, ApiError> {
+    let _config_update = lock_config_updates().await;
     validate_cadence_u64(
         "trigger_interval_secs",
         req.trigger_interval_secs,
@@ -11055,6 +11087,12 @@ fn status_steward_from_config(
     coverage: solo_storage::DerivedCoverageSnapshot,
 ) -> StatusSteward {
     let llm = llm_display_from_config(config.llm.as_ref());
+    let api_key_env = match config.llm.as_ref() {
+        Some(LlmSettings::Anthropic { api_key_env, .. })
+        | Some(LlmSettings::Openai { api_key_env, .. }) => Some(api_key_env.clone()),
+        Some(LlmSettings::Ollama { api_key_env, .. }) => api_key_env.clone(),
+        Some(LlmSettings::None | LlmSettings::McpSampling) | None => None,
+    };
     let automatic =
         config.triples.trigger_interval_secs > 0 || config.triples.trigger_episode_count > 0;
     let can_write_triples = automatic && runtime_wired && runtime_has_llm;
@@ -11072,6 +11110,7 @@ fn status_steward_from_config(
         provider: llm.provider,
         model: llm.model,
         base_url: llm.base_url,
+        api_key_env,
         endpoint: llm.endpoint,
         processing_location: llm.processing_location,
         hosted_processing_consent: llm.hosted_processing_consent,
@@ -11153,16 +11192,23 @@ fn llm_display_from_config(llm: Option<&LlmSettings>) -> LlmDisplay {
             model,
             hosted_processing_consent,
             ..
-        }) => LlmDisplay {
-            configured: true,
-            config_mode: "ollama".to_string(),
-            provider: Some("ollama".to_string()),
-            model: Some(model.clone()),
-            base_url: Some(base_url.clone()),
-            endpoint: Some(endpoint.as_str().to_string()),
-            processing_location: ollama_processing_location(*endpoint, base_url, model),
-            hosted_processing_consent: *hosted_processing_consent,
-        },
+        }) => {
+            let display_base_url = safe_display_base_url(base_url);
+            LlmDisplay {
+                configured: true,
+                config_mode: "ollama".to_string(),
+                provider: Some("ollama".to_string()),
+                model: Some(model.clone()),
+                base_url: Some(display_base_url.clone()),
+                endpoint: Some(endpoint.as_str().to_string()),
+                processing_location: ollama_processing_location(
+                    *endpoint,
+                    &display_base_url,
+                    model,
+                ),
+                hosted_processing_consent: *hosted_processing_consent,
+            }
+        }
         Some(LlmSettings::McpSampling) => LlmDisplay {
             configured: true,
             config_mode: "mcp_sampling".to_string(),
@@ -11216,7 +11262,8 @@ fn llm_display_from_env() -> LlmDisplay {
             model: std::env::var("OPENAI_MODEL").ok().filter(|s| !s.is_empty()),
             base_url: std::env::var("OPENAI_BASE_URL")
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .map(|value| safe_display_base_url(&value)),
             endpoint: None,
             processing_location: if provider == "ollama" {
                 "legacy Ollama endpoint"
@@ -11237,6 +11284,17 @@ fn llm_display_from_env() -> LlmDisplay {
         processing_location: "not processed".to_string(),
         hosted_processing_consent: false,
     }
+}
+
+fn safe_display_base_url(value: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(value.trim()) else {
+        return "[invalid configured URL]".to_string();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.as_str().trim_end_matches('/').to_string()
 }
 
 fn env_non_empty(key: &str) -> bool {
@@ -11354,33 +11412,43 @@ fn status_capabilities(
         }
     };
 
+    let knowledge_was_extracted = steward.coverage.abstractions > 0
+        || steward.coverage.triples > 0
+        || steward.coverage.entities > 0
+        || steward.coverage.relationships > 0
+        || steward.coverage.contradictions > 0;
     let themes = derived_capability(
         &clustering,
         steward.coverage.clusters,
+        steward.coverage.clusters > 0,
         "theme",
         "Clustering has not produced themes yet.",
     );
     let facts = derived_capability(
         &knowledge_extraction,
         steward.coverage.triples,
+        knowledge_was_extracted,
         "fact",
         "Extraction completed but produced no active facts.",
     );
     let entities = derived_capability(
         &knowledge_extraction,
         steward.coverage.entities,
+        knowledge_was_extracted,
         "entity",
         "Extraction completed but produced no entities.",
     );
     let graph = derived_capability(
         &knowledge_extraction,
         steward.coverage.relationships,
+        knowledge_was_extracted,
         "relationship",
         "Extraction completed but produced no graph relationships.",
     );
     let contradictions = derived_capability(
         &knowledge_extraction,
         steward.coverage.contradictions,
+        knowledge_was_extracted,
         "contradiction",
         "Extraction is complete and no contradictions were detected.",
     );
@@ -11401,24 +11469,43 @@ fn status_capabilities(
 fn derived_capability(
     dependency: &StatusCapability,
     count: usize,
+    history_exists: bool,
     noun: &str,
     empty_explanation: &str,
 ) -> StatusCapability {
-    if matches!(dependency.state, "disabled" | "pending" | "failed") {
-        return dependency.clone();
-    }
-    if count == 0 {
+    // Turning the Steward off prevents new derivations, but it does not make
+    // previously extracted knowledge unavailable. Report stored results as
+    // ready so users can still discover and query them.
+    if count > 0 {
+        let refresh_note = match dependency.state {
+            "disabled" => {
+                "Existing results remain queryable; enable a Steward model to refresh them."
+            }
+            "pending" => "Existing results remain queryable while a refresh is pending.",
+            "failed" => {
+                "Existing results remain queryable, but the latest extraction attempt failed."
+            }
+            _ => "",
+        };
         return StatusCapability {
-            state: "empty",
-            explanation: empty_explanation.to_string(),
+            state: "ready",
+            explanation: format!(
+                "{count} {noun}{} available. {}",
+                if count == 1 { "" } else { "s" },
+                refresh_note
+            )
+            .trim()
+            .to_string(),
         };
     }
+    if matches!(dependency.state, "pending" | "failed")
+        || (!history_exists && dependency.state == "disabled")
+    {
+        return dependency.clone();
+    }
     StatusCapability {
-        state: "ready",
-        explanation: format!(
-            "{count} {noun}{} available.",
-            if count == 1 { "" } else { "s" }
-        ),
+        state: "empty",
+        explanation: empty_explanation.to_string(),
     }
 }
 
@@ -11469,7 +11556,13 @@ fn is_loopback_url(url: &str) -> bool {
     reqwest::Url::parse(url.trim())
         .ok()
         .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"))
+        .is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 fn ollama_processes_off_device(
@@ -11477,10 +11570,15 @@ fn ollama_processes_off_device(
     base_url: &str,
     model: &str,
 ) -> bool {
+    if !is_loopback_url(base_url) {
+        return true;
+    }
+    if model.ends_with("-cloud") {
+        return true;
+    }
     match endpoint {
         solo_storage::OllamaEndpointKind::Cloud => true,
-        solo_storage::OllamaEndpointKind::Local => model.ends_with("-cloud"),
-        solo_storage::OllamaEndpointKind::Custom => !is_loopback_url(base_url),
+        solo_storage::OllamaEndpointKind::Local | solo_storage::OllamaEndpointKind::Custom => false,
     }
 }
 
@@ -11489,13 +11587,15 @@ fn ollama_processing_location(
     base_url: &str,
     model: &str,
 ) -> String {
+    if is_loopback_url(base_url) && model.ends_with("-cloud") {
+        return format!("Ollama Cloud through the signed-in daemon at {base_url} (off device)");
+    }
+    if !is_loopback_url(base_url) && !matches!(endpoint, solo_storage::OllamaEndpointKind::Cloud) {
+        return format!("remote Ollama endpoint {base_url} (off device, operator controlled)");
+    }
     match endpoint {
         solo_storage::OllamaEndpointKind::Local => {
-            if model.ends_with("-cloud") {
-                "Ollama Cloud through the local signed-in daemon (off device)".to_string()
-            } else {
-                format!("this device through {base_url}")
-            }
+            format!("this device through {base_url}")
         }
         solo_storage::OllamaEndpointKind::Cloud => {
             format!("Ollama Cloud through {base_url} (off device)")
@@ -11679,10 +11779,16 @@ fn validate_cluster_cosine_threshold(value: Option<f32>) -> Result<(), ApiError>
 fn llm_environment_commands(llm: &LlmSettings) -> Vec<String> {
     match llm {
         LlmSettings::Anthropic { api_key_env, .. } => {
-            vec![format!("setx {api_key_env} <your-anthropic-api-key>")]
+            vec![secret_environment_command(
+                api_key_env,
+                "your-anthropic-api-key",
+            )]
         }
         LlmSettings::Openai { api_key_env, .. } => {
-            vec![format!("setx {api_key_env} <your-openai-api-key>")]
+            vec![secret_environment_command(
+                api_key_env,
+                "your-openai-api-key",
+            )]
         }
         LlmSettings::Ollama {
             endpoint,
@@ -11692,16 +11798,31 @@ fn llm_environment_commands(llm: &LlmSettings) -> Vec<String> {
             ..
         } => {
             let mut commands = Vec::new();
-            if matches!(endpoint, solo_storage::OllamaEndpointKind::Local) {
+            if matches!(endpoint, solo_storage::OllamaEndpointKind::Local)
+                && model.ends_with("-cloud")
+            {
+                commands.push("ollama signin".to_string());
+            } else if matches!(endpoint, solo_storage::OllamaEndpointKind::Local) {
                 commands.push(format!("ollama pull {model}"));
             } else if let Some(api_key_env) = api_key_env {
-                commands.push(format!("setx {api_key_env} <your-ollama-api-key>"));
+                commands.push(secret_environment_command(
+                    api_key_env,
+                    "your-ollama-api-key",
+                ));
             }
             commands.push(format!("# Ollama endpoint: {base_url}"));
             commands
         }
         LlmSettings::None => Vec::new(),
         LlmSettings::McpSampling => Vec::new(),
+    }
+}
+
+fn secret_environment_command(name: &str, placeholder: &str) -> String {
+    if cfg!(windows) {
+        format!("setx {name} <{placeholder}>")
+    } else {
+        format!("export {name}='<{placeholder}>'")
     }
 }
 
@@ -11714,13 +11835,17 @@ fn llm_next_steps(llm: &LlmSettings) -> Vec<String> {
             "Make sure {api_key_env} is set in the environment that launches Solo."
         )],
         LlmSettings::Ollama { endpoint, base_url, model, api_key_env, .. } => match endpoint {
+            solo_storage::OllamaEndpointKind::Local if model.ends_with("-cloud") => vec![
+                format!("Make sure Ollama is running and signed in at {base_url}."),
+                format!("The {model} model runs in Ollama Cloud; selected memory content will leave this device."),
+            ],
             solo_storage::OllamaEndpointKind::Local => vec![
                 format!("Make sure Ollama is running at {base_url}."),
                 format!("Pull the local Steward model if needed: ollama pull {model}."),
             ],
             solo_storage::OllamaEndpointKind::Cloud => vec![
                 format!("Memory content will be processed by Ollama Cloud through {base_url}."),
-                api_key_env.as_ref().map(|name| format!("Make sure {name} is set in the environment that launches Solo.")).unwrap_or_else(|| "Make sure the local Ollama daemon is signed in for cloud-model access.".to_string()),
+                format!("Make sure {} is set in the environment that launches Solo.", api_key_env.as_deref().unwrap_or("OLLAMA_API_KEY")),
             ],
             solo_storage::OllamaEndpointKind::Custom => vec![
                 format!("Confirm the custom Ollama endpoint is reachable at {base_url}."),
@@ -11787,17 +11912,23 @@ fn normalize_ollama_base_url(base_url: Option<String>) -> Result<String, ApiErro
             "base_url must be at most 512 characters",
         ));
     }
-    if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+    let parsed = reqwest::Url::parse(&base_url)
+        .map_err(|_| ApiError::bad_request("base_url must be a valid URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(ApiError::bad_request(
-            "base_url must start with http:// or https://",
+            "base_url must use http or https and include a host",
         ));
     }
-    if base_url.chars().any(char::is_whitespace) {
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
         return Err(ApiError::bad_request(
-            "base_url must not contain whitespace",
+            "base_url must not contain credentials, a query, or a fragment",
         ));
     }
-    Ok(base_url)
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
 fn normalize_llm_base_url(base_url: Option<String>, default: &str) -> Result<String, ApiError> {
@@ -11868,12 +11999,16 @@ fn replace_solo_config(path: &std::path::Path, config: &SoloConfig) -> Result<()
         .unwrap_or_default()
         .as_nanos();
     let tmp_path = parent.join(format!("{file_name}.{stamp}.{}.tmp", std::process::id()));
-    let backup_path = parent.join(format!("{file_name}.{stamp}.bak"));
 
     {
-        let mut tmp_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options
             .open(&tmp_path)
             .map_err(|e| ApiError::internal(format!("open tmp {}: {e}", tmp_path.display())))?;
         std::io::Write::write_all(&mut tmp_file, body.as_bytes())
@@ -11883,33 +12018,70 @@ fn replace_solo_config(path: &std::path::Path, config: &SoloConfig) -> Result<()
             .map_err(|e| ApiError::internal(format!("fsync tmp {}: {e}", tmp_path.display())))?;
     }
 
-    std::fs::copy(path, &backup_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        ApiError::internal(format!(
-            "backup existing config {}: {e}",
-            backup_path.display()
-        ))
-    })?;
-
-    if let Err(e) = std::fs::remove_file(path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        let _ = std::fs::remove_file(&backup_path);
-        return Err(ApiError::internal(format!(
-            "remove old config {}: {e}",
-            path.display()
-        )));
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::rename(&backup_path, path);
+    if let Err(e) = replace_file_atomic(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(ApiError::internal(format!(
             "replace config {}: {e}",
             path.display()
         )));
     }
-    let _ = std::fs::remove_file(&backup_path);
-
+    #[cfg(unix)]
+    if let Ok(parent_dir) = std::fs::OpenOptions::new().read(true).open(parent) {
+        let _ = parent_dir.sync_all();
+    }
     Ok(())
+}
+
+async fn lock_config_updates() -> tokio::sync::MutexGuard<'static, ()> {
+    CONFIG_UPDATE_LOCK.lock().await
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(tmp_path: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, REPLACEFILE_WRITE_THROUGH,
+        ReplaceFileW,
+    };
+
+    fn to_wide(path: &std::path::Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let from = to_wide(tmp_path);
+    let to = to_wide(path);
+    let ok = if path.exists() {
+        unsafe {
+            ReplaceFileW(
+                to.as_ptr(),
+                from.as_ptr(),
+                std::ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        }
+    } else {
+        unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        }
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomic(tmp_path: &std::path::Path, path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(tmp_path, path)
 }
 
 async fn logs_handler(
@@ -22619,6 +22791,59 @@ mod handler_tests {
     }
 
     #[test]
+    fn derived_capability_keeps_existing_results_ready_when_extraction_is_disabled() {
+        let disabled = StatusCapability {
+            state: "disabled",
+            explanation: "No Steward model is active.".to_string(),
+        };
+
+        let available = derived_capability(
+            &disabled,
+            3,
+            true,
+            "fact",
+            "Extraction completed but produced no active facts.",
+        );
+        assert_eq!(available.state, "ready");
+        assert!(available.explanation.contains("3 facts available"));
+        assert!(available.explanation.contains("remain queryable"));
+
+        let absent = derived_capability(
+            &disabled,
+            0,
+            false,
+            "fact",
+            "Extraction completed but produced no active facts.",
+        );
+        assert_eq!(absent.state, "disabled");
+
+        let completed_without_results = derived_capability(
+            &disabled,
+            0,
+            true,
+            "contradiction",
+            "Extraction is complete and no contradictions were detected.",
+        );
+        assert_eq!(completed_without_results.state, "empty");
+
+        let failed = StatusCapability {
+            state: "failed",
+            explanation: "The latest extraction failed.".to_string(),
+        };
+        assert_eq!(
+            derived_capability(
+                &failed,
+                0,
+                true,
+                "entity",
+                "Extraction completed but produced no entities.",
+            )
+            .state,
+            "failed"
+        );
+    }
+
+    #[test]
     fn status_respects_auth_when_enabled() {
         let runtime = rt();
         let h = Harness::new_with_auth(&runtime, Some("status-secret".into()));
@@ -22944,6 +23169,44 @@ mod handler_tests {
     }
 
     #[test]
+    fn ollama_base_url_rejects_embedded_credentials_and_ambiguous_suffixes() {
+        assert!(normalize_ollama_base_url(Some("https://token@example.test".to_string())).is_err());
+        assert!(
+            normalize_ollama_base_url(Some("https://example.test?token=secret".to_string()))
+                .is_err()
+        );
+        assert_eq!(
+            normalize_ollama_base_url(Some("http://127.0.0.1:11434/".to_string())).unwrap(),
+            "http://127.0.0.1:11434"
+        );
+        assert!(ollama_processes_off_device(
+            solo_storage::OllamaEndpointKind::Local,
+            "https://ollama.example.test",
+            "qwen3:8b"
+        ));
+        assert!(ollama_processes_off_device(
+            solo_storage::OllamaEndpointKind::Custom,
+            "http://127.0.0.1:22434",
+            "gpt-oss:120b-cloud"
+        ));
+        assert!(!ollama_processes_off_device(
+            solo_storage::OllamaEndpointKind::Custom,
+            "http://127.20.30.40:22434",
+            "qwen3:8b"
+        ));
+        assert_eq!(
+            safe_display_base_url("https://user:secret@example.test/path?token=hidden#fragment"),
+            "https://example.test/path"
+        );
+        let command = secret_environment_command("OLLAMA_API_KEY", "key");
+        if cfg!(windows) {
+            assert_eq!(command, "setx OLLAMA_API_KEY <key>");
+        } else {
+            assert_eq!(command, "export OLLAMA_API_KEY='<key>'");
+        }
+    }
+
+    #[test]
     fn switch_llm_rejects_bad_mode() {
         let runtime = rt();
         let h = Harness::new(&runtime);
@@ -23022,7 +23285,7 @@ mod handler_tests {
         let r = h.router.clone();
         runtime.block_on(async {
             let (status, body) = call(
-                r,
+                r.clone(),
                 "POST",
                 "/v1/settings/llm",
                 Some(json!({
@@ -23034,9 +23297,30 @@ mod handler_tests {
                 })),
             )
             .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("endpoint `local`")),
+                "body: {body}"
+            );
+
+            let (status, body) = call(
+                r,
+                "POST",
+                "/v1/settings/llm",
+                Some(json!({
+                    "mode": "ollama",
+                    "endpoint": "local",
+                    "model": "gpt-oss:120b-cloud",
+                    "base_url": "http://localhost:11434",
+                    "hosted_processing_consent": true
+                })),
+            )
+            .await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
             assert!(body["next"]["api_key_env"].is_null(), "body: {body}");
-            assert_eq!(body["next"]["endpoint"], "cloud");
+            assert_eq!(body["next"]["endpoint"], "local");
             assert!(
                 body["next"]["processing_location"]
                     .as_str()

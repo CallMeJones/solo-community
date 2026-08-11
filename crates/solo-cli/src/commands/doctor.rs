@@ -34,6 +34,7 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 /// see `OllamaEmbedder::probe_dim`'s docstring — so this value doesn't
 /// affect correctness.
 const PROBE_PLACEHOLDER_DIM: usize = 1;
+const MAX_LIVE_STATUS_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
@@ -148,16 +149,41 @@ fn live_lock_pid(data_dir: &Path) -> Option<u32> {
 async fn report_live_daemon_stats(data_dir: &Path, daemon_url: &str) -> Result<()> {
     let config = solo_storage::SoloConfig::read(&data_dir.join("solo.config.toml"))
         .context("read config for live daemon diagnostics")?;
-    let url = format!("{}/v1/status", daemon_url.trim_end_matches('/'));
+    let base = reqwest::Url::parse(&format!("{}/", daemon_url.trim_end_matches('/')))
+        .context("parse live daemon URL")?;
+    anyhow::ensure!(
+        matches!(base.scheme(), "http" | "https"),
+        "doctor live-daemon diagnostics require an http:// or https:// URL"
+    );
+    anyhow::ensure!(
+        base.username().is_empty()
+            && base.password().is_none()
+            && base.query().is_none()
+            && base.fragment().is_none(),
+        "doctor live-daemon diagnostics reject URLs containing credentials, a query, or a fragment"
+    );
+    let host = base
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    let loopback_ip = host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback());
+    anyhow::ensure!(
+        host == "localhost" || loopback_ip,
+        "doctor live-daemon diagnostics only send the configured bearer token to a loopback URL"
+    );
+    let url = base.join("v1/status").context("build live status URL")?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .context("build doctor live-daemon client")?;
-    let mut request = client.get(&url);
+    let mut request = client.get(url.clone());
     if let Some(solo_storage::AuthSettings::Bearer { token }) = config.auth.as_ref() {
         request = request.bearer_auth(token);
     }
-    let response = request
+    let mut response = request
         .send()
         .await
         .with_context(|| format!("query live Solo daemon at {url}"))?;
@@ -168,10 +194,26 @@ async fn report_live_daemon_stats(data_dir: &Path, daemon_url: &str) -> Result<(
             url
         );
     }
-    let status: serde_json::Value = response
-        .json()
+    anyhow::ensure!(
+        response
+            .content_length()
+            .is_none_or(|length| length <= MAX_LIVE_STATUS_BYTES as u64),
+        "live Solo daemon status exceeded {MAX_LIVE_STATUS_BYTES} bytes"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .context("decode live Solo daemon status")?;
+        .context("read live Solo daemon status")?
+    {
+        anyhow::ensure!(
+            bytes.len().saturating_add(chunk.len()) <= MAX_LIVE_STATUS_BYTES,
+            "live Solo daemon status exceeded {MAX_LIVE_STATUS_BYTES} bytes"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    let status: serde_json::Value =
+        serde_json::from_slice(&bytes).context("decode live Solo daemon status")?;
     let coverage = &status["steward"]["coverage"];
     println!("live daemon     : {} (database lock is healthy)", url);
     println!(
