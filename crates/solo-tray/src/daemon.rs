@@ -333,7 +333,7 @@ async fn spawn_daemon(passphrase: &str) -> Result<(Child, u16)> {
 
     ensure_ollama_startup_dependency().await;
 
-    let mut cmd = Command::new(solo_bin);
+    let mut cmd = Command::new(&solo_bin);
     cmd.args(daemon_args(port))
         .env_remove(ENV_PASSPHRASE)
         .env(ENV_PASSPHRASE_STDIN, "1")
@@ -358,7 +358,9 @@ async fn spawn_daemon(passphrase: &str) -> Result<(Child, u16)> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().context("spawn solo daemon")?;
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawn solo daemon at {}", solo_bin.display()))?;
 
     match child.stdin.as_mut() {
         Some(stdin) => {

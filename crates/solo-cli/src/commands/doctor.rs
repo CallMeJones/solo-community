@@ -502,6 +502,11 @@ fn report_files(data_dir: &Path) {
             }
         }
     }
+
+    if let Some(summary) = previous_layout_summary(data_dir) {
+        println!();
+        println!("{summary}");
+    }
 }
 
 fn fmt_size(bytes: u64) -> String {
@@ -516,6 +521,106 @@ fn fmt_size(bytes: u64) -> String {
         format!("{:.2} KiB", bytes as f64 / KB as f64)
     } else {
         format!("{bytes} B")
+    }
+}
+
+fn previous_layout_summary(data_dir: &Path) -> Option<String> {
+    let previous_dir = data_dir.join("tenants");
+    let previous_default = previous_dir.join("default.db");
+    let has_previous_default = previous_default.is_file();
+    let has_previous_index = ["", "-wal", "-shm"]
+        .iter()
+        .any(|suffix| data_dir.join(format!("tenants_index.db{suffix}")).exists());
+    let mut extra_databases = Vec::new();
+
+    if previous_dir.is_dir() {
+        match fs::read_dir(&previous_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file()
+                        && path.extension().is_some_and(|ext| ext == "db")
+                        && path.file_name().is_some_and(|name| name != "default.db")
+                    {
+                        extra_databases.push(path);
+                    }
+                }
+            }
+            Err(error) => {
+                return Some(format!(
+                    "previous layout : present but unreadable at {}: {error}",
+                    previous_dir.display()
+                ));
+            }
+        }
+    }
+
+    if !has_previous_default && !has_previous_index && !previous_dir.exists() {
+        return None;
+    }
+
+    if !extra_databases.is_empty() {
+        let paths = extra_databases
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!(
+            "previous layout : extra database files found ({paths}); Community startup will stop so these can be exported first"
+        ));
+    }
+
+    if has_previous_default {
+        return Some(format!(
+            "previous layout : default library found at {}; Community startup will promote it to solo.db",
+            previous_default.display()
+        ));
+    }
+
+    Some(format!(
+        "previous layout : remnants found but default library is missing at {}; Community startup will stop until this is restored or cleaned up",
+        previous_default.display()
+    ))
+}
+
+#[cfg(test)]
+mod previous_layout_summary_tests {
+    use super::*;
+
+    #[test]
+    fn absent_when_only_community_layout_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("solo.db"), b"db").unwrap();
+
+        assert!(previous_layout_summary(temp.path()).is_none());
+    }
+
+    #[test]
+    fn reports_promotable_previous_default_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_dir = temp.path().join("tenants");
+        fs::create_dir_all(&previous_dir).unwrap();
+        fs::write(previous_dir.join("default.db"), b"db").unwrap();
+        fs::write(temp.path().join("tenants_index.db"), b"index").unwrap();
+
+        let summary = previous_layout_summary(temp.path()).unwrap();
+
+        assert!(summary.contains("default library found"), "{summary}");
+        assert!(summary.contains("promote it to solo.db"), "{summary}");
+    }
+
+    #[test]
+    fn reports_extra_previous_database_as_startup_stop() {
+        let temp = tempfile::tempdir().unwrap();
+        let previous_dir = temp.path().join("tenants");
+        fs::create_dir_all(&previous_dir).unwrap();
+        fs::write(previous_dir.join("default.db"), b"default").unwrap();
+        fs::write(previous_dir.join("work.db"), b"work").unwrap();
+
+        let summary = previous_layout_summary(temp.path()).unwrap();
+
+        assert!(summary.contains("extra database files found"), "{summary}");
+        assert!(summary.contains("startup will stop"), "{summary}");
     }
 }
 

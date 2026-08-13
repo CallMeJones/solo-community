@@ -24,6 +24,22 @@ const LEGACY_INDEX_FILENAME: &str = "tenants_index.db";
 const LEGACY_LIBRARY_SUBDIR: &str = "tenants";
 const LEGACY_DEFAULT_DB_FILENAME: &str = "default.db";
 
+#[derive(Debug)]
+struct LegacyAdminAuditRow {
+    audit_id: i64,
+    ts_ms: i64,
+    principal_subject: Option<String>,
+    operation: String,
+    target_tenant_id: Option<String>,
+    result: String,
+    details_json: Option<String>,
+}
+
+enum LegacyIndexRetirement {
+    Remove,
+    Quarantine,
+}
+
 struct MemoryLibraryDeps {
     data_dir: PathBuf,
     key: KeyMaterial,
@@ -252,6 +268,10 @@ pub fn migrate_legacy_default_library(data_dir: &Path, key: &KeyMaterial) -> Res
     }
 
     if legacy_default_exists {
+        validate_legacy_default_library(&legacy_default_db, key)?;
+    }
+
+    if legacy_default_exists {
         move_file(&legacy_default_db, &root_db)?;
     }
     for suffix in ["-wal", "-shm"] {
@@ -291,66 +311,164 @@ pub fn migrate_legacy_default_library(data_dir: &Path, key: &KeyMaterial) -> Res
     Ok(changed)
 }
 
+fn validate_legacy_default_library(path: &Path, key: &KeyMaterial) -> Result<()> {
+    let mut conn = open_sqlcipher(path, key).map_err(|e| {
+        Error::storage(format!(
+            "open previous default library {} before Community migration: {e}",
+            path.display()
+        ))
+    })?;
+    migration::run_migrations(&mut conn).map_err(|e| {
+        Error::storage(format!(
+            "migrate previous default library {} before Community promotion: {e}",
+            path.display()
+        ))
+    })?;
+    Ok(())
+}
+
 fn retire_legacy_index(data_dir: &Path, key: &KeyMaterial) -> Result<()> {
     let index_path = data_dir.join(LEGACY_INDEX_FILENAME);
-    if index_path.is_file() {
+    let retirement = if index_path.is_file() {
         let root_path = data_dir.join(COMMUNITY_DB_FILENAME);
-        let mut root = open_sqlcipher(&root_path, key)?;
-        migration::run_migrations(&mut root)?;
-        let index = open_sqlcipher(&index_path, key)?;
-        let has_audit_table: bool = index
+        match read_legacy_admin_audit_rows(&index_path, key) {
+            Ok(rows) => {
+                if !rows.is_empty() {
+                    preserve_legacy_admin_audit_rows(&root_path, key, rows)?;
+                }
+                LegacyIndexRetirement::Remove
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    index_path = %index_path.display(),
+                    "could not read obsolete previous registry; quarantining it so Community can continue"
+                );
+                LegacyIndexRetirement::Quarantine
+            }
+        }
+    } else {
+        LegacyIndexRetirement::Remove
+    };
+    for suffix in ["", "-wal", "-shm"] {
+        let path = data_dir.join(format!("{LEGACY_INDEX_FILENAME}{suffix}"));
+        if path.is_file() {
+            match retirement {
+                LegacyIndexRetirement::Remove => std::fs::remove_file(&path).map_err(|e| {
+                    Error::storage(format!("remove obsolete registry {}: {e}", path.display()))
+                })?,
+                LegacyIndexRetirement::Quarantine => {
+                    quarantine_legacy_index_file(data_dir, &path)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_legacy_admin_audit_rows(
+    index_path: &Path,
+    key: &KeyMaterial,
+) -> Result<Vec<LegacyAdminAuditRow>> {
+    let index = open_sqlcipher(index_path, key).map_err(|e| {
+        Error::storage(format!(
+            "open previous registry {} for admin audit preservation: {e}",
+            index_path.display()
+        ))
+    })?;
+    let has_audit_table: bool = index
         .query_row(
             "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='audit_events_admin'",
             [],
             |row| row.get(0),
         )
         .map_err(|e| Error::storage(format!("inspect previous admin audit table: {e}")))?;
-        if has_audit_table {
-            let mut select = index
-            .prepare(
-                "SELECT audit_id, ts_ms, principal_subject, operation, target_tenant_id, result, details_json
-                 FROM audit_events_admin ORDER BY audit_id",
-            )
-            .map_err(|e| Error::storage(format!("read previous admin audit history: {e}")))?;
-            let rows = select
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                    ))
-                })
-                .map_err(|e| Error::storage(format!("scan previous admin audit history: {e}")))?;
-            for row in rows {
-                let (id, ts, principal, operation, target, result, details) = row
-                    .map_err(|e| Error::storage(format!("decode previous admin audit row: {e}")))?;
-                root.execute(
-                "INSERT OR IGNORE INTO audit_events_admin
-                 (audit_id, ts_ms, principal_subject, operation, target_tenant_id, result, details_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rusqlite::params![id, ts, principal, operation, target, result, details],
-            )
-                .map_err(|e| {
-                    Error::storage(format!("preserve previous admin audit row {id}: {e}"))
-                })?;
-            }
-        }
-        drop(index);
-        drop(root);
+    if !has_audit_table {
+        return Ok(Vec::new());
     }
-    for suffix in ["", "-wal", "-shm"] {
-        let path = data_dir.join(format!("{LEGACY_INDEX_FILENAME}{suffix}"));
-        if path.is_file() {
-            std::fs::remove_file(&path).map_err(|e| {
-                Error::storage(format!("remove obsolete registry {}: {e}", path.display()))
-            })?;
-        }
+
+    let mut select = index
+        .prepare(
+            "SELECT audit_id, ts_ms, principal_subject, operation, target_tenant_id, result, details_json
+             FROM audit_events_admin ORDER BY audit_id",
+        )
+        .map_err(|e| Error::storage(format!("read previous admin audit history: {e}")))?;
+    let rows = select
+        .query_map([], |row| {
+            Ok(LegacyAdminAuditRow {
+                audit_id: row.get(0)?,
+                ts_ms: row.get(1)?,
+                principal_subject: row.get(2)?,
+                operation: row.get(3)?,
+                target_tenant_id: row.get(4)?,
+                result: row.get(5)?,
+                details_json: row.get(6)?,
+            })
+        })
+        .map_err(|e| Error::storage(format!("scan previous admin audit history: {e}")))?;
+
+    rows.map(|row| row.map_err(|e| Error::storage(format!("decode previous admin audit row: {e}"))))
+        .collect()
+}
+
+fn preserve_legacy_admin_audit_rows(
+    root_path: &Path,
+    key: &KeyMaterial,
+    rows: Vec<LegacyAdminAuditRow>,
+) -> Result<()> {
+    let mut root = open_sqlcipher(root_path, key)?;
+    migration::run_migrations(&mut root)?;
+    for row in rows {
+        root.execute(
+            "INSERT OR IGNORE INTO audit_events_admin
+             (audit_id, ts_ms, principal_subject, operation, target_tenant_id, result, details_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                row.audit_id,
+                row.ts_ms,
+                row.principal_subject,
+                row.operation,
+                row.target_tenant_id,
+                row.result,
+                row.details_json
+            ],
+        )
+        .map_err(|e| {
+            Error::storage(format!(
+                "preserve previous admin audit row {}: {e}",
+                row.audit_id
+            ))
+        })?;
     }
     Ok(())
+}
+
+fn quarantine_legacy_index_file(data_dir: &Path, path: &Path) -> Result<()> {
+    let quarantine_dir = data_dir.join("migration-retired");
+    std::fs::create_dir_all(&quarantine_dir).map_err(|e| {
+        Error::storage(format!(
+            "create migration quarantine directory {}: {e}",
+            quarantine_dir.display()
+        ))
+    })?;
+    let destination = quarantine_dir.join(
+        path.file_name()
+            .ok_or_else(|| Error::storage("previous registry file has no filename"))?,
+    );
+    if destination.exists() {
+        return Err(Error::conflict(format!(
+            "cannot quarantine obsolete registry {} because {} already exists",
+            path.display(),
+            destination.display()
+        )));
+    }
+    std::fs::rename(path, &destination).map_err(|e| {
+        Error::storage(format!(
+            "quarantine obsolete registry {} to {}: {e}",
+            path.display(),
+            destination.display()
+        ))
+    })
 }
 
 fn promote_directory_contents(source: &Path, destination_dir: &Path) -> Result<()> {
@@ -414,28 +532,19 @@ mod tests {
     #[test]
     fn promotes_only_default_database_to_root() {
         let temp = tempfile::TempDir::new().unwrap();
+        let key = legacy_default_from_fresh_init(&temp, "migration-test");
         let tenants = temp.path().join(LEGACY_LIBRARY_SUBDIR);
-        std::fs::create_dir_all(tenants.join("default")).unwrap();
-        std::fs::write(tenants.join(LEGACY_DEFAULT_DB_FILENAME), b"db").unwrap();
         std::fs::write(
             tenants.join("default").join("hnsw_episodes.hnsw.data"),
             b"hnsw",
         )
         .unwrap();
-        std::fs::write(temp.path().join(LEGACY_INDEX_FILENAME), b"index").unwrap();
 
-        let key =
-            KeyMaterial::derive("migration-test", &[7u8; crate::key_material::SALT_LEN]).unwrap();
-        // The test's placeholder index is not a database, so remove it here;
-        // index history preservation has its own SQL-backed test below.
-        std::fs::remove_file(temp.path().join(LEGACY_INDEX_FILENAME)).unwrap();
         assert!(migrate_legacy_default_library(temp.path(), &key).unwrap());
-        assert_eq!(
-            std::fs::read(temp.path().join(COMMUNITY_DB_FILENAME)).unwrap(),
-            b"db"
-        );
+        assert!(temp.path().join(COMMUNITY_DB_FILENAME).is_file());
         assert!(temp.path().join("hnsw_episodes.hnsw.data").is_file());
         assert!(!temp.path().join(LEGACY_INDEX_FILENAME).exists());
+        assert!(!tenants.exists());
     }
 
     #[test]
@@ -451,6 +560,102 @@ mod tests {
         let error = migrate_legacy_default_library(temp.path(), &key).unwrap_err();
         assert!(matches!(error, Error::Conflict(_)));
         assert!(!temp.path().join(COMMUNITY_DB_FILENAME).exists());
+    }
+
+    #[test]
+    fn promotes_real_legacy_layout_and_preserves_admin_audit() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let passphrase = "real-legacy-layout-test";
+        let key = legacy_default_from_fresh_init(&temp, passphrase);
+        let tenants = temp.path().join(LEGACY_LIBRARY_SUBDIR);
+        std::fs::write(
+            tenants.join("default").join("hnsw_episodes.hnsw.data"),
+            b"hnsw",
+        )
+        .unwrap();
+
+        {
+            let index_path = temp.path().join(LEGACY_INDEX_FILENAME);
+            let index = open_sqlcipher(&index_path, &key).unwrap();
+            index
+                .execute_batch(
+                    "CREATE TABLE audit_events_admin (
+                        audit_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts_ms             INTEGER NOT NULL,
+                        principal_subject TEXT,
+                        operation         TEXT    NOT NULL,
+                        target_tenant_id  TEXT,
+                        result            TEXT    NOT NULL,
+                        details_json      TEXT
+                    );",
+                )
+                .unwrap();
+            index
+                .execute(
+                    "INSERT INTO audit_events_admin
+                     (audit_id, ts_ms, principal_subject, operation, target_tenant_id, result, details_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rusqlite::params![
+                        42i64,
+                        1234i64,
+                        "admin",
+                        "tenant.create",
+                        "default",
+                        "ok",
+                        "{}"
+                    ],
+                )
+                .unwrap();
+        }
+
+        assert!(migrate_legacy_default_library(temp.path(), &key).unwrap());
+        assert!(temp.path().join(COMMUNITY_DB_FILENAME).is_file());
+        assert!(!temp.path().join(LEGACY_INDEX_FILENAME).exists());
+        assert!(!tenants.exists());
+        assert!(temp.path().join("hnsw_episodes.hnsw.data").is_file());
+
+        let root = open_sqlcipher(&temp.path().join(COMMUNITY_DB_FILENAME), &key).unwrap();
+        let copied: i64 = root
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events_admin WHERE audit_id = 42",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(copied, 1);
+    }
+
+    #[test]
+    fn leaves_previous_default_in_place_when_key_is_wrong() {
+        let temp = tempfile::TempDir::new().unwrap();
+        legacy_default_from_fresh_init(&temp, "correct-passphrase");
+        let tenants = temp.path().join(LEGACY_LIBRARY_SUBDIR);
+        let wrong_key =
+            KeyMaterial::derive("wrong-passphrase", &[7u8; crate::key_material::SALT_LEN]).unwrap();
+
+        let error = migrate_legacy_default_library(temp.path(), &wrong_key).unwrap_err();
+
+        assert!(matches!(error, Error::Storage(_)));
+        assert!(tenants.join(LEGACY_DEFAULT_DB_FILENAME).is_file());
+        assert!(!temp.path().join(COMMUNITY_DB_FILENAME).exists());
+    }
+
+    #[test]
+    fn promotes_default_library_and_quarantines_unreadable_legacy_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let key = legacy_default_from_fresh_init(&temp, "unreadable-index-test");
+        std::fs::write(temp.path().join(LEGACY_INDEX_FILENAME), b"not a database").unwrap();
+
+        assert!(migrate_legacy_default_library(temp.path(), &key).unwrap());
+
+        assert!(temp.path().join(COMMUNITY_DB_FILENAME).is_file());
+        assert!(!temp.path().join(LEGACY_INDEX_FILENAME).exists());
+        assert!(
+            temp.path()
+                .join("migration-retired")
+                .join(LEGACY_INDEX_FILENAME)
+                .is_file()
+        );
     }
 
     #[test]
@@ -527,5 +732,33 @@ mod tests {
         assert!(!temp.path().join(LEGACY_INDEX_FILENAME).exists());
         drop(handle);
         library.shutdown().await;
+    }
+
+    fn legacy_default_from_fresh_init(temp: &tempfile::TempDir, passphrase: &str) -> KeyMaterial {
+        let outcome = init(InitParams {
+            data_dir: temp.path().to_path_buf(),
+            passphrase: Zeroizing::new(passphrase.into()),
+            force: false,
+            embedder: default_embedder(),
+        })
+        .unwrap();
+        let config = SoloConfig::read(&outcome.config_path).unwrap();
+        let key = KeyMaterial::derive(passphrase, &config.salt_bytes().unwrap()).unwrap();
+
+        let tenants = temp.path().join(LEGACY_LIBRARY_SUBDIR);
+        std::fs::create_dir_all(tenants.join("default")).unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            move_if_exists(
+                &temp.path().join(format!("{COMMUNITY_DB_FILENAME}{suffix}")),
+                &tenants.join(format!("{LEGACY_DEFAULT_DB_FILENAME}{suffix}")),
+            );
+        }
+        key
+    }
+
+    fn move_if_exists(source: &Path, destination: &Path) {
+        if source.exists() {
+            std::fs::rename(source, destination).unwrap();
+        }
     }
 }
