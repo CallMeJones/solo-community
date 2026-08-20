@@ -37,6 +37,7 @@ import { MemoryPolicyPanel } from './components/MemoryPolicyPanel';
 import { SetupGuideView } from './components/SetupGuideView';
 import { StatusStrip } from './components/StatusStrip';
 import { Toolbar } from './components/Toolbar';
+import { GraphEffectsToggle, NodePalettePicker, ThemePicker } from './components/ThemePicker';
 import { CopyButton } from './components/ui/CopyButton';
 import { DEFAULT_SOLO_API_URL, MCP_BRIDGE_URL } from './config/defaults';
 import { useGraphData } from './hooks/useGraphData';
@@ -122,7 +123,7 @@ export default function App({ host = communityWebHost }: { host?: SoloWebHost })
   const moduleContext: SoloWebModuleContext = { apiUrl, navigate: setMode };
 
   return (
-    <div className="dune-theme flex h-screen w-screen flex-col bg-slate-950 text-slate-100 md:flex-row">
+    <div className="solo-surface flex h-screen w-screen flex-col bg-slate-950 text-slate-100 md:flex-row">
       <aside className="flex shrink-0 flex-col border-b border-slate-800 bg-slate-950 md:w-56 md:border-b-0 md:border-r">
         <div className="border-b border-slate-800 px-4 py-3 md:py-4">
           <div className="text-base font-semibold text-slate-100">{host.productName}</div>
@@ -232,11 +233,17 @@ function ModeView({
     case 'logs':
       return <LogsView />;
     case 'memories':
+      // Explicit flex column: <main> is a block container, so a bare `h-full`
+      // on GraphView resolved against main's *full* height and ignored the
+      // toolbar above it — overflowing the viewport and hiding the legend that
+      // anchors to the graph's bottom edge.
       return (
-        <>
+        <div className="flex h-full flex-col">
           <Toolbar />
-          <GraphView />
-        </>
+          <div className="min-h-0 flex-1">
+            <GraphView />
+          </div>
+        </div>
       );
     case 'inbox':
       return <InboxView onSelectEpisode={onSelectEpisode} />;
@@ -769,6 +776,24 @@ function SettingsView({
           <div className="mt-5 flex flex-wrap gap-2">
             <CopyButton label="Copy Solo URL" value={apiUrl} />
           </div>
+        </section>
+
+        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+          <h2 className="text-sm font-semibold text-slate-100">Appearance</h2>
+          <p className="mt-1 text-xs text-slate-400">
+            Applied immediately and remembered on this device.
+          </p>
+          <ThemePicker />
+
+          <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph colors</h3>
+          <p className="mt-1 text-xs text-slate-400">
+            Node and connection colors in Memories. Independent of the theme — each palette
+            has a variant tuned for light and dark surfaces.
+          </p>
+          <NodePalettePicker />
+
+          <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph effects</h3>
+          <GraphEffectsToggle />
         </section>
 
         <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">

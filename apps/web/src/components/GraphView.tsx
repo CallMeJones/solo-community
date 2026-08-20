@@ -2,10 +2,25 @@
 // Uses react-force-graph-2d and react-force-graph-3d (both by @vasturiano)
 // — near-identical APIs, swap based on the viewMode setting.
 
-import { lazy, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import {
+  lazy,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+} from 'react';
 import { useGraphData } from '../hooks/useGraphData';
 import { useGraphStore } from '../store/graphStore';
-import { NODE_KIND_COLORS, NODE_KIND_SIZES } from '../lib/nodeKindTheme';
+import { NODE_KIND_SIZES } from '../lib/nodeKindTheme';
+import {
+  useActiveTheme,
+  useLinkKindColors,
+  useNodeKindColors,
+  useParticleColors,
+  useThemeStore,
+} from '../store/themeStore';
 import {
   buildGraphPresentation,
   createGraphTooltip,
@@ -32,17 +47,19 @@ interface ForceGraphNode extends PresentedGraphNode {
 
 type ForceGraphLink = PresentedGraphLink;
 
-function graphLinkColor(link: ForceGraphLink): string {
-  switch (link.kind) {
-    case 'triple':
-      return 'rgba(101, 214, 163, 0.9)';
-    case 'cluster_member':
-      return 'rgba(242, 179, 93, 0.58)';
-    case 'document_chunk':
-      return 'rgba(213, 111, 62, 0.72)';
-    case 'semantic':
-      return 'rgba(180, 135, 255, 0.72)';
-  }
+/** The slice of three's EffectComposer this component uses. */
+interface EffectComposerLike {
+  addPass: (pass: BloomPassLike) => void;
+  removePass?: (pass: BloomPassLike) => void;
+}
+
+interface BloomPassLike {
+  dispose?: () => void;
+}
+
+/** The slice of the ForceGraph3D imperative handle this component uses. */
+interface ForceGraph3DHandle {
+  postProcessingComposer?: () => EffectComposerLike | undefined;
 }
 
 function graphLinkWidth(link: ForceGraphLink): number {
@@ -58,8 +75,69 @@ function graphLinkWidth(link: ForceGraphLink): number {
   }
 }
 
-function graphLinkDirectionalParticles(link: ForceGraphLink): number {
-  return link.kind === 'triple' ? 2 : 0;
+/**
+ * Particles per edge, weighted so the strongest relationships read as the
+ * busiest. Returns 0 wholesale when effects are off — force-graph skips the
+ * per-frame particle work entirely at 0, which is the point of the toggle.
+ */
+function graphLinkParticleCount(link: ForceGraphLink, effects: boolean): number {
+  if (!effects) return 0;
+  switch (link.kind) {
+    case 'triple':
+      return 3;
+    case 'cluster_member':
+      return 2;
+    case 'document_chunk':
+      return 2;
+    case 'semantic':
+      return 1;
+  }
+}
+
+function graphLinkParticleWidth(link: ForceGraphLink): number {
+  return link.kind === 'triple' ? 2.8 : 2;
+}
+
+/**
+ * force-graph mutates `source`/`target` from id strings into node object
+ * references once the data is ingested, so an accessor has to read both shapes.
+ */
+function endpointId(endpoint: unknown): string {
+  if (typeof endpoint === 'string') return endpoint;
+  const node = endpoint as { id?: unknown } | null;
+  return typeof node?.id === 'string' ? node.id : '';
+}
+
+/**
+ * A stable pseudo-random number in [0, 1) per edge (FNV-1a over its identity).
+ * Stable matters: the value feeds particle phase and speed, and re-deriving a
+ * different number on re-render would make the whole graph visibly jump.
+ */
+function linkSeed(link: ForceGraphLink): number {
+  const key = `${endpointId(link.source)}>${endpointId(link.target)}:${link.kind}`;
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 100000) / 100000;
+}
+
+/**
+ * Starting phase, as a fraction of the gap between one particle and the next.
+ * Without it every edge starts its cycle at exactly the same moment and the
+ * whole graph pulses in lockstep.
+ */
+function graphLinkParticleOffset(link: ForceGraphLink): number {
+  return linkSeed(link);
+}
+
+/**
+ * Per-edge speed spread over roughly a 3x range. The offset above scatters the
+ * starting phase; varying the speed keeps edges from drifting back into sync.
+ */
+function graphLinkParticleSpeed(link: ForceGraphLink): number {
+  return 0.0035 + linkSeed(link) * 0.007;
 }
 
 export function GraphView() {
@@ -72,6 +150,14 @@ export function GraphView() {
   const expandedNodeIds = useGraphStore((s) => s.expandedNodeIds);
   const toggleExpansion = useGraphStore((s) => s.toggleExpansion);
   const recalledNodeIds = useGraphStore((s) => s.recalledNodeIds);
+  // Canvas colors come from the theme registry, not CSS: force-graph paints to
+  // a bitmap, so nothing here is reachable by a stylesheet.
+  const palette = useActiveTheme().graph;
+  const nodeColors = useNodeKindColors();
+  const linkColors = useLinkKindColors();
+  const particleColors = useParticleColors();
+  const effects = useThemeStore((s) => s.effects);
+  const graphLinkColor = (link: ForceGraphLink) => linkColors[link.kind];
 
   // Container ref for sizing — ResizeObserver-backed so dimensions track
   // the actual painted canvas area, not a stale first-render snapshot.
@@ -80,6 +166,7 @@ export function GraphView() {
   // regardless of viewport; the force layout then settled inside those
   // wrong bounds and visibly clipped on the right edge.)
   const containerRef = useRef<HTMLDivElement>(null);
+  const fg3dRef = useRef<ForceGraph3DHandle | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   useLayoutEffect(() => {
@@ -108,6 +195,70 @@ export function GraphView() {
 
   const { width, height } = dimensions;
 
+  // 3D bloom. The 2D view gets its glow from a blurred canvas pass, which has
+  // no equivalent in WebGL — there, glow is a post-processing stage on the
+  // renderer. react-force-graph-3d exposes its EffectComposer, so an
+  // UnrealBloomPass is appended to it.
+  //
+  // The pass is imported dynamically: this only runs in 3D mode, and a static
+  // import would pull the postprocessing chunk into the 2D path too.
+  useEffect(() => {
+    const bloom = palette.bloom;
+    if (viewMode !== '3d' || !effects || !bloom) return;
+
+    let cancelled = false;
+    let attached: { composer: EffectComposerLike; pass: BloomPassLike } | null = null;
+    let frame = 0;
+    let attempts = 0;
+
+    const attach = () => {
+      if (cancelled) return;
+      const composer = fg3dRef.current?.postProcessingComposer?.();
+      if (!composer) {
+        // The composer only exists once the lazy 3D component has mounted and
+        // built its renderer. Retry for a bounded number of frames rather than
+        // racing Suspense.
+        if (attempts++ < 180) frame = requestAnimationFrame(attach);
+        return;
+      }
+      void import('three/examples/jsm/postprocessing/UnrealBloomPass.js').then(
+        ({ UnrealBloomPass }) => {
+          if (cancelled) return;
+          const pass = new UnrealBloomPass(
+            { x: width || 1, y: height || 1 },
+            bloom.strength,
+            bloom.radius,
+            bloom.threshold,
+          ) as unknown as BloomPassLike;
+          // Keep the canvas transparent. As the composer's last pass,
+          // UnrealBloomPass blits the rendered scene to the screen through an
+          // opaque MeshBasicMaterial, which stamps alpha 1 across the whole
+          // canvas and hides the CSS backdrop behind it. Marking that blit
+          // material transparent carries the scene's own alpha through, so
+          // empty space stays see-through and only the bloom adds light.
+          // Guarded: if three renames the internal, the graph just renders on
+          // an opaque background rather than breaking.
+          const blit = (pass as unknown as { _basic?: { transparent: boolean } })._basic;
+          if (blit) blit.transparent = true;
+
+          composer.addPass(pass);
+          attached = { composer, pass };
+        },
+      );
+    };
+
+    attach();
+
+    return () => {
+      cancelled = true;
+      if (frame) cancelAnimationFrame(frame);
+      if (attached) {
+        attached.composer.removePass?.(attached.pass);
+        attached.pass.dispose?.();
+      }
+    };
+  }, [viewMode, effects, palette.bloom, width, height]);
+
   // Shared node-paint logic for 2D.
   const nodeCanvasObject = (
     node: ForceGraphNode,
@@ -124,7 +275,25 @@ export function GraphView() {
       ? 5
       : NODE_KIND_SIZES[node.kind] * entityImportanceScale(node);
     const size = isSelected ? baseSize * 1.6 : baseSize;
-    const color = NODE_KIND_COLORS[node.kind];
+    const color = nodeColors[node.kind];
+
+    // Glow pass. Canvas shadowBlur is measured in device pixels and ignores the
+    // current transform, so it is scaled by globalScale to keep the halo
+    // proportional to the node as the user zooms. Drawn as a separate filled
+    // pass, then cleared — leaving shadowBlur set would bleed onto the label
+    // and every later node.
+    if (effects) {
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = Math.min(size * globalScale * 1.8, 34);
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, 2 * Math.PI, false);
+      ctx.fillStyle = color;
+      ctx.fill();
+      // A second pass deepens the bloom on the nodes the user is acting on.
+      if (isSelected || isHighlighted || isRecalled) ctx.fill();
+      ctx.restore();
+    }
 
     ctx.beginPath();
     ctx.arc(x, y, size, 0, 2 * Math.PI, false);
@@ -162,7 +331,7 @@ export function GraphView() {
 
     if (isSelected) {
       ctx.lineWidth = 2 / globalScale;
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = palette.nodeOutline;
       ctx.stroke();
     } else if (isHighlighted) {
       ctx.lineWidth = 1.5 / globalScale;
@@ -175,7 +344,7 @@ export function GraphView() {
     if (isSelected || isHighlighted || shouldShowNodeLabel(node, globalScale)) {
       const fontSize = Math.max(10 / globalScale, 2);
       ctx.font = `${fontSize}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillStyle = '#f7ead1';
+      ctx.fillStyle = palette.nodeLabel;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       ctx.fillText(node.label.slice(0, 32), x, y + size + 2);
@@ -201,7 +370,7 @@ export function GraphView() {
   // overlays inside it rather than as early returns, otherwise the ref is null
   // on first render, the effect bails out, and dimensions stay at 0×0 forever.
   return (
-    <div ref={containerRef} className="relative h-full w-full">
+    <div ref={containerRef} className="solo-graph-canvas relative h-full w-full">
       {isLoading && (
         <div className="flex h-full items-center justify-center text-slate-400">
           Loading graph...
@@ -219,7 +388,10 @@ export function GraphView() {
             graphData={{ nodes: filtered.nodes, links: filtered.links }}
             width={width}
             height={height}
-            backgroundColor="#080604"
+            // Transparent so the themed gradient painted by `.solo-graph-canvas`
+            // on the container below shows through. The 3D view keeps a solid
+            // clear color — WebGL composites its own scene.
+            backgroundColor="rgba(0, 0, 0, 0)"
             nodeId="id"
             nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
             nodeCanvasObject={nodeCanvasObject}
@@ -242,12 +414,12 @@ export function GraphView() {
             linkColor={graphLinkColor}
             linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
-            linkDirectionalParticles={graphLinkDirectionalParticles}
-            linkDirectionalParticleColor={graphLinkColor}
-            linkDirectionalParticleWidth={(l: ForceGraphLink) => (l.kind === 'triple' ? 2.6 : 0)}
-            linkDirectionalArrowLength={(link: ForceGraphLink) =>
-              link.kind === 'triple' ? 4 : 0
-            }
+            linkDirectionalParticles={(l: ForceGraphLink) => graphLinkParticleCount(l, effects)}
+            linkDirectionalParticleColor={(l: ForceGraphLink) => particleColors[l.kind]}
+            linkDirectionalParticleWidth={graphLinkParticleWidth}
+            linkDirectionalParticleSpeed={graphLinkParticleSpeed}
+            linkDirectionalParticleOffset={graphLinkParticleOffset}
+            linkDirectionalArrowLength={(link: ForceGraphLink) => (link.kind === 'triple' ? 4 : 0)}
             linkDirectionalArrowRelPos={0.82}
             onNodeClick={(node: ForceGraphNode, event: MouseEvent) => {
               // event.detail === 2 means this click is part of a double-click;
@@ -259,27 +431,28 @@ export function GraphView() {
           />
         ) : (
           <ForceGraph3D
+            ref={fg3dRef}
             graphData={{ nodes: filtered.nodes, links: filtered.links }}
             width={width}
             height={height}
-            backgroundColor="#080604"
+            // Transparent for the same reason as the 2D canvas: the themed
+            // gradient on the container behind it becomes the graph backdrop.
+            backgroundColor="rgba(0, 0, 0, 0)"
             nodeId="id"
             nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
-            nodeColor={(n: ForceGraphNode) => NODE_KIND_COLORS[n.kind]}
+            nodeColor={(n: ForceGraphNode) => nodeColors[n.kind]}
             nodeVal={(n: ForceGraphNode) =>
-              n.__aggregateForDocumentId
-                ? 4
-                : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
+              n.__aggregateForDocumentId ? 4 : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
             }
             linkColor={graphLinkColor}
             linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
-            linkDirectionalParticles={graphLinkDirectionalParticles}
-            linkDirectionalParticleColor={graphLinkColor}
-            linkDirectionalParticleWidth={(l: ForceGraphLink) => (l.kind === 'triple' ? 2.6 : 0)}
-            linkDirectionalArrowLength={(link: ForceGraphLink) =>
-              link.kind === 'triple' ? 4 : 0
-            }
+            linkDirectionalParticles={(l: ForceGraphLink) => graphLinkParticleCount(l, effects)}
+            linkDirectionalParticleColor={(l: ForceGraphLink) => particleColors[l.kind]}
+            linkDirectionalParticleWidth={graphLinkParticleWidth}
+            linkDirectionalParticleSpeed={graphLinkParticleSpeed}
+            linkDirectionalParticleOffset={graphLinkParticleOffset}
+            linkDirectionalArrowLength={(link: ForceGraphLink) => (link.kind === 'triple' ? 4 : 0)}
             linkDirectionalArrowRelPos={0.82}
             onNodeClick={(node: ForceGraphNode, event: MouseEvent) => {
               handleNodeClick(node, event);
@@ -289,9 +462,9 @@ export function GraphView() {
       {!isLoading && !error && (
         <div className="pointer-events-none absolute bottom-3 left-3 max-w-sm rounded-md border border-slate-700/80 bg-slate-950/90 px-3 py-2 text-[11px] text-slate-300 shadow-lg">
           <div className="flex flex-wrap gap-x-3 gap-y-1">
-            <GraphLegend color="rgba(101, 214, 163, 0.9)" label="fact relationship" />
-            <GraphLegend color="rgba(242, 179, 93, 0.8)" label="memory cluster" />
-            <GraphLegend color="rgba(213, 111, 62, 0.9)" label="document section" />
+            <GraphLegend color={linkColors.triple} label="fact relationship" />
+            <GraphLegend color={linkColors.cluster_member} label="memory cluster" />
+            <GraphLegend color={linkColors.document_chunk} label="document section" />
           </div>
           <p className="mt-1 text-slate-400">
             Hover links for meaning. Double-click a node to reveal hidden neighbors.

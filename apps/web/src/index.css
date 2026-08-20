@@ -2,6 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theming
+ * =======
+ * Components author against Tailwind's stock slate/sky palette. A theme is a
+ * set of custom properties on `:root[data-theme='…']` plus one shared block of
+ * overrides that re-points those utility classes at the properties. So the
+ * components stay theme-agnostic and a new theme costs a token block, not a
+ * sweep through every file.
+ *
+ * The attribute is written by store/themeStore.ts at module load, before first
+ * paint. `lib/theme.ts` carries the same ids plus the canvas colors CSS cannot
+ * reach (the force graph paints to a bitmap). Keep the ids in sync.
+ *
+ * Overrides beat the utilities they replace on specificity — `[data-theme] .x`
+ * is (0,2,0) against a bare `.x` at (0,1,0). Tailwind v3 emits @layer as plain
+ * grouped CSS rather than native cascade layers, so specificity decides.
+ */
+
 html,
 body,
 #root {
@@ -15,150 +33,522 @@ body {
     system-ui,
     -apple-system,
     sans-serif;
-  background-color: #080604;
-  color: #f7ead1;
+  background-color: var(--solo-body-bg, #080604);
+  color: var(--solo-body-fg, #f7ead1);
   overflow: hidden;
 }
 
+/* ---------------------------------------------------------------- tokens -- */
+
+/* Dune — the default. Warm near-black with spice copper. */
+:root,
+:root[data-theme='dune'] {
+  --solo-body-bg: #080604;
+  --solo-body-fg: #f7ead1;
+
+  --solo-surface: radial-gradient(circle at 18% 10%, rgba(201, 111, 50, 0.2), transparent 28rem),
+    radial-gradient(circle at 78% 18%, rgba(167, 139, 250, 0.16), transparent 24rem),
+    linear-gradient(135deg, rgba(247, 234, 209, 0.035) 0 1px, transparent 1px 22px),
+    linear-gradient(180deg, #080604 0%, #120d09 48%, #1d1209 100%);
+
+  --solo-void: rgba(8, 6, 4, 0.96);
+  --solo-void-soft: rgba(18, 13, 9, 0.72);
+  --solo-void-veil: rgba(18, 13, 9, 0.92);
+
+  --solo-panel: rgba(29, 21, 15, 0.86);
+  --solo-panel-soft: rgba(45, 31, 19, 0.56);
+  --solo-panel-inset: inset 0 1px 0 rgba(247, 234, 209, 0.04);
+
+  /* `--solo-raised` is the hover step; `--solo-chip` the resting fill. They
+     differ because dune has always rendered them apart — see the note on the
+     bg-slate-800 override below. */
+  --solo-raised: rgba(92, 56, 28, 0.74);
+  --solo-raised-strong: rgba(112, 70, 36, 0.82);
+  --solo-chip: rgba(142, 94, 47, 0.78);
+  --solo-chip-fg: #ffffff;
+
+  --solo-border: rgba(181, 123, 57, 0.34);
+  --solo-border-strong: rgba(226, 164, 83, 0.58);
+  --solo-border-deep: rgba(8, 6, 4, 0.85);
+
+  --solo-text: #f7ead1;
+  --solo-text-secondary: #e0cdaa;
+  --solo-muted: #bfa98a;
+  --solo-dim: #8e7658;
+
+  --solo-accent: linear-gradient(135deg, #9f4f25, #d28a3a 58%, #f2b35d);
+  --solo-accent-fg: #140d07;
+  --solo-accent-solid: #d28a3a;
+  --solo-accent-text: #f2b35d;
+  --solo-ring: rgba(242, 179, 93, 0.72);
+
+  --solo-info-bg: rgba(92, 56, 28, 0.28);
+  --solo-info-border: rgba(181, 123, 57, 0.44);
+  --solo-info-text: #f0d9ae;
+
+  --solo-ok: #65d6a3;
+  --solo-warn: #f2b35d;
+  --solo-danger: #e45f5f;
+
+  --solo-selection-bg: rgba(242, 179, 93, 0.36);
+  --solo-selection-fg: #fff7e8;
+  --solo-scroll-track: rgba(8, 6, 4, 0.7);
+  --solo-scroll-thumb: rgba(181, 123, 57, 0.62);
+
+  --solo-graph-bg:
+    radial-gradient(ellipse 130% 110% at 50% 50%, transparent 38%, rgba(0, 0, 0, 0.62) 100%),
+    radial-gradient(circle at 22% 22%, rgba(201, 111, 50, 0.20), transparent 46%),
+    radial-gradient(circle at 80% 74%, rgba(167, 139, 250, 0.15), transparent 44%),
+    radial-gradient(ellipse 70% 55% at 50% 46%, rgba(242, 179, 93, 0.10), transparent 72%),
+    radial-gradient(rgba(247, 234, 209, 0.055) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(168deg, #0e0a07 0%, #080604 55%, #150d07 100%);
+}
+
+/* Dark — neutral greys, no hue. Monochrome accent so it reads apart from Dark Blue. */
+:root[data-theme='dark'] {
+  --solo-body-bg: #0a0a0b;
+  --solo-body-fg: #ededef;
+
+  --solo-surface: linear-gradient(180deg, #0a0a0b 0%, #101012 60%, #141416 100%);
+
+  --solo-void: rgba(10, 10, 11, 0.96);
+  --solo-void-soft: rgba(20, 20, 22, 0.72);
+  --solo-void-veil: rgba(16, 16, 18, 0.92);
+
+  --solo-panel: rgba(28, 28, 31, 0.86);
+  --solo-panel-soft: rgba(38, 38, 42, 0.52);
+  --solo-panel-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  --solo-raised: rgba(58, 58, 63, 0.78);
+  --solo-raised-strong: rgba(74, 74, 80, 0.85);
+  --solo-chip: rgba(66, 66, 72, 0.82);
+  --solo-chip-fg: #ffffff;
+
+  --solo-border: rgba(255, 255, 255, 0.11);
+  --solo-border-strong: rgba(255, 255, 255, 0.26);
+  --solo-border-deep: rgba(0, 0, 0, 0.85);
+
+  --solo-text: #ededef;
+  --solo-text-secondary: #d0d0d4;
+  --solo-muted: #a1a1a8;
+  --solo-dim: #76767d;
+
+  --solo-accent: linear-gradient(135deg, #d8d8dc, #ededef);
+  --solo-accent-fg: #131315;
+  --solo-accent-solid: #e6e6e8;
+  --solo-accent-text: #ededef;
+  --solo-ring: rgba(230, 230, 232, 0.55);
+
+  --solo-info-bg: rgba(255, 255, 255, 0.06);
+  --solo-info-border: rgba(255, 255, 255, 0.16);
+  --solo-info-text: #dcdce0;
+
+  --solo-ok: #4ade80;
+  --solo-warn: #fbbf24;
+  --solo-danger: #f87171;
+
+  --solo-selection-bg: rgba(230, 230, 232, 0.3);
+  --solo-selection-fg: #ffffff;
+  --solo-scroll-track: rgba(10, 10, 11, 0.7);
+  --solo-scroll-thumb: rgba(255, 255, 255, 0.22);
+
+  --solo-graph-bg:
+    radial-gradient(ellipse 130% 110% at 50% 50%, transparent 38%, rgba(0, 0, 0, 0.6) 100%),
+    radial-gradient(circle at 22% 22%, rgba(255, 255, 255, 0.07), transparent 46%),
+    radial-gradient(circle at 80% 74%, rgba(255, 255, 255, 0.05), transparent 44%),
+    radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(168deg, #131315 0%, #0a0a0b 55%, #141416 100%);
+}
+
+/* Light — bright neutral surfaces, near-black accent. */
+:root[data-theme='light'] {
+  --solo-body-bg: #f7f7f8;
+  --solo-body-fg: #27272a;
+
+  --solo-surface: linear-gradient(180deg, #fbfbfc 0%, #f4f4f6 100%);
+
+  --solo-void: rgba(255, 255, 255, 0.96);
+  --solo-void-soft: rgba(244, 244, 246, 0.86);
+  --solo-void-veil: rgba(255, 255, 255, 0.94);
+
+  --solo-panel: #ffffff;
+  --solo-panel-soft: rgba(255, 255, 255, 0.72);
+  --solo-panel-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+
+  --solo-raised: rgba(0, 0, 0, 0.06);
+  --solo-raised-strong: rgba(0, 0, 0, 0.11);
+  --solo-chip: rgba(0, 0, 0, 0.08);
+  --solo-chip-fg: #18181b;
+
+  --solo-border: rgba(0, 0, 0, 0.13);
+  --solo-border-strong: rgba(0, 0, 0, 0.32);
+  --solo-border-deep: rgba(0, 0, 0, 0.16);
+
+  --solo-text: #18181b;
+  --solo-text-secondary: #3f3f46;
+  --solo-muted: #62626b;
+  --solo-dim: #8a8a93;
+
+  --solo-accent: linear-gradient(135deg, #27272a, #18181b);
+  --solo-accent-fg: #fafafa;
+  --solo-accent-solid: #18181b;
+  --solo-accent-text: #18181b;
+  --solo-ring: rgba(24, 24, 27, 0.45);
+
+  --solo-info-bg: rgba(0, 0, 0, 0.04);
+  --solo-info-border: rgba(0, 0, 0, 0.12);
+  --solo-info-text: #3f3f46;
+
+  --solo-ok: #15803d;
+  --solo-warn: #b45309;
+  --solo-danger: #b91c1c;
+
+  --solo-selection-bg: rgba(24, 24, 27, 0.18);
+  --solo-selection-fg: #18181b;
+  --solo-scroll-track: rgba(0, 0, 0, 0.04);
+  --solo-scroll-thumb: rgba(0, 0, 0, 0.24);
+
+  --solo-graph-bg:
+    radial-gradient(ellipse 130% 110% at 50% 50%, transparent 42%, rgba(24, 24, 27, 0.10) 100%),
+    radial-gradient(circle at 22% 22%, rgba(99, 102, 241, 0.07), transparent 46%),
+    radial-gradient(circle at 80% 74%, rgba(14, 165, 233, 0.06), transparent 44%),
+    radial-gradient(rgba(24, 24, 27, 0.07) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(168deg, #ffffff 0%, #f4f4f6 60%, #ececed 100%);
+}
+
+/* Dark Blue — the stock slate/sky palette the components were authored against. */
+:root[data-theme='blue'] {
+  --solo-body-bg: #020617;
+  --solo-body-fg: #f1f5f9;
+
+  --solo-surface: radial-gradient(circle at 18% 10%, rgba(14, 116, 144, 0.18), transparent 28rem),
+    radial-gradient(circle at 78% 18%, rgba(99, 102, 241, 0.16), transparent 24rem),
+    linear-gradient(180deg, #020617 0%, #0b1120 55%, #0f172a 100%);
+
+  --solo-void: rgba(2, 6, 23, 0.96);
+  --solo-void-soft: rgba(15, 23, 42, 0.72);
+  --solo-void-veil: rgba(2, 6, 23, 0.92);
+
+  --solo-panel: rgba(15, 23, 42, 0.86);
+  --solo-panel-soft: rgba(30, 41, 59, 0.5);
+  --solo-panel-inset: inset 0 1px 0 rgba(226, 232, 240, 0.05);
+
+  --solo-raised: rgba(30, 41, 59, 0.9);
+  --solo-raised-strong: rgba(51, 65, 85, 0.9);
+  --solo-chip: rgba(51, 65, 85, 0.85);
+  --solo-chip-fg: #ffffff;
+
+  --solo-border: rgba(148, 163, 184, 0.22);
+  --solo-border-strong: rgba(125, 211, 252, 0.5);
+  --solo-border-deep: rgba(2, 6, 23, 0.85);
+
+  --solo-text: #f1f5f9;
+  --solo-text-secondary: #cbd5e1;
+  --solo-muted: #94a3b8;
+  --solo-dim: #64748b;
+
+  --solo-accent: linear-gradient(135deg, #075985, #0369a1 58%, #0284c7);
+  --solo-accent-fg: #f0f9ff;
+  --solo-accent-solid: #0284c7;
+  --solo-accent-text: #7dd3fc;
+  --solo-ring: rgba(56, 189, 248, 0.7);
+
+  --solo-info-bg: rgba(8, 47, 73, 0.45);
+  --solo-info-border: rgba(7, 89, 133, 0.6);
+  --solo-info-text: #bae6fd;
+
+  --solo-ok: #34d399;
+  --solo-warn: #fbbf24;
+  --solo-danger: #fb7185;
+
+  --solo-selection-bg: rgba(56, 189, 248, 0.32);
+  --solo-selection-fg: #f0f9ff;
+  --solo-scroll-track: rgba(2, 6, 23, 0.7);
+  --solo-scroll-thumb: rgba(148, 163, 184, 0.45);
+
+  --solo-graph-bg:
+    radial-gradient(ellipse 130% 110% at 50% 50%, transparent 38%, rgba(0, 0, 0, 0.6) 100%),
+    radial-gradient(circle at 22% 22%, rgba(14, 165, 233, 0.20), transparent 46%),
+    radial-gradient(circle at 80% 74%, rgba(129, 140, 248, 0.16), transparent 44%),
+    radial-gradient(ellipse 70% 55% at 50% 46%, rgba(56, 189, 248, 0.10), transparent 72%),
+    radial-gradient(rgba(226, 232, 240, 0.06) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(168deg, #071120 0%, #020617 55%, #0d1526 100%);
+}
+
+/* ------------------------------------------------------------- overrides -- */
+
 @layer components {
-  .dune-theme {
-    --dune-void: #080604;
-    --dune-night: #120d09;
-    --dune-stone: #1d150f;
-    --dune-panel: rgba(32, 22, 14, 0.84);
-    --dune-panel-soft: rgba(45, 31, 19, 0.56);
-    --dune-border: rgba(181, 123, 57, 0.34);
-    --dune-border-strong: rgba(226, 164, 83, 0.58);
-    --dune-sand: #f7ead1;
-    --dune-muted: #bfa98a;
-    --dune-dim: #8e7658;
-    --dune-spice: #c96f32;
-    --dune-spice-bright: #f2b35d;
-    --dune-arcane: #a78bfa;
-    background:
-      radial-gradient(circle at 18% 10%, rgba(201, 111, 50, 0.2), transparent 28rem),
-      radial-gradient(circle at 78% 18%, rgba(167, 139, 250, 0.16), transparent 24rem),
-      linear-gradient(135deg, rgba(247, 234, 209, 0.035) 0 1px, transparent 1px 22px),
-      linear-gradient(180deg, #080604 0%, #120d09 48%, #1d1209 100%);
-    color: var(--dune-sand);
+  /* The app shell paints the themed surface. It sits above body's flat color,
+     so gradients belong here rather than on body or <html>. */
+  .solo-surface {
+    background: var(--solo-surface);
+    color: var(--solo-text);
   }
 
-  .dune-theme .bg-slate-950,
-  .dune-theme .bg-slate-950\/95,
-  .dune-theme.bg-slate-950 {
-    background-color: rgba(8, 6, 4, 0.96);
+  /*
+   * Backdrop for the memory graph. The force-graph canvas is layered on top of
+   * this and clears to transparent, so the whole stack — colour blooms, dot
+   * grid, vignette — shows through behind the nodes. Painting it in CSS rather
+   * than on the canvas keeps it out of the per-frame render loop.
+   */
+  .solo-graph-canvas {
+    background: var(--solo-graph-bg);
   }
 
-  .dune-theme .bg-slate-950\/60 {
-    background-color: rgba(18, 13, 9, 0.72);
+  [data-theme] .bg-slate-950,
+  [data-theme] .bg-slate-950\/95,
+  [data-theme] .solo-surface.bg-slate-950 {
+    background-color: var(--solo-void);
   }
 
-  .dune-theme .bg-slate-900,
-  .dune-theme .bg-slate-900\/70 {
-    background-color: rgba(29, 21, 15, 0.86);
+  [data-theme] .bg-slate-950\/60 {
+    background-color: var(--solo-void-soft);
   }
 
-  .dune-theme .bg-slate-900\/60,
-  .dune-theme .bg-slate-900\/45 {
-    background-color: var(--dune-panel-soft);
-    box-shadow: inset 0 1px 0 rgba(247, 234, 209, 0.04);
+  /* Floating overlays drawn over the graph canvas (e.g. the legend). */
+  [data-theme] .bg-slate-950\/90,
+  [data-theme] .bg-slate-950\/70 {
+    background-color: var(--solo-void-veil);
   }
 
-  .dune-theme .bg-slate-800,
-  .dune-theme .hover\:bg-slate-800:hover,
-  .dune-theme .hover\:bg-slate-900:hover {
-    background-color: rgba(92, 56, 28, 0.74);
+  [data-theme] .bg-slate-900,
+  [data-theme] .bg-slate-900\/70 {
+    background-color: var(--solo-panel);
   }
 
-  .dune-theme .bg-sky-700,
-  .dune-theme .hover\:bg-sky-600:hover,
-  .dune-theme .bg-indigo-600,
-  .dune-theme .hover\:bg-indigo-500:hover {
-    background: linear-gradient(135deg, #9f4f25, #d28a3a 58%, #f2b35d);
-    color: #140d07;
+  [data-theme] .bg-slate-900\/60,
+  [data-theme] .bg-slate-900\/45 {
+    background-color: var(--solo-panel-soft);
+    box-shadow: var(--solo-panel-inset);
   }
 
-  .dune-theme .border-slate-900 {
-    border-color: rgba(8, 6, 4, 0.85);
+  /* Resting fills. Note these land on `--solo-chip` while the *hover* variants
+     below land on `--solo-raised`: dune has always rendered the two apart, and
+     collapsing them here would change its appearance. */
+  [data-theme] .bg-slate-800,
+  [data-theme] .bg-slate-500 {
+    background-color: var(--solo-chip);
   }
 
-  .dune-theme .border-slate-800,
-  .dune-theme .border-slate-700 {
-    border-color: var(--dune-border);
+  /* Text sitting directly on a chip — e.g. the active nav item, which pairs
+     `bg-slate-800` with a bare `text-white` that vanishes on a light surface. */
+  [data-theme] .bg-slate-800.text-white,
+  [data-theme] .bg-slate-500.text-white {
+    color: var(--solo-chip-fg);
   }
 
-  .dune-theme .hover\:border-slate-600:hover,
-  .dune-theme .hover\:border-slate-500:hover,
-  .dune-theme .focus\:border-sky-500:focus,
-  .dune-theme .focus\:border-sky-600:focus {
-    border-color: var(--dune-border-strong);
+  [data-theme] .bg-slate-700,
+  [data-theme] .disabled\:bg-slate-700:disabled,
+  [data-theme] .disabled\:bg-slate-800:disabled {
+    background-color: var(--solo-raised-strong);
   }
 
-  .dune-theme .text-slate-100,
-  .dune-theme .text-slate-200,
-  .dune-theme .hover\:text-slate-100:hover,
-  .dune-theme.text-slate-100 {
-    color: var(--dune-sand);
+  [data-theme] .hover\:bg-slate-800:hover,
+  [data-theme] .hover\:bg-slate-900:hover,
+  [data-theme] .hover\:bg-slate-700:hover {
+    background-color: var(--solo-raised);
   }
 
-  .dune-theme .text-slate-300 {
-    color: #e0cdaa;
+  /* Primary action buttons. */
+  [data-theme] .bg-sky-700,
+  [data-theme] .hover\:bg-sky-600:hover,
+  [data-theme] .bg-indigo-600,
+  [data-theme] .hover\:bg-indigo-500:hover {
+    background: var(--solo-accent);
+    color: var(--solo-accent-fg);
   }
 
-  .dune-theme .text-slate-400,
-  .dune-theme .placeholder\:text-slate-400::placeholder {
-    color: var(--dune-muted);
+  [data-theme] .bg-sky-500,
+  [data-theme] .bg-sky-400 {
+    background-color: var(--solo-accent-solid);
   }
 
-  .dune-theme .text-slate-500 {
-    color: var(--dune-dim);
+  /* Form-control tint — without this, checkboxes and radios keep the browser's
+     stock blue regardless of theme. */
+  [data-theme] .accent-sky-500 {
+    accent-color: var(--solo-accent-solid);
   }
 
-  .dune-theme .bg-slate-500,
-  .dune-theme .bg-slate-800 {
-    background-color: rgba(142, 94, 47, 0.78);
+  [data-theme] .border-slate-900,
+  [data-theme] .divide-slate-900 > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--solo-border-deep);
   }
 
-  .dune-theme .bg-emerald-400 {
-    background-color: #65d6a3;
+  [data-theme] .border-slate-800,
+  [data-theme] .border-slate-700,
+  [data-theme] .border-slate-700\/80,
+  [data-theme] .disabled\:border-slate-700:disabled,
+  [data-theme] .divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--solo-border);
   }
 
-  .dune-theme .bg-rose-400 {
-    background-color: #e45f5f;
+  [data-theme] .hover\:border-slate-600:hover,
+  [data-theme] .hover\:border-slate-500:hover,
+  [data-theme] .focus\:border-sky-500:focus,
+  [data-theme] .focus\:border-sky-600:focus,
+  [data-theme] .focus\:border-indigo-500:focus,
+  [data-theme] .border-sky-500,
+  [data-theme] .border-indigo-500,
+  [data-theme] .hover\:border-sky-600:hover {
+    border-color: var(--solo-border-strong);
   }
 
-  .dune-theme .bg-amber-300 {
-    background-color: #f2b35d;
+  [data-theme] .text-slate-100,
+  [data-theme] .text-slate-200,
+  [data-theme] .hover\:text-slate-100:hover,
+  [data-theme] .hover\:text-slate-200:hover,
+  [data-theme] .solo-surface.text-slate-100 {
+    color: var(--solo-text);
   }
 
-  .dune-theme .focus\:ring-sky-500:focus,
-  .dune-theme .focus-visible\:ring-sky-500:focus-visible {
-    --tw-ring-color: rgba(242, 179, 93, 0.72);
+  [data-theme] .text-slate-300,
+  [data-theme] .hover\:text-slate-300:hover {
+    color: var(--solo-text-secondary);
   }
 
-  .dune-theme input,
-  .dune-theme select,
-  .dune-theme textarea {
-    color-scheme: dark;
+  [data-theme] .text-slate-400,
+  [data-theme] .disabled\:text-slate-400:disabled,
+  [data-theme] .placeholder\:text-slate-400::placeholder {
+    color: var(--solo-muted);
   }
 
-  .dune-theme ::selection {
-    background-color: rgba(242, 179, 93, 0.36);
-    color: #fff7e8;
+  [data-theme] .text-slate-500,
+  [data-theme] .disabled\:text-slate-500:disabled,
+  [data-theme] .placeholder-slate-500::placeholder {
+    color: var(--solo-dim);
   }
 
-  .dune-theme ::-webkit-scrollbar {
+  /* Informational callouts. */
+  [data-theme] .bg-sky-950,
+  [data-theme] .bg-sky-950\/60,
+  [data-theme] .bg-sky-950\/35,
+  [data-theme] .bg-sky-950\/25,
+  [data-theme] .bg-sky-500\/10,
+  [data-theme] .bg-indigo-950,
+  [data-theme] .bg-indigo-500\/10,
+  [data-theme] .hover\:bg-sky-950:hover {
+    background-color: var(--solo-info-bg);
+  }
+
+  [data-theme] .border-sky-800\/70,
+  [data-theme] .border-sky-900,
+  [data-theme] .border-sky-700 {
+    border-color: var(--solo-info-border);
+  }
+
+  [data-theme] .text-sky-100,
+  [data-theme] .text-sky-200,
+  [data-theme] .hover\:text-sky-200:hover,
+  [data-theme] .text-indigo-200 {
+    color: var(--solo-info-text);
+  }
+
+  [data-theme] .text-sky-300,
+  [data-theme] .text-sky-500,
+  [data-theme] .hover\:text-sky-300:hover,
+  [data-theme] .text-indigo-300 {
+    color: var(--solo-accent-text);
+  }
+
+  /* Status dots. */
+  [data-theme] .bg-emerald-400 {
+    background-color: var(--solo-ok);
+  }
+
+  [data-theme] .bg-rose-400 {
+    background-color: var(--solo-danger);
+  }
+
+  [data-theme] .bg-amber-300 {
+    background-color: var(--solo-warn);
+  }
+
+  [data-theme] .focus\:ring-sky-500:focus,
+  [data-theme] .focus-visible\:ring-sky-500:focus-visible {
+    --tw-ring-color: var(--solo-ring);
+  }
+
+  [data-theme] ::selection {
+    background-color: var(--solo-selection-bg);
+    color: var(--solo-selection-fg);
+  }
+
+  [data-theme] ::-webkit-scrollbar {
     height: 10px;
     width: 10px;
   }
 
-  .dune-theme ::-webkit-scrollbar-track {
-    background: rgba(8, 6, 4, 0.7);
+  [data-theme] ::-webkit-scrollbar-track {
+    background: var(--solo-scroll-track);
   }
 
-  .dune-theme ::-webkit-scrollbar-thumb {
-    background: rgba(181, 123, 57, 0.62);
-    border: 2px solid rgba(8, 6, 4, 0.7);
+  [data-theme] ::-webkit-scrollbar-thumb {
+    background: var(--solo-scroll-thumb);
+    border: 2px solid var(--solo-scroll-track);
     border-radius: 999px;
+  }
+
+  /*
+   * Light theme only: semantic callouts (red / amber / emerald) are authored as
+   * near-black tinted backgrounds with pale text, which inverts to unreadable on
+   * a white surface. Remap the families wholesale.
+   *
+   * Substring matching keeps this to a handful of rules instead of the ~70
+   * individual opacity variants in use. The `:not([class*=":bg-…"])` guards stop
+   * a `hover:` variant from being applied at rest, since the raw class string is
+   * what the attribute selector sees.
+   */
+  :root[data-theme='light'] [class*='bg-red-95']:not([class*=':bg-red-95']),
+  :root[data-theme='light'] [class*='bg-red-500/'] {
+    background-color: #fef2f2;
+  }
+
+  :root[data-theme='light'] [class*='bg-amber-95']:not([class*=':bg-amber-95']),
+  :root[data-theme='light'] [class*='bg-amber-500/'],
+  :root[data-theme='light'] [class*='bg-orange-95']:not([class*=':bg-orange-95']) {
+    background-color: #fffbeb;
+  }
+
+  :root[data-theme='light'] [class*='bg-emerald-95']:not([class*=':bg-emerald-95']),
+  :root[data-theme='light'] [class*='bg-emerald-500/'] {
+    background-color: #ecfdf5;
+  }
+
+  :root[data-theme='light'] [class*='border-red-'],
+  :root[data-theme='light'] [class*='border-rose-'] {
+    border-color: #fca5a5;
+  }
+
+  :root[data-theme='light'] [class*='border-amber-'],
+  :root[data-theme='light'] [class*='border-orange-'] {
+    border-color: #fcd34d;
+  }
+
+  :root[data-theme='light'] [class*='border-emerald-'] {
+    border-color: #6ee7b7;
+  }
+
+  :root[data-theme='light'] .text-red-100,
+  :root[data-theme='light'] .text-red-200,
+  :root[data-theme='light'] .text-red-300,
+  :root[data-theme='light'] .text-red-400,
+  :root[data-theme='light'] .text-rose-100,
+  :root[data-theme='light'] [class*='text-red-100\\/'] {
+    color: #b91c1c;
+  }
+
+  :root[data-theme='light'] .text-amber-100,
+  :root[data-theme='light'] .text-amber-200,
+  :root[data-theme='light'] .text-amber-300,
+  :root[data-theme='light'] .text-amber-400,
+  :root[data-theme='light'] .text-orange-200,
+  :root[data-theme='light'] [class*='text-amber-100\\/'] {
+    color: #b45309;
+  }
+
+  :root[data-theme='light'] .text-emerald-100,
+  :root[data-theme='light'] .text-emerald-200,
+  :root[data-theme='light'] .text-emerald-300 {
+    color: #047857;
   }
 }

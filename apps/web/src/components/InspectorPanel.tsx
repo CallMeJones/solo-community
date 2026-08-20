@@ -11,21 +11,22 @@ import {
 } from '../api/client';
 import type { ContradictionHit, EntityHit, GraphNode, GraphResponse, NodeKind } from '../api/types';
 import { useSelectedNode } from '../hooks/useSelectedNode';
-import { NODE_KIND_COLORS } from '../lib/nodeKindTheme';
+import { useNodeKindColors } from '../store/themeStore';
 import { useGraphStore } from '../store/graphStore';
 import { useSettingsStore } from '../store/settingsStore';
 
 const USE_MOCKS = import.meta.env.VITE_SOLO_USE_MOCKS === '1';
 
 function KindBadge({ kind }: { kind: NodeKind }) {
+  const nodeColors = useNodeKindColors();
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider"
-      style={{ backgroundColor: `${NODE_KIND_COLORS[kind]}22`, color: NODE_KIND_COLORS[kind] }}
+      style={{ backgroundColor: `${nodeColors[kind]}22`, color: nodeColors[kind] }}
     >
       <span
         className="h-1.5 w-1.5 rounded-full"
-        style={{ backgroundColor: NODE_KIND_COLORS[kind] }}
+        style={{ backgroundColor: nodeColors[kind] }}
       />
       {kind}
     </span>

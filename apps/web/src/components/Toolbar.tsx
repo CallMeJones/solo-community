@@ -1,7 +1,8 @@
 // Top toolbar: library context, 2D/3D toggle, kind filters, search box.
 
 import { useState } from 'react';
-import { NODE_KINDS, NODE_KIND_COLORS } from '../lib/nodeKindTheme';
+import { NODE_KINDS } from '../lib/nodeKindTheme';
+import { useNodeKindColors } from '../store/themeStore';
 import { COMMUNITY_LIBRARY_NAME, useGraphStore } from '../store/graphStore';
 import { SettingsDialog } from './SettingsDialog';
 import { Button } from './ui/Button';
@@ -15,17 +16,20 @@ export function Toolbar() {
   const searchQuery = useGraphStore((s) => s.searchQuery);
   const setSearchQuery = useGraphStore((s) => s.setSearchQuery);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const nodeColors = useNodeKindColors();
 
   return (
-    <header className="flex items-center gap-4 border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-sm">
+    <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-sm">
       <span className="font-semibold tracking-tight text-slate-100">Memories</span>
 
-      <span className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300">
+      <span className="shrink-0 whitespace-nowrap rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300">
         <span className="font-medium text-slate-100">{COMMUNITY_LIBRARY_NAME}</span>
       </span>
 
-      {/* 2D / 3D toggle */}
-      <div className="flex overflow-hidden rounded-md border border-slate-700">
+      {/* 2D / 3D toggle. `shrink-0` is load-bearing: without it flex collapses the
+          group to zero width on a crowded toolbar and `overflow-hidden` clips both
+          buttons away, leaving only the border visible. */}
+      <div className="flex shrink-0 overflow-hidden rounded-md border border-slate-700">
         <button
           onClick={() => setViewMode('2d')}
           className={`px-3 py-1 text-xs font-medium ${
@@ -64,7 +68,7 @@ export function Toolbar() {
             />
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: NODE_KIND_COLORS[kind] }}
+              style={{ backgroundColor: nodeColors[kind] }}
             />
             <span>{kind}</span>
           </label>

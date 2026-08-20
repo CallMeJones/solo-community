@@ -1,14 +1,9 @@
 import type { NodeKind } from '../api/types';
 
+// Node colors moved to lib/nodePalettes.ts when palettes became selectable —
+// they now vary by palette and by light/dark surface. Sizes stay here: they are
+// structural, not thematic.
 export const NODE_KINDS: NodeKind[] = ['episode', 'document', 'chunk', 'cluster', 'entity'];
-
-export const NODE_KIND_COLORS: Record<NodeKind, string> = {
-  episode: '#f2b35d',
-  document: '#d56f3e',
-  chunk: '#b487ff',
-  cluster: '#65d6a3',
-  entity: '#f7df8a',
-};
 
 export const NODE_KIND_SIZES: Record<NodeKind, number> = {
   episode: 4,
