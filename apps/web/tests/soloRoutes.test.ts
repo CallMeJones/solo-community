@@ -4,6 +4,7 @@ import {
   codexHttpSetupDryRunCommand,
   mcpEndpoint,
   setupClientDoctorCommand,
+  setupClientHttpApplyCommand,
   setupClientHttpDryRunCommand,
 } from '../src/lib/soloRoutes';
 
@@ -19,6 +20,12 @@ describe('solo route helpers', () => {
     );
     expect(setupClientHttpDryRunCommand('claude-desktop', 'http://127.0.0.1:17821')).toBe(
       'solo setup-client claude-desktop --transport http --url http://127.0.0.1:17821/mcp --dry-run',
+    );
+    expect(setupClientHttpApplyCommand('codex', 'http://127.0.0.1:17821')).toBe(
+      'solo setup-client codex --scope user --transport http --url http://127.0.0.1:17821/mcp --apply',
+    );
+    expect(setupClientHttpApplyCommand('claude-desktop', 'http://127.0.0.1:17821')).toBe(
+      'solo setup-client claude-desktop --transport http --url http://127.0.0.1:17821/mcp --apply',
     );
     expect(setupClientDoctorCommand('http://127.0.0.1:17821')).toBe(
       'solo setup-client doctor --url http://127.0.0.1:17821/mcp',

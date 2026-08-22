@@ -289,16 +289,19 @@ describe('App desktop shell', () => {
     await waitFor(() => expect(screen.getAllByText('First Run').length).toBeGreaterThan(0));
     expect(screen.getByText('Readiness')).toBeInTheDocument();
     expect(screen.getByText('Start Solo')).toBeInTheDocument();
-    expect(screen.getByText('Connect tools')).toBeInTheDocument();
+    expect(screen.getByText('Connect Codex')).toBeInTheDocument();
+    expect(screen.getByText('Connect Claude')).toBeInTheDocument();
     expect(screen.getByText('Import memory')).toBeInTheDocument();
     expect(screen.getByText('Review inbox')).toBeInTheDocument();
     expect(screen.getByText('Create backup')).toBeInTheDocument();
-    expect(screen.getByText('5 of 6 complete')).toBeInTheDocument();
+    expect(screen.getByText('6 of 7 complete')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /connect tools/i }));
+    fireEvent.click(screen.getByRole('button', { name: /connect codex/i }));
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByText('MCP Connections')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'MCP connections' })).toBeInTheDocument();
+    expect(screen.getByText(/solo setup-client codex .* --apply/)).toBeInTheDocument();
+    expect(screen.getByText(/solo setup-client claude-desktop .* --apply/)).toBeInTheDocument();
   });
 
   it('surfaces connection endpoints in the shell', async () => {
@@ -308,6 +311,7 @@ describe('App desktop shell', () => {
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
     expect(screen.getAllByText('http://127.0.0.1:17821/mcp').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Copy dry-run')).toHaveLength(3);
+    expect(screen.getAllByText('Copy install')).toHaveLength(3);
     expect(screen.getAllByText('Copy Doctor')).toHaveLength(4);
     expect(
       screen.getByText(

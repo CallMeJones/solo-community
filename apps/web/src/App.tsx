@@ -46,6 +46,7 @@ import {
   claudeCodeHttpAddCommand,
   mcpEndpoint,
   setupClientDoctorCommand,
+  setupClientHttpApplyCommand,
   setupClientHttpDryRunCommand,
   type SetupClientTarget,
 } from './lib/soloRoutes';
@@ -661,7 +662,8 @@ function ConnectionsView() {
           <h2 className="text-sm font-semibold text-slate-100">Connected Clients</h2>
           <div className="mt-4 space-y-3">
             {setupTargets.map(({ target, label }) => {
-              const command = setupClientHttpDryRunCommand(target, apiUrl);
+              const dryRunCommand = setupClientHttpDryRunCommand(target, apiUrl);
+              const applyCommand = setupClientHttpApplyCommand(target, apiUrl);
               const targetDoctorCommand = setupClientDoctorCommand(apiUrl, target);
               return (
                 <div
@@ -675,7 +677,8 @@ function ConnectionsView() {
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-2">
-                    <CopyButton label="Copy dry-run" value={command} />
+                    <CopyButton label="Copy dry-run" value={dryRunCommand} />
+                    <CopyButton label="Copy install" value={applyCommand} />
                     <CopyButton label="Copy Doctor" value={targetDoctorCommand} />
                   </div>
                 </div>
@@ -718,7 +721,8 @@ function SettingsView({
   const libraryName = solo.data?.library.name ?? COMMUNITY_LIBRARY_NAME;
   const mcpUrl = mcpEndpoint(apiUrl);
   const doctorCommand = setupClientDoctorCommand(apiUrl);
-  const claudeDesktopCommand = setupClientHttpDryRunCommand('claude-desktop', apiUrl);
+  const codexInstallCommand = setupClientHttpApplyCommand('codex', apiUrl);
+  const claudeDesktopCommand = setupClientHttpApplyCommand('claude-desktop', apiUrl);
   const mcpProbe = useMutation({
     mutationFn: () => probeMcpTools(),
   });
@@ -803,6 +807,7 @@ function SettingsView({
             <StatusRow label="Memory library" value={libraryName} />
             <StatusRow label="Sessions" value={String(solo.data?.mcp.sessions ?? 0)} />
             <StatusRow label="Probe" value={mcpProbeStatus(mcpProbe)} />
+            <StatusRow label="Codex" value={codexInstallCommand} />
             <StatusRow label="Claude Desktop" value={claudeDesktopCommand} />
             <StatusRow label="Doctor" value={doctorCommand} />
           </dl>
@@ -828,6 +833,7 @@ function SettingsView({
               Open details
             </button>
             <CopyButton label="Copy MCP URL" value={mcpUrl} />
+            <CopyButton label="Copy Codex install" value={codexInstallCommand} />
             <CopyButton label="Copy Claude Desktop" value={claudeDesktopCommand} />
             <CopyButton label="Copy Doctor" value={doctorCommand} />
           </div>

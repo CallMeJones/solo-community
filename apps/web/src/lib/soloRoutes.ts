@@ -8,12 +8,24 @@ export function mcpEndpoint(apiUrl: string): string {
 
 export type SetupClientTarget = 'codex' | 'claude-desktop' | 'cursor';
 
-export function setupClientHttpDryRunCommand(target: SetupClientTarget, apiUrl: string): string {
+export function setupClientHttpCommand(
+  target: SetupClientTarget,
+  apiUrl: string,
+  mode: 'dry-run' | 'apply',
+): string {
   const base = ['solo', 'setup-client', target];
   if (target === 'codex') {
     base.push('--scope', 'user');
   }
-  return [...base, '--transport', 'http', '--url', mcpEndpoint(apiUrl), '--dry-run'].join(' ');
+  return [...base, '--transport', 'http', '--url', mcpEndpoint(apiUrl), `--${mode}`].join(' ');
+}
+
+export function setupClientHttpDryRunCommand(target: SetupClientTarget, apiUrl: string): string {
+  return setupClientHttpCommand(target, apiUrl, 'dry-run');
+}
+
+export function setupClientHttpApplyCommand(target: SetupClientTarget, apiUrl: string): string {
+  return setupClientHttpCommand(target, apiUrl, 'apply');
 }
 
 export function codexHttpSetupDryRunCommand(apiUrl: string): string {

@@ -87,23 +87,26 @@ describe('SetupGuideView', () => {
     const onModeChange = vi.fn();
     render(wrap(<SetupGuideView onModeChange={onModeChange} />));
 
-    expect(await screen.findByText('5 of 6 complete')).toBeInTheDocument();
+    expect(await screen.findByText('6 of 7 complete')).toBeInTheDocument();
     expect(screen.getAllByText('Community Memory Library').length).toBeGreaterThan(0);
     expect(screen.getByText('Start Solo')).toBeInTheDocument();
     expect(screen.getAllByText('Memory library').length).toBeGreaterThan(0);
     expect(screen.getByText('one private local library')).toBeInTheDocument();
-    expect(screen.getByText('Connect tools')).toBeInTheDocument();
+    expect(screen.getByText('Connect Codex')).toBeInTheDocument();
+    expect(screen.getByText('native HTTP MCP config')).toBeInTheDocument();
+    expect(screen.getByText('Connect Claude')).toBeInTheDocument();
+    expect(screen.getByText('Claude Desktop MCP config')).toBeInTheDocument();
     expect(screen.getByText('Import memory')).toBeInTheDocument();
     expect(screen.getByText('Review inbox')).toBeInTheDocument();
     expect(screen.getByText('Create backup')).toBeInTheDocument();
-    expect(screen.getByText('1 sessions')).toBeInTheDocument();
+    expect(screen.getAllByText('1 sessions').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('1 docs')).toBeInTheDocument();
     expect(screen.getAllByText('1 reviewed').length).toBeGreaterThan(0);
     expect(screen.queryByText('Open health')).not.toBeInTheDocument();
-    expect(screen.queryByText('Open connections')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Open connections')).toHaveLength(2);
     expect(screen.queryByText('Open backups')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /connect tools/i }));
+    fireEvent.click(screen.getByRole('button', { name: /connect codex/i }));
     expect(onModeChange).toHaveBeenCalledWith('settings');
   });
 
@@ -119,7 +122,7 @@ describe('SetupGuideView', () => {
     render(wrap(<SetupGuideView onModeChange={vi.fn()} />));
 
     expect(await screen.findByText('daemon locked')).toBeInTheDocument();
-    expect(screen.getByText('0 of 6 complete')).toBeInTheDocument();
+    expect(screen.getByText('0 of 7 complete')).toBeInTheDocument();
     expect(screen.getAllByText('Memory library').length).toBeGreaterThan(0);
     expect(screen.getAllByText('offline').length).toBeGreaterThan(0);
     expect(screen.getByText('Open settings')).toBeInTheDocument();
