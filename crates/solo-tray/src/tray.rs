@@ -90,7 +90,7 @@ fn icon_bytes(health: DaemonHealth, pulse: f32) -> Vec<u8> {
     let tb = (tb as f32 * pulse) as u8;
 
     let mut out = base_icon_rgba().clone();
-    for chunk in out.chunks_exact_mut(4) {
+    for chunk in out.as_chunks_mut::<4>().0 {
         // Transparent pixels (outside the circle) → leave alone.
         if chunk[3] < 32 {
             continue;

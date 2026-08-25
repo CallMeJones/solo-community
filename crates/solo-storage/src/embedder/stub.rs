@@ -69,14 +69,13 @@ impl StubEmbedder {
 
         // Unit-normalise.
         let mut sum_sq = 0.0f32;
-        for chunk in data.chunks_exact(4) {
-            let v = f32::from_le_bytes(chunk.try_into().unwrap());
+        for chunk in data.as_chunks::<4>().0 {
+            let v = f32::from_le_bytes(*chunk);
             sum_sq += v * v;
         }
         let norm = sum_sq.sqrt().max(1e-9);
-        for chunk in data.chunks_exact_mut(4) {
-            let v = f32::from_le_bytes((&chunk[..]).try_into().unwrap()) / norm;
-            chunk.copy_from_slice(&v.to_le_bytes());
+        for chunk in data.as_chunks_mut::<4>().0 {
+            *chunk = (f32::from_le_bytes(*chunk) / norm).to_le_bytes();
         }
 
         Embedding {
