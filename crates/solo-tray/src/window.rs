@@ -80,6 +80,14 @@ pub struct SoloTrayApp {
     tool_snapshot: ToolSnapshot,
     mcp_probe: McpProbeState,
     mcp_probe_rx: Option<Receiver<McpProbeResult>>,
+    /// Back stack of visited tabs. Every navigation pushes where it came from,
+    /// so Back retraces the actual click path rather than always dumping the
+    /// operator on Controls.
+    /// Results of the per-row "Find install" probe, newest per target. Kept as
+    /// a small vec rather than a map because SetupTarget is not Ord and there
+    /// are four of them.
+    tool_install_probes: Vec<(SetupTarget, ToolInstallDetection)>,
+    nav_history: NavHistory,
     update_flow: UpdateFlow,
     update_check_rx: Option<Receiver<UpdateCheckResult>>,
     update_status_rx: Option<Receiver<UpdateStatusResult>>,
@@ -189,6 +197,55 @@ pub struct SoloTrayApp {
     update_ticks: u64,
 }
 
+/// How deep the back stack goes. Long enough that no realistic click path
+/// runs out, short enough that it never grows without bound.
+const NAV_HISTORY_LIMIT: usize = 32;
+
+/// Back stack for the main window.
+///
+/// Split out from the window struct so the rules — no self-entry, bounded
+/// depth, Back falls through to Controls — are unit-testable without standing
+/// up an entire egui app.
+#[derive(Debug, Default)]
+struct NavHistory {
+    stack: Vec<MainTab>,
+}
+
+impl NavHistory {
+    /// Record `current` and return the tab to show. Re-selecting the current
+    /// tab records nothing, so clicking "Settings" twice still needs one Back.
+    fn navigate(&mut self, current: MainTab, to: MainTab) -> MainTab {
+        if current == to {
+            return current;
+        }
+        self.stack.push(current);
+        if self.stack.len() > NAV_HISTORY_LIMIT {
+            self.stack.remove(0);
+        }
+        to
+    }
+
+    /// Retrace one step, or land on Controls when the trail is empty — Back is
+    /// never a dead button.
+    fn back(&mut self) -> MainTab {
+        self.stack.pop().unwrap_or(MainTab::Controls)
+    }
+
+    /// The trail exists only to get back to Controls, so arriving there clears it.
+    fn home(&mut self) -> MainTab {
+        self.stack.clear();
+        MainTab::Controls
+    }
+
+    fn peek(&self) -> MainTab {
+        self.stack.last().copied().unwrap_or(MainTab::Controls)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.stack.is_empty()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainTab {
@@ -202,6 +259,34 @@ enum MainTab {
     Settings,
     Data,
     Logs,
+}
+
+impl MainTab {
+    /// Whether this tab already owns its scrolling.
+    ///
+    /// Tools wraps its whole body in a scroll area and Logs drives a bounded
+    /// log viewport; nesting those inside an outer scroll area makes the inner
+    /// one grow to its content instead of scrolling. Every other tab laid its
+    /// content straight into the panel and simply ran off the bottom.
+    fn scrolls_itself(self) -> bool {
+        matches!(self, Self::Tools | Self::Logs)
+    }
+
+    /// Title shown in the navigation bar.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Controls => "Solo Controls",
+            Self::Dashboard => "Dashboard",
+            Self::Health => "Health",
+            Self::Mcp => "MCP Status",
+            Self::Memory => "Memory",
+            Self::Projects => "Projects",
+            Self::Tools => "Connected Tools",
+            Self::Settings => "Settings",
+            Self::Data => "Data",
+            Self::Logs => "Logs",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2117,6 +2202,8 @@ impl SoloTrayApp {
             tool_snapshot,
             mcp_probe: McpProbeState::Idle,
             mcp_probe_rx: None,
+            tool_install_probes: Vec::new(),
+            nav_history: NavHistory::default(),
             update_flow: UpdateFlow::Idle,
             update_check_rx: None,
             update_status_rx: None,
@@ -3677,7 +3764,7 @@ impl SoloTrayApp {
             }
             tray::MENU_SHOW_LOGS => {
                 self.window_visible = true;
-                self.active_tab = MainTab::Logs;
+                self.navigate_to(MainTab::Logs);
                 // Un-minimise (no-op if already restored) and focus.
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -4296,6 +4383,26 @@ impl SoloTrayApp {
         });
     }
 
+    /// Move to `tab`, remembering where we came from.
+    ///
+    /// Re-selecting the current tab is a no-op rather than a history entry —
+    /// otherwise clicking "Settings" twice would need two presses of Back.
+    fn navigate_to(&mut self, tab: MainTab) {
+        self.active_tab = self.nav_history.navigate(self.active_tab, tab);
+    }
+
+    /// Retrace one step. Falls back to Controls so Back is never a dead button
+    /// on a screen the operator reached some other way.
+    fn navigate_back(&mut self) {
+        self.active_tab = self.nav_history.back();
+    }
+
+    /// Jump straight to Controls and forget the trail — the trail only exists to
+    /// get back here, so keeping it after arriving would be misleading.
+    fn navigate_home(&mut self) {
+        self.active_tab = self.nav_history.home();
+    }
+
     fn start_update_check(&mut self) {
         if self.update_flow.is_busy() {
             return;
@@ -4468,8 +4575,7 @@ impl SoloTrayApp {
                     can_auto_install: cfg!(target_os = "windows"),
                 },
                 None => UpdateFlow::Failed {
-                    message: "Solo reported the update as ready but gave no file path."
-                        .to_string(),
+                    message: "Solo reported the update as ready but gave no file path.".to_string(),
                 },
             },
             UpdateStage::Failed => UpdateFlow::Failed {
@@ -5652,6 +5758,8 @@ impl SoloTrayApp {
     }
 
     fn draw_main_window(&mut self, ctx: &Context) {
+        self.handle_nav_shortcuts(ctx);
+
         // Always draw the central panel — the previous `window_visible`
         // gate caused a "blank window" regression: if the user
         // X-closed (→ minimised + `window_visible = false`) and then
@@ -5668,18 +5776,100 @@ impl SoloTrayApp {
                     .fill(content_fill(dark_mode))
                     .inner_margin(egui::Margin::symmetric(18, 16)),
             )
-            .show(ctx, |ui| match self.active_tab {
-                MainTab::Controls => self.draw_control_window(ui),
-                MainTab::Dashboard => self.draw_dashboard_tab(ui),
-                MainTab::Health => self.draw_health_tab(ui),
-                MainTab::Mcp => self.draw_mcp_tab(ui),
-                MainTab::Memory => self.draw_memory_tab(ui),
-                MainTab::Projects => self.draw_projects_tab(ui),
-                MainTab::Tools => self.draw_tools_tab(ui),
-                MainTab::Settings => self.draw_settings_tab(ui),
-                MainTab::Data => self.draw_data_tab(ui),
-                MainTab::Logs => self.draw_logs_tab(ui),
+            .show(ctx, |ui| {
+                // The nav bar stays pinned; only the page body scrolls, so Back
+                // is reachable without scrolling up first.
+                self.draw_nav_bar(ui);
+
+                if self.active_tab.scrolls_itself() {
+                    self.draw_active_tab(ui);
+                } else {
+                    ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.draw_active_tab(ui));
+                }
             });
+    }
+
+    fn draw_active_tab(&mut self, ui: &mut egui::Ui) {
+        match self.active_tab {
+            MainTab::Controls => self.draw_control_window(ui),
+            MainTab::Dashboard => self.draw_dashboard_tab(ui),
+            MainTab::Health => self.draw_health_tab(ui),
+            MainTab::Mcp => self.draw_mcp_tab(ui),
+            MainTab::Memory => self.draw_memory_tab(ui),
+            MainTab::Projects => self.draw_projects_tab(ui),
+            MainTab::Tools => self.draw_tools_tab(ui),
+            MainTab::Settings => self.draw_settings_tab(ui),
+            MainTab::Data => self.draw_data_tab(ui),
+            MainTab::Logs => self.draw_logs_tab(ui),
+        }
+    }
+
+    /// Back / Home bar shown on every screen except Controls itself.
+    ///
+    /// Before this, the sections were reachable but not leaveable: Settings and
+    /// Connected Tools set `active_tab` with nothing rendering a way out, so the
+    /// only route back to the main screen was quitting the window.
+    fn draw_nav_bar(&mut self, ui: &mut egui::Ui) {
+        if self.active_tab == MainTab::Controls {
+            return;
+        }
+        let dark_mode = ui.visuals().dark_mode;
+        let mut go_back = false;
+        let mut go_home = false;
+
+        ui.horizontal(|ui| {
+            let back_target = self.nav_history.peek();
+            if ui
+                .button("< Back")
+                .on_hover_text(format!("Back to {} (Esc)", back_target.label()))
+                .clicked()
+            {
+                go_back = true;
+            }
+            if ui
+                .add_enabled(
+                    !self.nav_history.is_empty(),
+                    egui::Button::new("Solo Controls"),
+                )
+                .on_hover_text("Return to the main screen")
+                .clicked()
+            {
+                go_home = true;
+            }
+            ui.separator();
+            ui.label(RichText::new(self.active_tab.label()).strong());
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(8.0);
+        let _ = dark_mode;
+
+        if go_back {
+            self.navigate_back();
+        } else if go_home {
+            self.navigate_home();
+        }
+    }
+
+    /// Esc and Backspace step back, matching what the buttons do.
+    ///
+    /// Both are ignored while a text field has focus, so Backspace still edits
+    /// the passphrase box instead of navigating away from it.
+    fn handle_nav_shortcuts(&mut self, ctx: &Context) {
+        if self.active_tab == MainTab::Controls {
+            return;
+        }
+        let editing = ctx.memory(|m| m.focused().is_some());
+        if editing {
+            return;
+        }
+        let back =
+            ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Backspace));
+        if back {
+            self.navigate_back();
+        }
     }
 
     /// The update row: one button to check, a second to install what was found.
@@ -5704,9 +5894,9 @@ impl SoloTrayApp {
                 }),
             );
             if !daemon_ready {
-                check.clone().on_hover_text(
-                    "Start Solo first — the daemon performs the update check.",
-                );
+                check
+                    .clone()
+                    .on_hover_text("Start Solo first — the daemon performs the update check.");
             }
             if check.clicked() {
                 self.start_update_check();
@@ -5714,18 +5904,16 @@ impl SoloTrayApp {
 
             match &self.update_flow {
                 UpdateFlow::Available { release, .. } => {
-                    if ui
-                        .add_enabled(
-                            !busy,
-                            egui::Button::new(format!("Install {}", release.tag)),
-                        )
-                        .on_hover_text(if release.can_auto_install {
-                            "Download, verify, then install and restart Solo."
-                        } else {
-                            "Download and verify. This platform installs manually."
-                        })
-                        .clicked()
-                    {
+                    let hint = if release.can_auto_install {
+                        "Download, verify, then install and restart Solo."
+                    } else {
+                        "Download and verify. This platform installs manually."
+                    };
+                    let clicked = ui
+                        .add_enabled(!busy, egui::Button::new(format!("Install {}", release.tag)))
+                        .on_hover_text(hint)
+                        .clicked();
+                    if clicked {
                         download_request = Some(release.clone());
                     }
                 }
@@ -5855,10 +6043,16 @@ impl SoloTrayApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Health").clicked() {
-                self.active_tab = MainTab::Health;
+                self.navigate_to(MainTab::Health);
             }
             if ui.button("Connected tools").clicked() {
-                self.active_tab = MainTab::Tools;
+                self.navigate_to(MainTab::Tools);
+            }
+            if ui.button("Settings").clicked() {
+                self.navigate_to(MainTab::Settings);
+            }
+            if ui.button("Logs").clicked() {
+                self.navigate_to(MainTab::Logs);
             }
         });
         ui.add_space(8.0);
@@ -6050,16 +6244,16 @@ impl SoloTrayApp {
                 tray::open_solo_desktop_async(self.state.settings.solo_web_url.clone());
             }
             if ui.button("Connected Tools").clicked() {
-                self.active_tab = MainTab::Tools;
+                self.navigate_to(MainTab::Tools);
             }
             if ui.button("MCP Status").clicked() {
-                self.active_tab = MainTab::Mcp;
+                self.navigate_to(MainTab::Mcp);
             }
             if ui.button("Logs").clicked() {
-                self.active_tab = MainTab::Logs;
+                self.navigate_to(MainTab::Logs);
             }
             if ui.button("Settings").clicked() {
-                self.active_tab = MainTab::Settings;
+                self.navigate_to(MainTab::Settings);
             }
         });
         ui.add_space(12.0);
@@ -6276,7 +6470,7 @@ impl SoloTrayApp {
                 self.refresh_detected_snapshots_now();
             }
             if ui.button("Connected Tools").clicked() {
-                self.active_tab = MainTab::Tools;
+                self.navigate_to(MainTab::Tools);
             }
         });
         ui.add_space(4.0);
@@ -6637,7 +6831,7 @@ impl SoloTrayApp {
                                 );
                             }
                             if ui.button("Connected tools").clicked() {
-                                self.active_tab = MainTab::Tools;
+                                self.navigate_to(MainTab::Tools);
                             }
                         }
                         if daemon_ready && ui.button("Open Solo").clicked() {
@@ -6645,7 +6839,7 @@ impl SoloTrayApp {
                         }
                         if tool_ready && !import_ready {
                             if ui.button("Import data").clicked() {
-                                self.active_tab = MainTab::Data;
+                                self.navigate_to(MainTab::Data);
                             }
                             if daemon_ready
                                 && !self.document_list.is_loading()
@@ -6656,7 +6850,7 @@ impl SoloTrayApp {
                         }
                         if import_ready && !review_ready {
                             if ui.button("Review memory").clicked() {
-                                self.active_tab = MainTab::Memory;
+                                self.navigate_to(MainTab::Memory);
                             }
                             if daemon_ready
                                 && !self.memory_recent.is_loading()
@@ -6960,7 +7154,10 @@ impl SoloTrayApp {
     }
 
     fn draw_tools_tab(&mut self, ui: &mut egui::Ui) {
-        ScrollArea::vertical()
+        // Both axes: the clients table is eight columns wide with a row of
+        // action buttons, so on a narrow window the right-hand actions were
+        // clipped off the edge with no way to reach them.
+        ScrollArea::both()
             .id_salt("tools_tab_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| self.draw_tools_tab_content(ui));
@@ -7041,7 +7238,7 @@ impl SoloTrayApp {
                 self.refresh_detected_snapshots_now();
             }
             if ui.button("Settings").clicked() {
-                self.active_tab = MainTab::Settings;
+                self.navigate_to(MainTab::Settings);
             }
         });
         ui.add_space(4.0);
@@ -7076,6 +7273,7 @@ impl SoloTrayApp {
         let mut requested_action: Option<(SetupTarget, SetupActionVerb)> = None;
         let mut requested_client_check: Option<SetupTarget> = None;
         let mut requested_tool_detail: Option<SetupTarget> = None;
+        let mut requested_install_probe: Option<SetupTarget> = None;
         let mut requested_doctor: Option<SetupTarget> = None;
         let setup_busy = self.setup_action.is_running();
         let client_check_busy = self.client_check.is_running();
@@ -7083,12 +7281,14 @@ impl SoloTrayApp {
         let can_run_setup =
             self.setup_snapshot.solo_command_available && !setup_busy && !doctor_busy;
         let daemon_default_profile = "Community Memory Library".to_string();
+        let dark_mode = ui.visuals().dark_mode;
         egui::Grid::new("tools_clients_grid")
-            .num_columns(8)
+            .num_columns(9)
             .spacing([10.0, 6.0])
             .striped(true)
             .show(ui, |ui| {
                 ui.label(RichText::new("Tool").strong());
+                ui.label(RichText::new("Installed").strong());
                 ui.label(RichText::new("Config").strong());
                 ui.label(RichText::new("Daemon MCP").strong());
                 ui.label(RichText::new("Client").strong());
@@ -7122,6 +7322,30 @@ impl SoloTrayApp {
                             &self.project_snapshot,
                         );
                     ui.label(target.label());
+                    // Result of the row's "Find install" probe. Blank until
+                    // pressed — probing every tool on every repaint would hit
+                    // the filesystem four times a frame.
+                    match self
+                        .tool_install_probes
+                        .iter()
+                        .find(|(t, _)| *t == target)
+                        .map(|(_, d)| d)
+                    {
+                        Some(detection) => {
+                            let text = if detection.found { "found" } else { "not found" };
+                            let tone = if detection.found {
+                                StateTone::Good
+                            } else {
+                                StateTone::Warn
+                            };
+                            ui.label(state_text(text, tone, dark_mode))
+                                .on_hover_text(&detection.detail);
+                        }
+                        None => {
+                            ui.label(RichText::new("-").color(muted_text_color(dark_mode)))
+                                .on_hover_text("Press Find install to check.");
+                        }
+                    }
                     ui.label(state_text(
                         &config_text,
                         config_tone,
@@ -7222,6 +7446,15 @@ impl SoloTrayApp {
                         if ui.button(detail_label).clicked() {
                             requested_tool_detail = Some(target);
                         }
+                        if ui
+                            .button("Find install")
+                            .on_hover_text(
+                                "Look for the client application itself, separately from its Solo config.",
+                            )
+                            .clicked()
+                        {
+                            requested_install_probe = Some(target);
+                        }
                         if target.supports_automated_client_check()
                             && ui
                                 .add_enabled(
@@ -7239,6 +7472,18 @@ impl SoloTrayApp {
                     ui.end_row();
                 }
             });
+        if let Some(target) = requested_install_probe {
+            let detection = detect_tool_install(target);
+            tracing::info!(
+                target: "solo::tools",
+                tool = ?target,
+                found = detection.found,
+                detail = %detection.detail,
+                "install probe"
+            );
+            self.tool_install_probes.retain(|(t, _)| *t != target);
+            self.tool_install_probes.push((target, detection));
+        }
         if let Some(target) = requested_tool_detail {
             self.selected_tool_detail = if self.selected_tool_detail == Some(target) {
                 None
@@ -7291,7 +7536,7 @@ impl SoloTrayApp {
             ui.ctx().copy_text(command_block);
         }
         if ui.button("Open command fallback").clicked() {
-            self.active_tab = MainTab::Settings;
+            self.navigate_to(MainTab::Settings);
         }
     }
 
@@ -7361,7 +7606,7 @@ impl SoloTrayApp {
                         .color(warning_color(dark_mode)),
                 );
                 if ui.button("Dashboard").clicked() {
-                    self.active_tab = MainTab::Dashboard;
+                    self.navigate_to(MainTab::Dashboard);
                 }
             });
         }
@@ -8098,10 +8343,10 @@ impl SoloTrayApp {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Projects").clicked() {
-                self.active_tab = MainTab::Projects;
+                self.navigate_to(MainTab::Projects);
             }
             if ui.button("Connected tools").clicked() {
-                self.active_tab = MainTab::Tools;
+                self.navigate_to(MainTab::Tools);
             }
         });
     }
@@ -8735,12 +8980,15 @@ impl SoloTrayApp {
         }
 
         if let Some(memory_id) = inspect_memory_id {
-            self.active_tab = MainTab::Memory;
+            self.navigate_to(MainTab::Memory);
             self.start_memory_inspect(&memory_id);
         }
     }
 
     fn draw_settings_tab(&mut self, ui: &mut egui::Ui) {
+        // Collected inside the settings grid and applied after it, since the
+        // grid closure already holds a mutable borrow of `self`.
+        let mut theme_choice: Option<Theme> = None;
         ui.heading("Settings");
         ui.add_space(8.0);
 
@@ -8867,7 +9115,20 @@ impl SoloTrayApp {
                 ui.end_row();
 
                 ui.label(RichText::new("Theme").strong());
-                ui.label(format!("{:?}", self.state.settings.theme));
+                // Was a read-only label; the only way to change the theme was
+                // the tray menu, which is easy to miss when the window is open.
+                ui.horizontal(|ui| {
+                    for (theme, label) in [
+                        (Theme::System, "System"),
+                        (Theme::Dark, "Dark"),
+                        (Theme::Light, "Light"),
+                    ] {
+                        let selected = self.state.settings.theme == theme;
+                        if ui.selectable_label(selected, label).clicked() && !selected {
+                            theme_choice = Some(theme);
+                        }
+                    }
+                });
                 ui.end_row();
 
                 ui.label(RichText::new("Memory library").strong());
@@ -8891,7 +9152,7 @@ impl SoloTrayApp {
         ui.horizontal(|ui| {
             if ui.button("Show setup guide").clicked() {
                 self.set_setup_wizard_completed(false);
-                self.active_tab = MainTab::Controls;
+                self.navigate_to(MainTab::Controls);
             }
             if ui.button("Hide setup guide").clicked() {
                 self.set_setup_wizard_completed(true);
@@ -9082,6 +9343,13 @@ impl SoloTrayApp {
                     render_command_row(ui, label, &command);
                 }
             });
+
+        if let Some(theme) = theme_choice {
+            self.state.settings.theme = theme;
+            self.state.settings.save(&self.state.settings_path);
+            apply_theme(ui.ctx(), theme);
+            tracing::info!(theme = ?theme, "theme changed from settings");
+        }
     }
 
     fn draw_data_tab(&mut self, ui: &mut egui::Ui) {
@@ -10006,6 +10274,153 @@ fn connected_tool_last_status(
 struct ToolPathDetection {
     path: Option<PathBuf>,
     note: Option<String>,
+}
+
+/// Whether the client application itself is installed on this machine.
+///
+/// Distinct from [`detect_tool_config_path`], which only says where a config
+/// *would* live. A config path exists whether or not the tool does, so "Waiting
+/// for config" on a machine that never had Claude installed reads as a Solo
+/// problem when it isn't one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolInstallDetection {
+    found: bool,
+    detail: String,
+}
+
+fn detect_tool_install(target: SetupTarget) -> ToolInstallDetection {
+    let env_var = |key: &str| std::env::var_os(key);
+    let exists = |path: &Path| path.exists();
+    detect_tool_install_for_os(target, std::env::consts::OS, &env_var, &exists)
+}
+
+/// OS and filesystem are injected so the probe is testable without needing the
+/// clients actually installed on the machine running the tests.
+fn detect_tool_install_for_os<F, E>(
+    target: SetupTarget,
+    os: &str,
+    env_var: &F,
+    exists: &E,
+) -> ToolInstallDetection
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+    E: Fn(&Path) -> bool,
+{
+    match target {
+        // Codex is a CLI, so "installed" means reachable on PATH rather than
+        // sitting at a known location.
+        SetupTarget::CodexUser | SetupTarget::CodexProject => {
+            match which_on_path("codex", os, env_var, exists) {
+                Some(path) => ToolInstallDetection {
+                    found: true,
+                    detail: format!("codex CLI at {}", display_path(&path)),
+                },
+                None => ToolInstallDetection {
+                    found: false,
+                    detail: "codex CLI not found on PATH".to_string(),
+                },
+            }
+        }
+        SetupTarget::ClaudeDesktop => {
+            let candidates = claude_install_candidates(os, env_var);
+            first_existing(&candidates, exists).map_or_else(
+                || ToolInstallDetection {
+                    found: false,
+                    detail: "Claude Desktop not found in its usual location".to_string(),
+                },
+                |path| ToolInstallDetection {
+                    found: true,
+                    detail: format!("Claude Desktop at {}", display_path(&path)),
+                },
+            )
+        }
+        SetupTarget::Cursor => {
+            let candidates = cursor_install_candidates(os, env_var);
+            first_existing(&candidates, exists).map_or_else(
+                || ToolInstallDetection {
+                    found: false,
+                    detail: "Cursor not found in its usual location".to_string(),
+                },
+                |path| ToolInstallDetection {
+                    found: true,
+                    detail: format!("Cursor at {}", display_path(&path)),
+                },
+            )
+        }
+    }
+}
+
+fn first_existing<E>(candidates: &[PathBuf], exists: &E) -> Option<PathBuf>
+where
+    E: Fn(&Path) -> bool,
+{
+    candidates.iter().find(|p| exists(p)).cloned()
+}
+
+fn claude_install_candidates<F>(os: &str, env_var: &F) -> Vec<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    match os {
+        "windows" => env_var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|local| {
+                vec![
+                    local.join("AnthropicClaude").join("claude.exe"),
+                    local.join("Programs").join("Claude").join("Claude.exe"),
+                ]
+            })
+            .unwrap_or_default(),
+        "macos" => vec![PathBuf::from("/Applications/Claude.app")],
+        _ => home_dir_for_os(os, env_var)
+            .map(|home| {
+                vec![
+                    PathBuf::from("/usr/bin/claude"),
+                    home.join(".local").join("bin").join("claude"),
+                ]
+            })
+            .unwrap_or_else(|| vec![PathBuf::from("/usr/bin/claude")]),
+    }
+}
+
+fn cursor_install_candidates<F>(os: &str, env_var: &F) -> Vec<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    match os {
+        "windows" => env_var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|local| vec![local.join("Programs").join("cursor").join("Cursor.exe")])
+            .unwrap_or_default(),
+        "macos" => vec![PathBuf::from("/Applications/Cursor.app")],
+        _ => vec![PathBuf::from("/usr/bin/cursor")],
+    }
+}
+
+/// Minimal PATH lookup. Windows needs the `.exe`/`.cmd` suffixes tried because
+/// a bare name never resolves there.
+fn which_on_path<F, E>(name: &str, os: &str, env_var: &F, exists: &E) -> Option<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+    E: Fn(&Path) -> bool,
+{
+    let raw = env_var("PATH")?;
+    let separator = if os == "windows" { ';' } else { ':' };
+    let suffixes: &[&str] = if os == "windows" {
+        &[".exe", ".cmd", ".bat", ""]
+    } else {
+        &[""]
+    };
+
+    raw.to_string_lossy()
+        .split(separator)
+        .filter(|dir| !dir.trim().is_empty())
+        .flat_map(|dir| {
+            suffixes
+                .iter()
+                .map(move |suffix| PathBuf::from(dir).join(format!("{name}{suffix}")))
+        })
+        .find(|candidate| exists(candidate))
 }
 
 fn detect_tool_config_path(target: SetupTarget, project_root: Option<&Path>) -> ToolPathDetection {
@@ -17777,6 +18192,73 @@ fn pulse_factor(started_at: std::time::Instant, health: DaemonHealth) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn back_retraces_the_click_path() {
+        // Controls -> Tools -> Settings should walk back the way it came,
+        // not jump straight home.
+        let mut nav = NavHistory::default();
+        let mut at = MainTab::Controls;
+        at = nav.navigate(at, MainTab::Tools);
+        at = nav.navigate(at, MainTab::Settings);
+        assert_eq!(at, MainTab::Settings);
+
+        at = nav.back();
+        assert_eq!(at, MainTab::Tools);
+        at = nav.back();
+        assert_eq!(at, MainTab::Controls);
+    }
+
+    #[test]
+    fn back_from_an_empty_trail_lands_on_controls() {
+        // Back must never be a dead button, however the screen was reached.
+        let mut nav = NavHistory::default();
+        assert_eq!(nav.back(), MainTab::Controls);
+    }
+
+    #[test]
+    fn reselecting_the_current_tab_records_nothing() {
+        // Otherwise clicking Settings twice would need two presses of Back.
+        let mut nav = NavHistory::default();
+        let at = nav.navigate(MainTab::Settings, MainTab::Settings);
+        assert_eq!(at, MainTab::Settings);
+        assert!(nav.is_empty());
+    }
+
+    #[test]
+    fn home_clears_the_trail() {
+        let mut nav = NavHistory::default();
+        let mut at = MainTab::Controls;
+        at = nav.navigate(at, MainTab::Tools);
+        at = nav.navigate(at, MainTab::Logs);
+        assert_eq!(at, MainTab::Logs);
+
+        assert_eq!(nav.home(), MainTab::Controls);
+        assert!(nav.is_empty());
+        // And Back from Controls stays put rather than re-entering the trail.
+        assert_eq!(nav.back(), MainTab::Controls);
+    }
+
+    #[test]
+    fn history_depth_is_bounded() {
+        // A long session bouncing between screens must not grow without bound.
+        let mut nav = NavHistory::default();
+        let mut at = MainTab::Controls;
+        for _ in 0..(NAV_HISTORY_LIMIT * 2) {
+            at = nav.navigate(at, MainTab::Tools);
+            at = nav.navigate(at, MainTab::Settings);
+        }
+        assert!(nav.stack.len() <= NAV_HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn peek_names_the_back_target() {
+        let mut nav = NavHistory::default();
+        let at = nav.navigate(MainTab::Controls, MainTab::Settings);
+        assert_eq!(at, MainTab::Settings);
+        assert_eq!(nav.peek(), MainTab::Controls);
+        assert_eq!(nav.peek().label(), "Solo Controls");
+    }
+
     fn arg_strings(args: Vec<std::ffi::OsString>) -> Vec<String> {
         args.into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -20280,6 +20762,61 @@ dtype = "f32"
             setup_wizard_step_state(false, false),
             SetupWizardStepState::Waiting
         );
+    }
+
+    #[test]
+    fn install_probe_finds_claude_desktop_on_windows() {
+        let detection = detect_tool_install_for_os(
+            SetupTarget::ClaudeDesktop,
+            "windows",
+            &env_lookup(&[("LOCALAPPDATA", r"C:\Users\Ada\AppData\Local")]),
+            &|path: &Path| {
+                path.to_string_lossy()
+                    .ends_with(r"AnthropicClaude\claude.exe")
+            },
+        );
+        assert!(detection.found, "detail was: {}", detection.detail);
+        assert!(detection.detail.contains("Claude Desktop at"));
+    }
+
+    #[test]
+    fn install_probe_reports_a_missing_client_plainly() {
+        // "Waiting for config" on a machine that never had Claude reads as a
+        // Solo fault; this is the row that says otherwise.
+        let detection = detect_tool_install_for_os(
+            SetupTarget::ClaudeDesktop,
+            "windows",
+            &env_lookup(&[("LOCALAPPDATA", r"C:\Users\Ada\AppData\Local")]),
+            &|_: &Path| false,
+        );
+        assert!(!detection.found);
+        assert!(detection.detail.contains("not found"));
+    }
+
+    #[test]
+    fn install_probe_resolves_codex_through_path() {
+        // Codex is a CLI, so installation means "on PATH", and Windows needs
+        // the .exe suffix tried.
+        let detection = detect_tool_install_for_os(
+            SetupTarget::CodexUser,
+            "windows",
+            &env_lookup(&[("PATH", r"C:\tools;C:\bin")]),
+            &|path: &Path| path.to_string_lossy() == r"C:\bin\codex.exe",
+        );
+        assert!(detection.found, "detail was: {}", detection.detail);
+        assert!(detection.detail.contains("codex CLI at"));
+    }
+
+    #[test]
+    fn install_probe_reports_codex_missing_from_path() {
+        let detection = detect_tool_install_for_os(
+            SetupTarget::CodexProject,
+            "linux",
+            &env_lookup(&[("PATH", "/usr/bin:/usr/local/bin")]),
+            &|_: &Path| false,
+        );
+        assert!(!detection.found);
+        assert!(detection.detail.contains("not found on PATH"));
     }
 
     #[test]

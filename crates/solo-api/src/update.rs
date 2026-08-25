@@ -35,10 +35,42 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Release listing for the canonical repository. Pinned rather than derived
-/// from Cargo's `repository` field: this decides what code gets executed on the
-/// user's machine, so it should not follow a fork's metadata.
+/// Release listing for the Solo Community repository.
+///
+/// Pinned rather than derived from Cargo's `repository` field for two reasons:
+/// this decides what code gets executed on the user's machine, so it must not
+/// follow a fork's metadata; and Community must only ever offer Community
+/// builds, never a release from another edition's repository.
 const RELEASES_URL: &str = "https://api.github.com/repos/CallMeJones/solo-community/releases";
+
+/// Asset-name fragments that mark a package as belonging to another edition.
+///
+/// Community releases currently publish only Community packages, so this is a
+/// guard rather than a filter that fires today: if an edition-specific asset is
+/// ever attached to a release in this repository, Community must not install
+/// it just because the extension matched.
+const NON_COMMUNITY_MARKERS: &[&str] = &["-pro-", "-team-", "-enterprise-", "-business-"];
+
+/// A release whose title marks it withdrawn. The repository has several
+/// ("Superseded: use Solo 0.12.0 Test 13", "[Superseded] ..."), and on Linux
+/// one of them is the newest release carrying a .deb — so without this the
+/// updater would offer a build the maintainer has explicitly retracted.
+fn is_superseded(release: &GhRelease) -> bool {
+    release
+        .name
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains("supersed")
+}
+
+/// Community packages only — see [`NON_COMMUNITY_MARKERS`].
+fn is_community_asset(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    !NON_COMMUNITY_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+}
 
 /// GitHub rejects API requests without a User-Agent.
 const USER_AGENT: &str = "solo-daemon-updater";
@@ -152,16 +184,16 @@ struct GhAsset {
 /// The installable package for this build's platform, if one is supported.
 #[cfg(target_os = "windows")]
 fn platform_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
-    assets
-        .iter()
-        .find(|a| a.name.ends_with(".exe") && a.name.contains("x86_64"))
+    assets.iter().find(|a| {
+        a.name.ends_with(".exe") && a.name.contains("x86_64") && is_community_asset(&a.name)
+    })
 }
 
 #[cfg(target_os = "linux")]
 fn platform_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
-    assets
-        .iter()
-        .find(|a| a.name.ends_with(".deb") && a.name.contains("amd64"))
+    assets.iter().find(|a| {
+        a.name.ends_with(".deb") && a.name.contains("amd64") && is_community_asset(&a.name)
+    })
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -195,10 +227,7 @@ fn status_cell() -> &'static Arc<RwLock<UpdateStatus>> {
 }
 
 pub fn current_status() -> UpdateStatus {
-    status_cell()
-        .read()
-        .map(|s| s.clone())
-        .unwrap_or_default()
+    status_cell().read().map(|s| s.clone()).unwrap_or_default()
 }
 
 fn set_status(next: UpdateStatus) {
@@ -250,7 +279,9 @@ async fn fetch_releases() -> Result<Vec<GhRelease>, String> {
         } else {
             ""
         };
-        return Err(format!("GitHub returned {status} for the release list.{hint}"));
+        return Err(format!(
+            "GitHub returned {status} for the release list.{hint}"
+        ));
     }
 
     response
@@ -265,7 +296,7 @@ fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) 
     let usable: Vec<(usize, &GhRelease, &GhAsset)> = releases
         .iter()
         .enumerate()
-        .filter(|(_, r)| !r.draft)
+        .filter(|(_, r)| !r.draft && !is_superseded(r))
         .filter_map(|(i, r)| platform_asset(&r.assets).map(|a| (i, r, a)))
         .collect();
 
@@ -282,7 +313,10 @@ fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) 
 
     let available = AvailableRelease {
         tag: release.tag_name.clone(),
-        name: release.name.clone().unwrap_or_else(|| release.tag_name.clone()),
+        name: release
+            .name
+            .clone()
+            .unwrap_or_else(|| release.tag_name.clone()),
         notes: release.body.clone().unwrap_or_default(),
         published_at: release.published_at.clone().unwrap_or_default(),
         prerelease: release.prerelease,
@@ -302,7 +336,10 @@ fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) 
         Some(i) if i <= candidate_idx => (
             Some(available),
             false,
-            format!("Running {}, the newest build for this platform.", release.tag_name),
+            format!(
+                "Running {}, the newest build for this platform.",
+                release.tag_name
+            ),
         ),
         Some(_) => {
             let note = format!("{} is available.", release.tag_name);
@@ -582,7 +619,13 @@ mod tests {
     }
 
     fn win(tag: &str) -> GhRelease {
-        release(tag, &[("SoloSetup-x86_64.exe", 42), ("SoloSetup-x86_64.exe.sha256", 1)])
+        release(
+            tag,
+            &[
+                ("SoloSetup-x86_64.exe", 42),
+                ("SoloSetup-x86_64.exe.sha256", 1),
+            ],
+        )
     }
 
     fn linux(tag: &str) -> GhRelease {
@@ -609,6 +652,48 @@ mod tests {
         } else {
             assert!(latest.is_none(), "unsupported platforms offer nothing");
         }
+    }
+
+    #[test]
+    fn superseded_releases_are_ignored() {
+        // The repository really does mark retracted builds this way, and on
+        // Linux the newest .deb-carrying release is one of them.
+        let mut retracted = if cfg!(target_os = "linux") {
+            linux("v0.12.0-linux-test.12")
+        } else {
+            win("v0.12.0-test.12")
+        };
+        retracted.name = Some("Superseded: use Solo 0.12.0 Test 13".to_string());
+        let good = if cfg!(target_os = "linux") {
+            linux("v0.12.0-linux-test.11")
+        } else {
+            win("v0.12.0-test.13")
+        };
+        let releases = vec![retracted, good];
+        let (latest, _, _) = evaluate(&releases);
+
+        if cfg!(any(target_os = "windows", target_os = "linux")) {
+            let latest = latest.expect("a release should be selected");
+            assert!(
+                !latest.tag.contains("test.12"),
+                "a superseded release must never be offered, got {}",
+                latest.tag
+            );
+        }
+    }
+
+    #[test]
+    fn non_community_assets_are_never_selected() {
+        // Guard: an edition-specific package sharing the platform extension
+        // must not be picked up just because the extension matched.
+        assert!(!is_community_asset("SoloSetup-pro-0.12.0-x86_64.exe"));
+        assert!(!is_community_asset(
+            "solo-0.12.0-team-ubuntu24.04-amd64.deb"
+        ));
+        assert!(is_community_asset("SoloSetup-0.12.0-test.13-x86_64.exe"));
+        assert!(is_community_asset(
+            "solo-0.12.0-test.13-ubuntu24.04-amd64.deb"
+        ));
     }
 
     #[test]

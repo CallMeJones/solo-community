@@ -11035,9 +11035,11 @@ async fn switch_steward_cadence_handler(
     }))
 }
 
-async fn update_check_handler(
-) -> Result<Json<crate::update::UpdateCheckResponse>, ApiError> {
-    crate::update::check().await.map(Json).map_err(ApiError::bad_gateway)
+async fn update_check_handler() -> Result<Json<crate::update::UpdateCheckResponse>, ApiError> {
+    crate::update::check()
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_gateway)
 }
 
 async fn update_status_handler() -> Json<crate::update::UpdateStatus> {

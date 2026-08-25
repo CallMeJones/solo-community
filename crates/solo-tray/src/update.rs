@@ -104,11 +104,7 @@ async fn read_error(response: reqwest::Response) -> String {
     let body = response.text().await.unwrap_or_default();
     let detail = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .map(str::to_string)
-        })
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
         .unwrap_or_else(|| body.chars().take(200).collect());
 
     if status.as_u16() == 404 {
@@ -206,9 +202,11 @@ pub fn launch_installer(installer: &Path) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn launch_installer(_installer: &Path) -> Result<(), String> {
-    Err("Installing without a prompt is not supported on this platform. \
+    Err(
+        "Installing without a prompt is not supported on this platform. \
          Install the downloaded package manually."
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Reveal the verified package for the platforms that install by hand.
