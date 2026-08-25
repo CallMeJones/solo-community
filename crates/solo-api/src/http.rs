@@ -616,6 +616,12 @@ pub fn router_with_host_routes(
             post(switch_steward_cadence_handler),
         )
         .route("/v1/runtime/restart", post(runtime_restart_handler))
+        // Self-update against GitHub releases. Operator-triggered only — see
+        // `crate::update` for why nothing here polls on a timer, and why the
+        // daemon stops at a verified file rather than running the installer.
+        .route("/v1/update/check", get(update_check_handler))
+        .route("/v1/update/download", post(update_download_handler))
+        .route("/v1/update/status", get(update_status_handler))
         // Operator-facing sanitized diagnostics for Solo Desktop. This
         // never accepts arbitrary paths; it only tails known files under
         // the daemon data dir.
@@ -11029,6 +11035,28 @@ async fn switch_steward_cadence_handler(
     }))
 }
 
+async fn update_check_handler(
+) -> Result<Json<crate::update::UpdateCheckResponse>, ApiError> {
+    crate::update::check().await.map(Json).map_err(ApiError::bad_gateway)
+}
+
+async fn update_status_handler() -> Json<crate::update::UpdateStatus> {
+    Json(crate::update::current_status())
+}
+
+/// Fetches and verifies the newest release package. Solo Controls polls
+/// `/v1/update/status` and takes over once the file is `ready` — the installer
+/// has to replace binaries this process is executing, so it cannot run here.
+async fn update_download_handler(
+    State(state): State<SoloHttpState>,
+) -> Result<Json<crate::update::UpdateDownloadResponse>, ApiError> {
+    let data_dir = state.registry.data_dir().to_path_buf();
+    crate::update::start_download(&data_dir)
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_gateway)
+}
+
 async fn runtime_restart_handler(
     State(state): State<SoloHttpState>,
 ) -> Result<Json<RuntimeRestartResponse>, ApiError> {
@@ -12950,6 +12978,15 @@ impl ApiError {
     fn internal(msg: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: msg.into(),
+        }
+    }
+    /// An upstream Solo depends on failed — currently only GitHub, during an
+    /// update check. Distinct from `internal` so the caller can tell "their
+    /// fault, retry later" from "our fault".
+    fn bad_gateway(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: msg.into(),
         }
     }

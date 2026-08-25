@@ -21,6 +21,7 @@ mod settings;
 mod single_instance;
 mod status;
 mod tray;
+mod update;
 mod window;
 
 use anyhow::{Context, Result, bail};

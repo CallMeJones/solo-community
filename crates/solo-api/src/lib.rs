@@ -47,6 +47,7 @@ pub mod mcp_progress;
 // `docs/dev-log/0136-v0.11.0-p4-impl.md`.
 pub mod mcp_notify;
 pub mod mcp_task;
+pub mod update;
 pub mod workspace_file_access;
 
 #[cfg(any(test, feature = "test-support"))]

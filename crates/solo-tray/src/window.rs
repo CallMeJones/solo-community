@@ -80,6 +80,12 @@ pub struct SoloTrayApp {
     tool_snapshot: ToolSnapshot,
     mcp_probe: McpProbeState,
     mcp_probe_rx: Option<Receiver<McpProbeResult>>,
+    update_flow: UpdateFlow,
+    update_check_rx: Option<Receiver<UpdateCheckResult>>,
+    update_status_rx: Option<Receiver<UpdateStatusResult>>,
+    /// Throttles the status poll to ~2 Hz; the UI repaints at 4 Hz and the
+    /// daemon has nothing new to say that fast.
+    update_status_last_poll: Option<std::time::Instant>,
     client_check: ClientCheckState,
     client_check_rx: Option<Receiver<ClientCheckResult>>,
     setup_doctor: SetupDoctorState,
@@ -264,6 +270,58 @@ struct ToolConfigRow {
     profile_route: ToolProfileRoute,
     detail: String,
     last_status: Option<ConnectedToolLastStatus>,
+}
+
+/// Where the Update button is in its two-step flow.
+///
+/// `Downloading` is entered as soon as the daemon accepts the request and left
+/// only by a terminal daemon stage, so the button stays disabled for the whole
+/// transfer rather than re-arming between status polls.
+#[derive(Debug, Clone)]
+enum UpdateFlow {
+    Idle,
+    Checking,
+    /// Checked and current — kept distinct from `Idle` so the window can say so
+    /// instead of silently doing nothing.
+    UpToDate {
+        note: String,
+        installed: String,
+    },
+    Available {
+        release: crate::update::AvailableRelease,
+        note: String,
+        installed: String,
+    },
+    Downloading {
+        tag: String,
+        downloaded: u64,
+        total: u64,
+        note: String,
+    },
+    Ready {
+        tag: String,
+        installer: std::path::PathBuf,
+        can_auto_install: bool,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+impl UpdateFlow {
+    fn is_busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Downloading { .. })
+    }
+}
+
+#[derive(Debug)]
+struct UpdateCheckResult {
+    result: Result<crate::update::UpdateCheck, String>,
+}
+
+#[derive(Debug)]
+struct UpdateStatusResult {
+    result: Result<crate::update::UpdateStatus, String>,
 }
 
 #[derive(Debug)]
@@ -2059,6 +2117,10 @@ impl SoloTrayApp {
             tool_snapshot,
             mcp_probe: McpProbeState::Idle,
             mcp_probe_rx: None,
+            update_flow: UpdateFlow::Idle,
+            update_check_rx: None,
+            update_status_rx: None,
+            update_status_last_poll: None,
             client_check: ClientCheckState::Idle,
             client_check_rx: None,
             setup_doctor: SetupDoctorState::Idle,
@@ -4234,6 +4296,227 @@ impl SoloTrayApp {
         });
     }
 
+    fn start_update_check(&mut self) {
+        if self.update_flow.is_busy() {
+            return;
+        }
+        let status_url = self.state.settings.status_url.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_check_rx = Some(rx);
+        self.update_flow = UpdateFlow::Checking;
+        tracing::info!(target: "solo::update", "operator requested an update check");
+        self.state.runtime_handle.spawn(async move {
+            let result = crate::update::check(status_url).await;
+            if let Err(err) = &result {
+                tracing::warn!(target: "solo::update", error = %err, "update check failed");
+            }
+            let _ = tx.send(UpdateCheckResult { result });
+        });
+    }
+
+    fn start_update_download(&mut self, release: &crate::update::AvailableRelease) {
+        if self.update_flow.is_busy() {
+            return;
+        }
+        let status_url = self.state.settings.status_url.clone();
+        let tag = release.tag.clone();
+        let total = release.asset_size;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_check_rx = Some(rx);
+        self.update_flow = UpdateFlow::Downloading {
+            tag: tag.clone(),
+            downloaded: 0,
+            total,
+            note: "Starting download".to_string(),
+        };
+        self.update_status_last_poll = None;
+
+        // Reuses the check channel: the POST only reports acceptance, and its
+        // failure has to land somewhere the UI already reads.
+        tracing::info!(target: "solo::update", tag = %tag, bytes = total, "operator requested a download");
+        self.state.runtime_handle.spawn(async move {
+            let result = crate::update::start_download(status_url).await.inspect_err(|err| {
+                tracing::warn!(target: "solo::update", error = %err, "download request rejected");
+            }).map(|()| {
+                crate::update::UpdateCheck {
+                    current_version: String::new(),
+                    current_ref: None,
+                    update_available: true,
+                    latest: None,
+                    note: String::new(),
+                }
+            });
+            let _ = tx.send(UpdateCheckResult { result });
+        });
+    }
+
+    /// Stop the daemon, hand the verified package to the installer, then quit.
+    ///
+    /// Order matters: the installer overwrites `solo.exe` and `solo-tray.exe`,
+    /// so the daemon has to be going down before Setup starts and Controls has
+    /// to exit right after handing off.
+    fn apply_downloaded_update(&mut self, installer: std::path::PathBuf, ctx: &egui::Context) {
+        let handle = self.state.daemon_handle.clone();
+        self.state.runtime_handle.spawn(async move {
+            handle.lock().await.request_quit();
+        });
+
+        tracing::info!(
+            target: "solo::update",
+            installer = %installer.display(),
+            "stopping Solo and handing off to the installer"
+        );
+        if let Err(err) = crate::update::launch_installer(&installer) {
+            tracing::error!(target: "solo::update", error = %err, "installer handoff failed");
+            self.update_flow = UpdateFlow::Failed { message: err };
+            return;
+        }
+        tracing::info!(target: "solo::update", "installer started; closing Solo Controls");
+        // `quitting` is load-bearing: the close handler otherwise cancels the
+        // close and minimises to the tray, which would leave solo-tray.exe
+        // running and holding the very binary Setup is about to replace.
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn poll_update_results(&mut self) {
+        if let Some(rx) = self.update_check_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(UpdateCheckResult { result }) => {
+                    self.update_check_rx = None;
+                    match result {
+                        // A download acceptance carries no release; leave the
+                        // Downloading state in place and let the status poll
+                        // drive it from here.
+                        Ok(check) if matches!(self.update_flow, UpdateFlow::Downloading { .. }) => {
+                            let _ = check;
+                        }
+                        Ok(check) => {
+                            let installed = installed_label(&check);
+                            self.update_flow = match (check.update_available, check.latest) {
+                                (true, Some(release)) => UpdateFlow::Available {
+                                    release,
+                                    note: check.note,
+                                    installed,
+                                },
+                                _ => UpdateFlow::UpToDate {
+                                    note: check.note,
+                                    installed,
+                                },
+                            };
+                        }
+                        Err(message) => {
+                            self.update_flow = UpdateFlow::Failed { message };
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_check_rx = None;
+                }
+            }
+        }
+
+        if let Some(rx) = self.update_status_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(UpdateStatusResult { result }) => {
+                    self.update_status_rx = None;
+                    match result {
+                        Ok(status) => self.absorb_update_status(status),
+                        Err(message) => {
+                            self.update_flow = UpdateFlow::Failed { message };
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_status_rx = None;
+                }
+            }
+        }
+
+        self.maybe_poll_update_status();
+    }
+
+    fn absorb_update_status(&mut self, status: crate::update::UpdateStatus) {
+        use crate::update::UpdateStage;
+
+        let tag = match &self.update_flow {
+            UpdateFlow::Downloading { tag, .. } => tag.clone(),
+            _ => String::new(),
+        };
+
+        match status.stage {
+            UpdateStage::Ready => tracing::info!(
+                target: "solo::update",
+                path = status.installer_path.as_deref().unwrap_or("<none>"),
+                "daemon reports the update is verified"
+            ),
+            UpdateStage::Failed => tracing::error!(
+                target: "solo::update",
+                error = status.error.as_deref().unwrap_or("unknown"),
+                "daemon reports the update failed"
+            ),
+            _ => {}
+        }
+
+        self.update_flow = match status.stage {
+            UpdateStage::Ready => match crate::update::installer_path(&status) {
+                Some(installer) => UpdateFlow::Ready {
+                    tag,
+                    installer,
+                    can_auto_install: cfg!(target_os = "windows"),
+                },
+                None => UpdateFlow::Failed {
+                    message: "Solo reported the update as ready but gave no file path."
+                        .to_string(),
+                },
+            },
+            UpdateStage::Failed => UpdateFlow::Failed {
+                message: status
+                    .error
+                    .unwrap_or_else(|| "The update failed.".to_string()),
+            },
+            // Idle means the daemon restarted mid-download and lost the job.
+            UpdateStage::Idle => UpdateFlow::Failed {
+                message: "Solo is no longer tracking this download. Check for updates again."
+                    .to_string(),
+            },
+            UpdateStage::Downloading | UpdateStage::Verifying | UpdateStage::Unknown => {
+                UpdateFlow::Downloading {
+                    tag,
+                    downloaded: status.downloaded_bytes,
+                    total: status.total_bytes,
+                    note: status.note,
+                }
+            }
+        };
+    }
+
+    fn maybe_poll_update_status(&mut self) {
+        if !matches!(self.update_flow, UpdateFlow::Downloading { .. }) {
+            return;
+        }
+        if self.update_status_rx.is_some() {
+            return;
+        }
+        let due = self
+            .update_status_last_poll
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(500));
+        if !due {
+            return;
+        }
+
+        self.update_status_last_poll = Some(std::time::Instant::now());
+        let status_url = self.state.settings.status_url.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_status_rx = Some(rx);
+        self.state.runtime_handle.spawn(async move {
+            let result = crate::update::poll_status(status_url).await;
+            let _ = tx.send(UpdateStatusResult { result });
+        });
+    }
+
     fn poll_client_check_result(&mut self) {
         let Some(rx) = self.client_check_rx.as_ref() else {
             return;
@@ -5399,6 +5682,158 @@ impl SoloTrayApp {
             });
     }
 
+    /// The update row: one button to check, a second to install what was found.
+    ///
+    /// `daemon_ready` gates it because the daemon does the fetching — Controls
+    /// only orchestrates. A disabled button with a reason beats a request that
+    /// fails with a connection error.
+    fn draw_update_controls(&mut self, ui: &mut egui::Ui, daemon_ready: bool) {
+        let dark_mode = ui.visuals().dark_mode;
+        let busy = self.update_flow.is_busy();
+        let mut download_request: Option<crate::update::AvailableRelease> = None;
+        let mut apply_request: Option<std::path::PathBuf> = None;
+        let mut reveal_request: Option<std::path::PathBuf> = None;
+
+        ui.horizontal(|ui| {
+            let check = ui.add_enabled(
+                daemon_ready && !busy,
+                egui::Button::new(if matches!(self.update_flow, UpdateFlow::Checking) {
+                    "Checking..."
+                } else {
+                    "Check for updates"
+                }),
+            );
+            if !daemon_ready {
+                check.clone().on_hover_text(
+                    "Start Solo first — the daemon performs the update check.",
+                );
+            }
+            if check.clicked() {
+                self.start_update_check();
+            }
+
+            match &self.update_flow {
+                UpdateFlow::Available { release, .. } => {
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::new(format!("Install {}", release.tag)),
+                        )
+                        .on_hover_text(if release.can_auto_install {
+                            "Download, verify, then install and restart Solo."
+                        } else {
+                            "Download and verify. This platform installs manually."
+                        })
+                        .clicked()
+                    {
+                        download_request = Some(release.clone());
+                    }
+                }
+                UpdateFlow::Ready {
+                    tag,
+                    installer,
+                    can_auto_install,
+                } => {
+                    if *can_auto_install {
+                        if ui
+                            .button(format!("Install {tag} and restart"))
+                            .on_hover_text("Solo will close, update, and reopen.")
+                            .clicked()
+                        {
+                            apply_request = Some(installer.clone());
+                        }
+                    } else if ui.button("Show download").clicked() {
+                        reveal_request = Some(installer.clone());
+                    }
+                }
+                _ => {}
+            }
+        });
+
+        match &self.update_flow {
+            UpdateFlow::Idle => {}
+            UpdateFlow::Checking => {
+                ui.label(
+                    RichText::new("Asking GitHub for the newest release...")
+                        .color(muted_text_color(dark_mode)),
+                );
+            }
+            UpdateFlow::UpToDate { note, installed } => {
+                ui.label(RichText::new(note).color(muted_text_color(dark_mode)));
+                ui.label(RichText::new(installed).color(muted_text_color(dark_mode)));
+            }
+            UpdateFlow::Available {
+                release,
+                note,
+                installed,
+            } => {
+                ui.label(RichText::new(note).strong());
+                ui.label(RichText::new(installed).color(muted_text_color(dark_mode)));
+                ui.label(
+                    RichText::new(format!(
+                        "{}{} - {} - {}",
+                        release.name,
+                        format_release_date(&release.published_at),
+                        release.asset_name,
+                        format_download_size(release.asset_size)
+                    ))
+                    .color(muted_text_color(dark_mode)),
+                );
+                if !release.html_url.is_empty() {
+                    ui.hyperlink_to("Release notes", &release.html_url);
+                }
+            }
+            UpdateFlow::Downloading {
+                downloaded,
+                total,
+                note,
+                ..
+            } => {
+                // Content-length can be missing, and a zero-width bar reads as
+                // "stuck"; fall back to an indeterminate-looking full bar.
+                let progress = if *total > 0 {
+                    (*downloaded as f32 / *total as f32).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .desired_width(280.0)
+                        .text(if *total > 0 {
+                            format!(
+                                "{} / {}",
+                                format_download_size(*downloaded),
+                                format_download_size(*total)
+                            )
+                        } else {
+                            format_download_size(*downloaded)
+                        }),
+                );
+                ui.label(RichText::new(note).color(muted_text_color(dark_mode)));
+            }
+            UpdateFlow::Ready { installer, .. } => {
+                ui.label(
+                    RichText::new(format!("Verified: {}", installer.display()))
+                        .color(muted_text_color(dark_mode)),
+                );
+            }
+            UpdateFlow::Failed { message } => {
+                ui.label(RichText::new(message).color(egui::Color32::from_rgb(220, 90, 90)));
+            }
+        }
+
+        if let Some(release) = download_request {
+            self.start_update_download(&release);
+        }
+        if let Some(installer) = apply_request {
+            let ctx = ui.ctx().clone();
+            self.apply_downloaded_update(installer, &ctx);
+        }
+        if let Some(installer) = reveal_request {
+            crate::update::reveal_in_file_manager(&installer);
+        }
+    }
+
     fn draw_control_window(&mut self, ui: &mut egui::Ui) {
         let status = self.status_snapshot();
         let daemon = self.daemon_snapshot();
@@ -5426,6 +5861,8 @@ impl SoloTrayApp {
                 self.active_tab = MainTab::Tools;
             }
         });
+        ui.add_space(8.0);
+        self.draw_update_controls(ui, daemon_ready_for_updates(&status));
         ui.add_space(12.0);
 
         egui::Grid::new("control_status_grid")
@@ -16994,6 +17431,7 @@ impl App for SoloTrayApp {
         self.poll_first_run_init_result();
         self.poll_setup_result();
         self.poll_mcp_probe_result();
+        self.poll_update_results();
         self.poll_client_check_result();
         self.poll_setup_doctor_result();
         self.poll_backup_result();
@@ -17237,6 +17675,47 @@ fn selected_sidebar_text_color(dark_mode: bool) -> egui::Color32 {
         egui::Color32::from_rgb(232, 255, 249)
     } else {
         egui::Color32::from_rgb(14, 54, 48)
+    }
+}
+
+/// "Installed 0.12.0 (v0.12.0-test.13)" — the tag matters as much as the
+/// version here, because the version alone repeats across test builds.
+fn installed_label(check: &crate::update::UpdateCheck) -> String {
+    match &check.current_ref {
+        Some(tag) if !tag.is_empty() => {
+            format!("Installed {} ({tag})", check.current_version)
+        }
+        _ => format!("Installed {} (no release tag)", check.current_version),
+    }
+}
+
+/// GitHub publishes RFC 3339; only the date is useful at this size. Returns a
+/// leading-space-prefixed fragment so it can be concatenated or vanish cleanly.
+fn format_release_date(published_at: &str) -> String {
+    match published_at.split('T').next() {
+        Some(date) if !date.is_empty() => format!(" ({date})"),
+        _ => String::new(),
+    }
+}
+
+/// The update endpoints live on the daemon, so the buttons only make sense once
+/// `/v1/status` is answering.
+fn daemon_ready_for_updates(status: &StatusSnapshot) -> bool {
+    matches!(status.health, DaemonHealth::Healthy)
+}
+
+/// Compact size for the update row. Deliberately local rather than a shared
+/// formatter: this only ever renders release-asset sizes.
+fn format_download_size(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes == 0 {
+        return "0 MB".to_string();
+    }
+    let mib = bytes as f64 / MIB;
+    if mib < 1.0 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{mib:.1} MB")
     }
 }
 

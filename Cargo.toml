@@ -167,7 +167,7 @@ rmcp = { version = "1.7", features = ["server", "transport-io"] }
 # `reqwest` for the Anthropic LLM HTTP backend (Y.3.b). rustls-tls
 # rather than native-tls so we don't pull in OpenSSL twice (rusqlite
 # already bundles it). `json` enables `.json()` serializers/parsers.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
 # JWT / OIDC validation. jsonwebtoken requires exactly one crypto backend;
