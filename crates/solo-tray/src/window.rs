@@ -20770,9 +20770,14 @@ dtype = "f32"
             SetupTarget::ClaudeDesktop,
             "windows",
             &env_lookup(&[("LOCALAPPDATA", r"C:\Users\Ada\AppData\Local")]),
+            // Match on components rather than a literal separator. These probes
+            // simulate Windows, but PathBuf joins with the *host* separator, so
+            // a backslash comparison passes here and fails on the Linux runner.
             &|path: &Path| {
-                path.to_string_lossy()
-                    .ends_with(r"AnthropicClaude\claude.exe")
+                path.file_name().and_then(|n| n.to_str()) == Some("claude.exe")
+                    && path
+                        .components()
+                        .any(|c| c.as_os_str() == "AnthropicClaude")
             },
         );
         assert!(detection.found, "detail was: {}", detection.detail);
@@ -20801,7 +20806,14 @@ dtype = "f32"
             SetupTarget::CodexUser,
             "windows",
             &env_lookup(&[("PATH", r"C:\tools;C:\bin")]),
-            &|path: &Path| path.to_string_lossy() == r"C:\bin\codex.exe",
+            // Separator-agnostic for the same reason as the Claude probe above:
+            // only the second PATH entry holds codex, and only as an .exe.
+            &|path: &Path| {
+                path.file_name().and_then(|n| n.to_str()) == Some("codex.exe")
+                    && path
+                        .parent()
+                        .is_some_and(|parent| parent.to_string_lossy().ends_with("bin"))
+            },
         );
         assert!(detection.found, "detail was: {}", detection.detail);
         assert!(detection.detail.contains("codex CLI at"));
