@@ -86,6 +86,9 @@ pub struct SoloTrayApp {
     /// Results of the per-row "Find install" probe, newest per target. Kept as
     /// a small vec rather than a map because SetupTarget is not Ord and there
     /// are four of them.
+    /// When the current download was requested, used to tell "the daemon has
+    /// not picked the job up yet" from "the daemon lost it".
+    update_download_started: Option<std::time::Instant>,
     tool_install_probes: Vec<(SetupTarget, ToolInstallDetection)>,
     nav_history: NavHistory,
     update_flow: UpdateFlow,
@@ -200,6 +203,11 @@ pub struct SoloTrayApp {
 /// How deep the back stack goes. Long enough that no realistic click path
 /// runs out, short enough that it never grows without bound.
 const NAV_HISTORY_LIMIT: usize = 32;
+
+/// How long the daemon may take to register a requested download before Solo
+/// Controls treats a still-idle status as a lost job. Generous because the
+/// request itself reaches GitHub first to re-resolve the release.
+const UPDATE_START_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Back stack for the main window.
 ///
@@ -2202,6 +2210,7 @@ impl SoloTrayApp {
             tool_snapshot,
             mcp_probe: McpProbeState::Idle,
             mcp_probe_rx: None,
+            update_download_started: None,
             tool_install_probes: Vec::new(),
             nav_history: NavHistory::default(),
             update_flow: UpdateFlow::Idle,
@@ -4437,6 +4446,7 @@ impl SoloTrayApp {
             note: "Starting download".to_string(),
         };
         self.update_status_last_poll = None;
+        self.update_download_started = Some(std::time::Instant::now());
 
         // Reuses the check channel: the POST only reports acceptance, and its
         // failure has to land somewhere the UI already reads.
@@ -4583,11 +4593,31 @@ impl SoloTrayApp {
                     .error
                     .unwrap_or_else(|| "The update failed.".to_string()),
             },
-            // Idle means the daemon restarted mid-download and lost the job.
-            UpdateStage::Idle => UpdateFlow::Failed {
-                message: "Solo is no longer tracking this download. Check for updates again."
-                    .to_string(),
-            },
+            // Idle is ambiguous. The POST that starts the download and the
+            // first status poll race, so Idle usually just means "not picked
+            // up yet" — reporting that as a failure flashed a red error on
+            // every download that then corrected itself a poll later. Only
+            // after a grace period does Idle actually mean the daemon
+            // restarted and lost the job.
+            UpdateStage::Idle => {
+                let stalled = self
+                    .update_download_started
+                    .is_none_or(|at| at.elapsed() > UPDATE_START_GRACE);
+                if stalled {
+                    UpdateFlow::Failed {
+                        message:
+                            "Solo is no longer tracking this download. Check for updates again."
+                                .to_string(),
+                    }
+                } else {
+                    UpdateFlow::Downloading {
+                        tag,
+                        downloaded: 0,
+                        total: 0,
+                        note: "Waiting for Solo to start the download".to_string(),
+                    }
+                }
+            }
             UpdateStage::Downloading | UpdateStage::Verifying | UpdateStage::Unknown => {
                 UpdateFlow::Downloading {
                     tag,

@@ -169,6 +169,22 @@ pub async fn poll_status(status_url: String) -> Result<UpdateStatus, String> {
         .map_err(|e| format!("Could not read the update status: {e}"))
 }
 
+/// Seconds the handoff waits before Setup starts, giving the daemon time to
+/// finish shutting down and Controls time to exit.
+#[cfg(target_os = "windows")]
+const INSTALLER_HANDOFF_DELAY_SECS: u32 = 4;
+
+/// The exact command line handed to `cmd.exe`. Split out so the quoting can be
+/// tested against a real path containing spaces without running an installer.
+#[cfg(target_os = "windows")]
+fn installer_command_line(installer: &Path, delay_secs: u32) -> String {
+    format!(
+        "/C timeout /T {delay_secs} /NOBREAK >nul & \"{}\" \
+         /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
+        installer.display()
+    )
+}
+
 /// Start the downloaded installer and let it replace Solo.
 ///
 /// The caller must have stopped the daemon first. Even so the handoff waits a
@@ -178,20 +194,29 @@ pub async fn poll_status(status_url: String) -> Result<UpdateStatus, String> {
 /// back afterwards.
 #[cfg(target_os = "windows")]
 pub fn launch_installer(installer: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
     if !installer.is_file() {
         return Err(format!("{} is not there any more.", installer.display()));
     }
 
-    let script = format!(
-        "timeout /T 4 /NOBREAK >nul & start \"\" /B \"{}\" \
-         /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
-        installer.display()
-    );
+    // `raw_arg`, not `args`. Rust quotes arguments by the MSVCRT rules that
+    // CommandLineToArgvW understands, but cmd.exe does not parse its command
+    // line that way — passing a script containing quotes through `args` mangled
+    // them, and Setup was invoked with a broken path ("Windows cannot find
+    // '\\'"). raw_arg hands cmd the line verbatim so the quoting is ours.
+    //
+    // The line deliberately does not begin with a quote: cmd strips the first
+    // and last quote of the string after /C when it does, which would break the
+    // quoted installer path.
+    //
+    // No `start` wrapper either — the spawned cmd already outlives this process,
+    // and `start` added another layer of quoting for nothing.
+    let command_line = installer_command_line(installer, INSTALLER_HANDOFF_DELAY_SECS);
 
     Command::new("cmd.exe")
-        .args(["/C", &script])
+        .raw_arg(&command_line)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -227,6 +252,55 @@ pub fn installer_path(status: &UpdateStatus) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the real handoff mechanism against a harmless executable sitting in
+    /// a directory whose name contains spaces — the shape that broke before.
+    /// If cmd.exe mis-parses the quoting, the child exits non-zero and this
+    /// fails instead of a user seeing "Windows cannot find".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn installer_handoff_survives_a_path_with_spaces() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let dir = std::env::temp_dir().join("solo update handoff test");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // `where.exe` is always present and exits 0 for a query it can answer.
+        let stand_in = dir.join("Solo Setup Stand In.exe");
+        std::fs::copy(r"C:\Windows\System32\where.exe", &stand_in).expect("copy stand-in");
+
+        // Same construction as the real handoff, without the delay or the
+        // Setup-specific switches the stand-in would reject.
+        let line = format!("/C \"{}\" /?", stand_in.display());
+        let status = Command::new("cmd.exe")
+            .raw_arg(&line)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn cmd");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            status.success(),
+            "cmd could not run a quoted path containing spaces: {line}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn installer_command_line_quotes_the_path_without_leading_quote() {
+        let line = installer_command_line(Path::new(r"C:\Program Files\SoloSetup.exe"), 4);
+        // cmd strips the outer pair when the string after /C starts with a
+        // quote, which would break the quoted installer path.
+        assert!(line.starts_with("/C timeout"), "line was: {line}");
+        assert!(
+            line.contains(r#""C:\Program Files\SoloSetup.exe""#),
+            "line was: {line}"
+        );
+        assert!(line.contains("/VERYSILENT"));
+        assert!(line.contains("/CLOSEAPPLICATIONS"));
+    }
 
     #[test]
     fn base_url_strips_the_status_suffix() {
