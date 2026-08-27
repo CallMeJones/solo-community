@@ -5799,12 +5799,17 @@ impl SoloTrayApp {
         // false), the panel never re-rendered. The OS itself handles
         // "is the user actually looking at this" via the minimise
         // state; we don't need to gate render on it.
-        let dark_mode = ctx.style().visuals.dark_mode;
+        // Take the fill from the active visuals rather than calling
+        // `content_fill(dark_mode)`. That helper only knows dark-vs-light, so it
+        // painted the neutral grey straight over `panel_fill` — which is where
+        // themes that are not simply "dark" put their surface. Dune reached the
+        // buttons, borders and text and left the page behind them grey.
+        let panel_fill = ctx.style().visuals.panel_fill;
 
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(content_fill(dark_mode))
+                    .fill(panel_fill)
                     .inner_margin(egui::Margin::symmetric(18, 16)),
             )
             .show(ctx, |ui| {
