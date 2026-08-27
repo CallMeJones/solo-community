@@ -120,6 +120,9 @@ pub enum Theme {
     /// Match the system's dark/light preference (best-effort; egui
     /// only knows what eframe tells it).
     System,
+    /// Warm near-black with spice copper, matching Solo Desktop's default.
+    /// Rendered as a dark theme with the palette overlaid — see `dune_visuals`.
+    Dune,
 }
 
 impl Default for Settings {

@@ -3814,7 +3814,8 @@ impl SoloTrayApp {
             tray::MENU_TOGGLE_THEME => {
                 self.state.settings.theme = match self.state.settings.theme {
                     Theme::Dark => Theme::Light,
-                    Theme::Light | Theme::System => Theme::Dark,
+                    Theme::Light => Theme::Dune,
+                    Theme::Dune | Theme::System => Theme::Dark,
                 };
                 self.state.settings.save(&self.state.settings_path);
                 apply_theme(ctx, self.state.settings.theme);
@@ -9152,6 +9153,7 @@ impl SoloTrayApp {
                         (Theme::System, "System"),
                         (Theme::Dark, "Dark"),
                         (Theme::Light, "Light"),
+                        (Theme::Dune, "Dune"),
                     ] {
                         let selected = self.state.settings.theme == theme;
                         if ui.selectable_label(selected, label).clicked() && !selected {
@@ -17993,21 +17995,31 @@ fn health_label(health: DaemonHealth, dark_mode: bool) -> RichText {
 /// Light and dark both get Solo-specific styling, and `System` keeps
 /// eframe's OS theme detection while still using those tuned palettes.
 fn apply_theme(ctx: &Context, theme: Theme) {
-    ctx.style_mut_of(egui::Theme::Dark, |style| apply_solo_style(style, true));
+    // Dune is a dark theme with its palette overlaid, so it is installed into
+    // the Dark slot and selected by asking egui for Dark. Keeping it out of the
+    // Light slot means a Dune user whose OS flips to light does not get a
+    // half-applied warm palette on a white background.
+    let dune = theme == Theme::Dune;
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
+        apply_solo_style(style, true, dune);
+    });
     ctx.style_mut_of(egui::Theme::Light, |style| {
-        apply_solo_style(style, false);
+        apply_solo_style(style, false, false);
     });
 
     let preference = match theme {
-        Theme::Dark => egui::ThemePreference::Dark,
+        Theme::Dark | Theme::Dune => egui::ThemePreference::Dark,
         Theme::Light => egui::ThemePreference::Light,
         Theme::System => egui::ThemePreference::System,
     };
     ctx.set_theme(preference);
 }
 
-fn apply_solo_style(style: &mut egui::Style, dark_mode: bool) {
+fn apply_solo_style(style: &mut egui::Style, dark_mode: bool, dune: bool) {
     style.visuals = solo_visuals(dark_mode);
+    if dune {
+        apply_dune_visuals(&mut style.visuals);
+    }
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
     style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.interact_size = egui::vec2(40.0, 24.0);
@@ -18097,6 +18109,61 @@ fn accent_color(dark_mode: bool) -> egui::Color32 {
     } else {
         egui::Color32::from_rgb(0, 119, 101)
     }
+}
+
+/// Repaint the dark visuals in Solo Desktop's Dune palette.
+///
+/// An overlay rather than a third branch through every colour helper: those all
+/// take `dark_mode: bool`, and threading a third state through them would touch
+/// every one for a palette that differs only in its surfaces and accent.
+fn apply_dune_visuals(visuals: &mut egui::Visuals) {
+    const VOID: egui::Color32 = egui::Color32::from_rgb(8, 6, 4);
+    const NIGHT: egui::Color32 = egui::Color32::from_rgb(18, 13, 9);
+    const STONE: egui::Color32 = egui::Color32::from_rgb(29, 21, 15);
+    const RAISED: egui::Color32 = egui::Color32::from_rgb(50, 34, 21);
+    const CHIP: egui::Color32 = egui::Color32::from_rgb(92, 56, 28);
+    const BORDER: egui::Color32 = egui::Color32::from_rgb(74, 55, 33);
+    const BORDER_STRONG: egui::Color32 = egui::Color32::from_rgb(140, 98, 47);
+    const SAND: egui::Color32 = egui::Color32::from_rgb(247, 234, 209);
+    const MUTED: egui::Color32 = egui::Color32::from_rgb(191, 169, 138);
+    const SPICE: egui::Color32 = egui::Color32::from_rgb(210, 138, 58);
+    const SPICE_BRIGHT: egui::Color32 = egui::Color32::from_rgb(242, 179, 93);
+
+    visuals.panel_fill = NIGHT;
+    visuals.window_fill = STONE;
+    visuals.faint_bg_color = STONE;
+    visuals.extreme_bg_color = VOID;
+    visuals.code_bg_color = STONE;
+    visuals.window_stroke = egui::Stroke::new(1.0_f32, BORDER);
+    visuals.hyperlink_color = SPICE_BRIGHT;
+    visuals.warn_fg_color = SPICE_BRIGHT;
+    visuals.selection.bg_fill = CHIP;
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, SPICE);
+
+    visuals.widgets.noninteractive.bg_fill = NIGHT;
+    visuals.widgets.noninteractive.weak_bg_fill = NIGHT;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, MUTED);
+
+    visuals.widgets.inactive.bg_fill = RAISED;
+    visuals.widgets.inactive.weak_bg_fill = RAISED;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, SAND);
+
+    visuals.widgets.hovered.bg_fill = CHIP;
+    visuals.widgets.hovered.weak_bg_fill = CHIP;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, BORDER_STRONG);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, SAND);
+
+    visuals.widgets.active.bg_fill = SPICE;
+    visuals.widgets.active.weak_bg_fill = SPICE;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, SPICE_BRIGHT);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, VOID);
+
+    visuals.widgets.open.bg_fill = RAISED;
+    visuals.widgets.open.weak_bg_fill = RAISED;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, BORDER_STRONG);
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0_f32, SAND);
 }
 
 fn content_fill(dark_mode: bool) -> egui::Color32 {
