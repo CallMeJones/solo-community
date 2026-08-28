@@ -352,16 +352,60 @@ fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) 
              Updating would replace it with a published release."
                 .to_string(),
         ),
-        None => (
-            Some(available),
-            true,
-            format!(
-                "Running {}, which is not among the recent releases. {} is the newest published build.",
-                current_ref.unwrap_or("an untagged build"),
-                release.tag_name
+        // The ref names no release. That is the normal shape for an official
+        // build: the release workflow is dispatched from a branch, so the ref
+        // baked in is `main`, and the tag is cut afterwards — often at a later
+        // commit than the binaries, so comparing commits does not settle it
+        // either. Fall back to the version the release's own package advertises.
+        None => match asset_version(&asset.name) {
+            Some(offered) if offered == solo_core::build_info::version() => (
+                Some(available),
+                false,
+                format!(
+                    "Running {}, the same version as {}.",
+                    solo_core::build_info::version(),
+                    release.tag_name
+                ),
             ),
-        ),
+            Some(offered) => (
+                Some(available),
+                true,
+                format!(
+                    "Running {}; {} offers {}.",
+                    solo_core::build_info::version(),
+                    release.tag_name,
+                    offered
+                ),
+            ),
+            None => (
+                Some(available),
+                true,
+                format!(
+                    "Running {}, which is not among the recent releases. {} is the newest published build.",
+                    current_ref.unwrap_or("an untagged build"),
+                    release.tag_name
+                ),
+            ),
+        },
     }
+}
+
+/// The version a release package advertises in its own file name.
+///
+/// Used only when the running build's ref matches no release tag. Official
+/// builds are dispatched from a branch, so they carry `main` as their ref and
+/// can never match one; without this they were offered the newest release
+/// forever, including the release they were already running.
+fn asset_version(asset_name: &str) -> Option<String> {
+    let stem = asset_name
+        .strip_prefix("SoloSetup-")
+        .and_then(|rest| rest.strip_suffix("-x86_64.exe"))
+        .or_else(|| {
+            asset_name
+                .strip_prefix("solo-")
+                .and_then(|rest| rest.strip_suffix("-ubuntu24.04-amd64.deb"))
+        })?;
+    (!stem.is_empty()).then(|| stem.to_string())
 }
 
 pub async fn check() -> Result<UpdateCheckResponse, String> {
@@ -708,6 +752,51 @@ mod tests {
                 latest.expect("a release should be selected").tag,
                 "v0.12.0-test.13"
             );
+        }
+    }
+
+    #[test]
+    fn asset_version_reads_both_platform_names() {
+        assert_eq!(
+            asset_version("SoloSetup-0.12.0-x86_64.exe").as_deref(),
+            Some("0.12.0")
+        );
+        assert_eq!(
+            asset_version("solo-0.12.0-ubuntu24.04-amd64.deb").as_deref(),
+            Some("0.12.0")
+        );
+        // Test packages carry the qualifier, so they compare unequal to a plain
+        // crate version — which is correct, they are different builds.
+        assert_eq!(
+            asset_version("SoloSetup-0.12.0-test.16-x86_64.exe").as_deref(),
+            Some("0.12.0-test.16")
+        );
+        assert_eq!(asset_version("SHA256SUMS.txt"), None);
+    }
+
+    #[test]
+    fn an_official_build_on_the_newest_release_is_not_offered_it_again() {
+        // Official builds are dispatched from a branch, so their ref is `main`
+        // and matches no tag. Before the version fallback they were offered the
+        // release they were already running, over and over.
+        let asset = if cfg!(target_os = "windows") {
+            format!("SoloSetup-{}-x86_64.exe", env!("CARGO_PKG_VERSION"))
+        } else {
+            format!("solo-{}-ubuntu24.04-amd64.deb", env!("CARGO_PKG_VERSION"))
+        };
+        let releases = vec![release(
+            "v0.12.0-community.1",
+            &[(asset.as_str(), 42), (&format!("{asset}.sha256"), 1)],
+        )];
+        let (latest, available, note) = evaluate(&releases);
+
+        if cfg!(any(target_os = "windows", target_os = "linux")) {
+            assert!(latest.is_some());
+            // Only meaningful when the running build has no matching tag, which
+            // is the case in a test binary.
+            if solo_core::build_info::build_ref().is_none_or(|r| r != "v0.12.0-community.1") {
+                assert!(!available, "should not offer the running version: {note}");
+            }
         }
     }
 
