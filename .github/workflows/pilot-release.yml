@@ -25,7 +25,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      PILOT_VERSION: '0.12.0'
+      PILOT_VERSION: '0.12.1'
       PILOT_TARGET: x86_64-pc-windows-msvc
       PILOT_ARTIFACT_DIR: ${{ github.workspace }}/pilot-artifacts
 
@@ -51,7 +51,7 @@ jobs:
             throw "Core candidate checkout is not clean:`n$($dirty -join [Environment]::NewLine)"
           }
           foreach ($required in @(
-            'docs/releases/v0.12.0.md',
+            "docs/releases/v${env:PILOT_VERSION}.md",
             'apps/web/package-lock.json',
             'crates/solo-api/assets/solo-web/index.html'
           )) {
@@ -190,7 +190,8 @@ jobs:
           $extractDir = Join-Path $env:RUNNER_TEMP 'solo-cli-zip-smoke'
           Expand-Archive -LiteralPath $cliZip -DestinationPath $extractDir
           $zipVersion = (& (Join-Path $extractDir 'solo.exe') --version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $zipVersion -notmatch '^solo 0\.12\.0(?:\+[0-9A-Za-z.-]+)?$') {
+          $expectedVersion = '^solo ' + [regex]::Escape($env:PILOT_VERSION) + '(?:\+[0-9A-Za-z.-]+)?$'
+          if ($LASTEXITCODE -ne 0 -or $zipVersion -notmatch $expectedVersion) {
             throw "Packaged CLI has the wrong version: $zipVersion"
           }
           & $env:PILOT_ISCC "/DAppVersion=$env:PILOT_VERSION" "/DSourceDir=$releaseDir" "/DOutputDir=$env:PILOT_ARTIFACT_DIR" 'installer/windows/SoloSetup.iss'
@@ -374,8 +375,8 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
-            ${{ github.workspace }}/pilot-artifacts/SoloSetup-0.12.0-x86_64.exe
-            ${{ github.workspace }}/pilot-artifacts/solo-cli-0.12.0-x86_64-pc-windows-msvc.zip
+            ${{ github.workspace }}/pilot-artifacts/SoloSetup-${{ env.PILOT_VERSION }}-x86_64.exe
+            ${{ github.workspace }}/pilot-artifacts/solo-cli-${{ env.PILOT_VERSION }}-${{ env.PILOT_TARGET }}.zip
 
       - name: Save attestation bundle and final checksums
         shell: pwsh
