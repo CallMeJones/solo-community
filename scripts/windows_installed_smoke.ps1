@@ -5,6 +5,9 @@ param(
     [string]$DataDir = '',
     [int]$Port = 0,
     [string]$Passphrase = 'solo-installed-smoke-passphrase',
+    # Defaults to the workspace version so a release bump does not have to be
+    # mirrored here; callers that pin a candidate can still pass it explicitly.
+    [string]$ExpectedVersion = '',
     [int]$ExpectedToolCount = 39,
     [int]$TimeoutSeconds = 30,
     [switch]$AllowDestructiveExistingTestDataDir,
@@ -14,6 +17,19 @@ param(
     [switch]$DesktopClickSmoke,
     [int]$DesktopClickSmokeTimeoutSeconds = 20
 )
+
+if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+    $manifest = Join-Path $PSScriptRoot '..\Cargo.toml'
+    if (Test-Path -LiteralPath $manifest) {
+        $line = Select-String -LiteralPath $manifest -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1
+        if ($line) { $ExpectedVersion = $line.Matches[0].Groups[1].Value }
+    }
+    if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        throw 'Could not resolve the expected version; pass -ExpectedVersion explicitly.'
+    }
+}
+
 
 $ErrorActionPreference = 'Stop'
 
@@ -167,8 +183,9 @@ function Assert-InstalledBinaryVersion {
     }
     $text = ($output -join ' ').Trim()
     $versionToken = @($text -split '\s+')[-1]
-    if ($versionToken -notmatch '^0\.12\.0(?:\+[0-9A-Za-z.-]+)?$') {
-        throw "$Label semantic version must be exactly 0.12.0 (optional build metadata allowed); got '$text'"
+    $versionPattern = '^' + [regex]::Escape($ExpectedVersion) + '(?:\+[0-9A-Za-z.-]+)?$'
+    if ($versionToken -notmatch $versionPattern) {
+        throw "$Label semantic version must be exactly $ExpectedVersion (optional build metadata allowed); got '$text'"
     }
     Write-Host "$Label version ok: $text"
 }
@@ -814,8 +831,8 @@ $restoreExpectedContent = $null
 $documentLifecycle = $null
 try {
     $status = Wait-ForStatus -BaseUrl $baseUrl -TimeoutSeconds $TimeoutSeconds -DaemonProcess $daemon
-    if ([string]$status.build.version -ne '0.12.0') {
-        throw "Connected daemon semantic version must be exactly 0.12.0; got '$($status.build.version)'"
+    if ([string]$status.build.version -ne $ExpectedVersion) {
+        throw "Connected daemon semantic version must be exactly $ExpectedVersion; got '$($status.build.version)'"
     }
     if ([string]$status.version -ne [string]$status.build.version_with_build) {
         throw "Status version '$($status.version)' does not match build.version_with_build '$($status.build.version_with_build)'"

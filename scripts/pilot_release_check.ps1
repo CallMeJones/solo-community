@@ -97,12 +97,16 @@ $web = Resolve-ExistingDirectory -Path (Join-Path $core 'apps\web') -Label 'Solo
 Write-Step 'Verify pinned pilot branches and clean worktrees'
 $repositories = @(Get-RepositoryState -Path $core -Name 'solo-community')
 
+# Read the version rather than assert a literal one. Pinning it here meant a
+# release bump failed this check before it could fail anything real.
 $cargoToml = Get-Content -Raw -LiteralPath (Join-Path $core 'Cargo.toml')
-if ($cargoToml -notmatch '(?m)^version\s*=\s*"0\.12\.0"\s*$') {
-    throw 'Solo Core workspace version is not 0.12.0'
+if ($cargoToml -notmatch '(?m)^version\s*=\s*"([^"]+)"\s*$') {
+    throw 'Could not read the Solo Core workspace version from Cargo.toml'
 }
-if (!(Test-Path -LiteralPath (Join-Path $core 'docs\releases\v0.12.0.md') -PathType Leaf)) {
-    throw 'docs/releases/v0.12.0.md is missing'
+$coreVersion = $Matches[1]
+$releaseNotes = Join-Path $core "docs\releases\v$coreVersion.md"
+if (!(Test-Path -LiteralPath $releaseNotes -PathType Leaf)) {
+    throw "docs/releases/v$coreVersion.md is missing"
 }
 
 if (!$SkipTests) {
@@ -174,7 +178,7 @@ $manifest = [ordered]@{
     product_scope       = 'windows-community-monorepo'
     excluded_components = @('remote-document-upload-required-path')
     repositories        = $repositories
-    core_version        = '0.12.0'
+    core_version        = $coreVersion
     web_tree_sha256     = $webDigest
     embedded_web_sha256 = $embeddedDigest
     web_provenance      = $webProvenance
