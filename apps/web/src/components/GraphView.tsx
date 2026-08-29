@@ -4,6 +4,7 @@
 
 import {
   lazy,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -14,6 +15,7 @@ import {
 import { useGraphData } from '../hooks/useGraphData';
 import { useGraphStore } from '../store/graphStore';
 import { NODE_KIND_SIZES } from '../lib/nodeKindTheme';
+import { withAlpha } from '../lib/nodePalettes';
 import {
   useActiveTheme,
   useLinkKindColors,
@@ -76,26 +78,90 @@ function graphLinkWidth(link: ForceGraphLink): number {
 }
 
 /**
- * Particles per edge, weighted so the strongest relationships read as the
- * busiest. Returns 0 wholesale when effects are off — force-graph skips the
- * per-frame particle work entirely at 0, which is the point of the toggle.
+ * Roughly how many particles the 2D canvas can animate before the render loop
+ * stops being free. Every particle is drawn every frame, forever — unlike the
+ * force layout, this work never settles, so it is the one effect that has to be
+ * budgeted against graph size rather than switched on flat.
  */
-function graphLinkParticleCount(link: ForceGraphLink, effects: boolean): number {
+const PARTICLE_BUDGET = 260;
+
+/**
+ * Particles per edge, weighted so the strongest relationships read as the
+ * busiest, then thinned to keep the total near [`PARTICLE_BUDGET`].
+ *
+ * Returns 0 wholesale when effects are off — force-graph skips the per-frame
+ * particle work entirely at 0, which is the point of the toggle.
+ */
+function graphLinkParticleCount(link: ForceGraphLink, effects: boolean, linkCount: number): number {
   if (!effects) return 0;
-  switch (link.kind) {
-    case 'triple':
-      return 3;
-    case 'cluster_member':
-      return 2;
-    case 'document_chunk':
-      return 2;
-    case 'semantic':
-      return 1;
-  }
+  const weight = link.kind === 'triple' ? 3 : link.kind === 'semantic' ? 1 : 2;
+  if (linkCount <= 0) return weight;
+
+  // Average weight is ~2, so this is the fraction of edges that can carry one.
+  const share = PARTICLE_BUDGET / (linkCount * 2);
+  if (share >= 1) return weight;
+  // Below budget, keep particles only on the strongest edges and only on a
+  // deterministic subset of them, so the flow still reads without every edge
+  // paying for it. linkSeed is stable, so the chosen subset does not flicker.
+  if (link.kind !== 'triple') return 0;
+  return linkSeed(link) < share * 2 ? 1 : 0;
 }
 
 function graphLinkParticleWidth(link: ForceGraphLink): number {
   return link.kind === 'triple' ? 2.8 : 2;
+}
+
+/**
+ * Above this many nodes the 3D view trades sphere smoothness for frame time.
+ * Chosen to sit under a realistic library rather than a demo one.
+ */
+const LARGE_GRAPH_NODES = 250;
+
+/**
+ * Fraction of the canvas resolution the 3D bloom is computed at. Halving each
+ * axis quarters the pixels the blur mips touch.
+ */
+const BLOOM_RESOLUTION_SCALE = 0.5;
+
+/** How far the halo extends past the node, as a multiple of its radius. */
+const GLOW_SPREAD = 2.6;
+
+/** Pixel size of the cached halo. Soft edges tolerate being scaled. */
+const GLOW_SPRITE_PX = 96;
+
+/**
+ * One pre-rendered halo per colour.
+ *
+ * There are five node kinds, so this settles at five small canvases no matter
+ * how large the graph is, and each frame becomes a `drawImage` per node rather
+ * than a fresh gaussian blur.
+ */
+const glowSprites = new Map<string, HTMLCanvasElement | null>();
+
+function glowSprite(color: string): HTMLCanvasElement | null {
+  const cached = glowSprites.get(color);
+  if (cached !== undefined) return cached;
+
+  let sprite: HTMLCanvasElement | null = null;
+  if (typeof document !== 'undefined') {
+    const canvas = document.createElement('canvas');
+    canvas.width = GLOW_SPRITE_PX;
+    canvas.height = GLOW_SPRITE_PX;
+    const g = canvas.getContext('2d');
+    if (g) {
+      const c = GLOW_SPRITE_PX / 2;
+      const gradient = g.createRadialGradient(c, c, 0, c, c, c);
+      // Opaque core, then a fast falloff — a linear fade reads as a flat disc.
+      gradient.addColorStop(0, withAlpha(color, 0.55));
+      gradient.addColorStop(1 / GLOW_SPREAD, withAlpha(color, 0.28));
+      gradient.addColorStop(1, withAlpha(color, 0));
+      g.fillStyle = gradient;
+      g.fillRect(0, 0, GLOW_SPRITE_PX, GLOW_SPRITE_PX);
+      sprite = canvas;
+    }
+  }
+  glowSprites.set(color, sprite);
+  return sprite;
 }
 
 /**
@@ -157,7 +223,6 @@ export function GraphView() {
   const linkColors = useLinkKindColors();
   const particleColors = useParticleColors();
   const effects = useThemeStore((s) => s.effects);
-  const graphLinkColor = (link: ForceGraphLink) => linkColors[link.kind];
 
   // Container ref for sizing — ResizeObserver-backed so dimensions track
   // the actual painted canvas area, not a stale first-render snapshot.
@@ -195,6 +260,13 @@ export function GraphView() {
 
   const { width, height } = dimensions;
 
+  // A fresh object literal here would be a new `graphData` prop on every
+  // render, and force-graph re-ingests the whole graph when that identity
+  // changes — reheating the layout each time the status strip or a store value
+  // ticks. `filtered` is already memoised; this keeps the wrapper stable too.
+  const graphData = useMemo(() => ({ nodes: filtered.nodes, links: filtered.links }), [filtered]);
+  const linkCount = filtered.links.length;
+
   // 3D bloom. The 2D view gets its glow from a blurred canvas pass, which has
   // no equivalent in WebGL — there, glow is a post-processing stage on the
   // renderer. react-force-graph-3d exposes its EffectComposer, so an
@@ -224,8 +296,15 @@ export function GraphView() {
       void import('three/examples/jsm/postprocessing/UnrealBloomPass.js').then(
         ({ UnrealBloomPass }) => {
           if (cancelled) return;
+          // Half resolution. UnrealBloom runs a bright-pass plus five blur
+          // mips every frame, so its cost scales with the pixel count — and a
+          // glow is the one effect that loses nothing to being blurred at lower
+          // resolution. Full-res bloom cost about five times the frame rate.
           const pass = new UnrealBloomPass(
-            { x: width || 1, y: height || 1 },
+            {
+              x: Math.max(1, Math.round((width || 1) * BLOOM_RESOLUTION_SCALE)),
+              y: Math.max(1, Math.round((height || 1) * BLOOM_RESOLUTION_SCALE)),
+            },
             bloom.strength,
             bloom.radius,
             bloom.threshold,
@@ -259,6 +338,20 @@ export function GraphView() {
     };
   }, [viewMode, effects, palette.bloom, width, height]);
 
+  // Accessors are memoised because force-graph reconfigures itself whenever one
+  // changes identity; recreating them each render made every unrelated re-render
+  // touch the renderer.
+  const graphLinkColor = useCallback((link: ForceGraphLink) => linkColors[link.kind], [linkColors]);
+  const particleCount = useCallback(
+    (link: ForceGraphLink) => graphLinkParticleCount(link, effects, linkCount),
+    [effects, linkCount],
+  );
+  const particleColor = useCallback(
+    (link: ForceGraphLink) => particleColors[link.kind],
+    [particleColors],
+  );
+  const nodeColorFor = useCallback((node: ForceGraphNode) => nodeColors[node.kind], [nodeColors]);
+
   // Shared node-paint logic for 2D.
   const nodeCanvasObject = (
     node: ForceGraphNode,
@@ -277,22 +370,20 @@ export function GraphView() {
     const size = isSelected ? baseSize * 1.6 : baseSize;
     const color = nodeColors[node.kind];
 
-    // Glow pass. Canvas shadowBlur is measured in device pixels and ignores the
-    // current transform, so it is scaled by globalScale to keep the halo
-    // proportional to the node as the user zooms. Drawn as a separate filled
-    // pass, then cleared — leaving shadowBlur set would bleed onto the label
-    // and every later node.
+    // Glow. This used to set `shadowBlur` and fill a disc per node per frame,
+    // which re-blurred on every one of them and cost about seven times the CPU
+    // of a flat graph. The halo is the same for a given colour, so it is
+    // rendered once into an offscreen sprite and blitted here instead.
     if (effects) {
-      ctx.save();
-      ctx.shadowColor = color;
-      ctx.shadowBlur = Math.min(size * globalScale * 1.8, 34);
-      ctx.beginPath();
-      ctx.arc(x, y, size, 0, 2 * Math.PI, false);
-      ctx.fillStyle = color;
-      ctx.fill();
-      // A second pass deepens the bloom on the nodes the user is acting on.
-      if (isSelected || isHighlighted || isRecalled) ctx.fill();
-      ctx.restore();
+      const halo = glowSprite(color);
+      if (halo) {
+        const r = size * GLOW_SPREAD;
+        ctx.drawImage(halo, x - r, y - r, r * 2, r * 2);
+        // A second blit deepens the bloom on the nodes the user is acting on.
+        if (isSelected || isHighlighted || isRecalled) {
+          ctx.drawImage(halo, x - r, y - r, r * 2, r * 2);
+        }
+      }
     }
 
     ctx.beginPath();
@@ -385,7 +476,7 @@ export function GraphView() {
         !error &&
         (viewMode === '2d' ? (
           <ForceGraph2D
-            graphData={{ nodes: filtered.nodes, links: filtered.links }}
+            graphData={graphData}
             width={width}
             height={height}
             // Transparent so the themed gradient painted by `.solo-graph-canvas`
@@ -414,8 +505,8 @@ export function GraphView() {
             linkColor={graphLinkColor}
             linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
-            linkDirectionalParticles={(l: ForceGraphLink) => graphLinkParticleCount(l, effects)}
-            linkDirectionalParticleColor={(l: ForceGraphLink) => particleColors[l.kind]}
+            linkDirectionalParticles={particleCount}
+            linkDirectionalParticleColor={particleColor}
             linkDirectionalParticleWidth={graphLinkParticleWidth}
             linkDirectionalParticleSpeed={graphLinkParticleSpeed}
             linkDirectionalParticleOffset={graphLinkParticleOffset}
@@ -432,7 +523,14 @@ export function GraphView() {
         ) : (
           <ForceGraph3D
             ref={fg3dRef}
-            graphData={{ nodes: filtered.nodes, links: filtered.links }}
+            graphData={graphData}
+            // Geometry detail, not visual detail. Every node is a sphere and
+            // every flow particle is another one, so segment counts multiply by
+            // the graph size — the default 8x8 sphere is 128 triangles that a
+            // node a few pixels wide cannot show. Dropped further once the
+            // graph is large enough for the totals to matter.
+            nodeResolution={filtered.nodes.length > LARGE_GRAPH_NODES ? 6 : 8}
+            linkDirectionalParticleResolution={2}
             width={width}
             height={height}
             // Transparent for the same reason as the 2D canvas: the themed
@@ -440,15 +538,15 @@ export function GraphView() {
             backgroundColor="rgba(0, 0, 0, 0)"
             nodeId="id"
             nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
-            nodeColor={(n: ForceGraphNode) => nodeColors[n.kind]}
+            nodeColor={nodeColorFor}
             nodeVal={(n: ForceGraphNode) =>
               n.__aggregateForDocumentId ? 4 : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
             }
             linkColor={graphLinkColor}
             linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
             linkWidth={graphLinkWidth}
-            linkDirectionalParticles={(l: ForceGraphLink) => graphLinkParticleCount(l, effects)}
-            linkDirectionalParticleColor={(l: ForceGraphLink) => particleColors[l.kind]}
+            linkDirectionalParticles={particleCount}
+            linkDirectionalParticleColor={particleColor}
             linkDirectionalParticleWidth={graphLinkParticleWidth}
             linkDirectionalParticleSpeed={graphLinkParticleSpeed}
             linkDirectionalParticleOffset={graphLinkParticleOffset}
