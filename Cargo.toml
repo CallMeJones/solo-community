@@ -46,7 +46,7 @@ manual_str_repeat           = "allow"
 print_literal               = "allow"
 
 [workspace.package]
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -67,20 +67,20 @@ readme = "README.md"
 # manifests in sync (every Solo crate locally at the workspace.package
 # .version via inheritance). solo-bench and solo-index are
 # publish=false; their workspace dep entries don't reach crates.io.
-solo-core    = { path = "crates/solo-core",    version = "0.12.0" }
+solo-core    = { path = "crates/solo-core",    version = "0.12.1" }
 # `default-features = false` on the workspace entry lets per-crate
 # consumers opt in OR opt out of `solo-storage`'s default features
 # (`bundled-embedder`, v0.9.0 P3). The workspace entry holds the
 # minimal feature surface; downstream crates explicitly re-enable
 # `bundled-embedder` if they want it. solo-cli's [features.default]
 # passthrough turns it back on for the standard `cargo build` path.
-solo-storage = { path = "crates/solo-storage", version = "0.12.0", default-features = false }
-solo-index   = { path = "crates/solo-index",   version = "0.12.0" }
-solo-query   = { path = "crates/solo-query",   version = "0.12.0" }
-solo-api     = { path = "crates/solo-api",     version = "0.12.0" }
-solo-cli     = { path = "crates/solo-cli",     version = "0.12.0" }
-solo-steward = { path = "crates/solo-steward", version = "0.12.0" }
-solo-bench   = { path = "crates/solo-bench",   version = "0.12.0" }
+solo-storage = { path = "crates/solo-storage", version = "0.12.1", default-features = false }
+solo-index   = { path = "crates/solo-index",   version = "0.12.1" }
+solo-query   = { path = "crates/solo-query",   version = "0.12.1" }
+solo-api     = { path = "crates/solo-api",     version = "0.12.1" }
+solo-cli     = { path = "crates/solo-cli",     version = "0.12.1" }
+solo-steward = { path = "crates/solo-steward", version = "0.12.1" }
+solo-bench   = { path = "crates/solo-bench",   version = "0.12.1" }
 
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
