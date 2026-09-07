@@ -19,15 +19,19 @@ import {
 const THEME_KEY = 'solo.theme';
 const PALETTE_KEY = 'solo.graph.palette';
 const EFFECTS_KEY = 'solo.graph.effects';
+const LABELS_KEY = 'solo.graph.labels';
 
 export interface ThemeState {
   theme: ThemeId;
   nodePalette: NodePaletteId;
   /** Node glow and animated link particles in the graph. */
   effects: boolean;
+  /** Names painted beside the nodes in the 2D graph. */
+  labels: boolean;
   setTheme: (id: ThemeId) => void;
   setNodePalette: (id: NodePaletteId) => void;
   setEffects: (on: boolean) => void;
+  setLabels: (on: boolean) => void;
 }
 
 function readStored(key: string): string | null {
@@ -83,6 +87,19 @@ function loadEffects(): boolean {
   return !prefersReducedMotion();
 }
 
+/**
+ * Labels default to on. There is no system preference to honour here, so this
+ * is a plain remembered choice: a dense graph reads as a wall of text, and the
+ * hover tooltip still names whatever the pointer is over.
+ */
+function loadLabels(): boolean {
+  const raw = readStored(LABELS_KEY);
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  if (raw !== null) drop(LABELS_KEY);
+  return true;
+}
+
 export function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -110,6 +127,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   theme: initialTheme,
   nodePalette: loadPalette(),
   effects: loadEffects(),
+  labels: loadLabels(),
   setTheme: (id) => {
     applyTheme(id);
     write(THEME_KEY, id);
@@ -122,6 +140,10 @@ export const useThemeStore = create<ThemeState>((set) => ({
   setEffects: (on) => {
     write(EFFECTS_KEY, on ? '1' : '0');
     set({ effects: on });
+  },
+  setLabels: (on) => {
+    write(LABELS_KEY, on ? '1' : '0');
+    set({ labels: on });
   },
 }));
 

@@ -11,6 +11,7 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Toolbar } from '../src/components/Toolbar';
 import { useGraphStore } from '../src/store/graphStore';
+import { useThemeStore } from '../src/store/themeStore';
 
 function wrap(node: ReactNode) {
   const client = new QueryClient({
@@ -29,6 +30,8 @@ describe('Toolbar', () => {
       expandedNodeIds: new Set(),
       recalledNodeIds: new Set(),
     });
+    localStorage.clear();
+    useThemeStore.setState({ labels: true });
   });
 
   afterEach(() => {
@@ -84,6 +87,25 @@ describe('Toolbar', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('turns 2D node labels off and remembers the choice', () => {
+    render(wrap(<Toolbar />));
+    const checkbox = screen
+      .getByText('Labels')
+      .closest('label')
+      ?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    expect(useThemeStore.getState().labels).toBe(false);
+    // Persisted, so the graph comes back unlabelled after a reload.
+    expect(localStorage.getItem('solo.graph.labels')).toBe('0');
+  });
+
+  it('hides the label switch in 3D, which paints no labels to hide', () => {
+    useGraphStore.setState({ viewMode: '3d' });
+    render(wrap(<Toolbar />));
+    expect(screen.queryByText('Labels')).not.toBeInTheDocument();
   });
 
   it('shows one active Memory Library without a database picker', () => {

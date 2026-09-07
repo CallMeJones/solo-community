@@ -223,6 +223,7 @@ export function GraphView() {
   const linkColors = useLinkKindColors();
   const particleColors = useParticleColors();
   const effects = useThemeStore((s) => s.effects);
+  const labels = useThemeStore((s) => s.labels);
 
   // Container ref for sizing — ResizeObserver-backed so dimensions track
   // the actual painted canvas area, not a stale first-render snapshot.
@@ -431,8 +432,11 @@ export function GraphView() {
     }
 
     // Keep structural labels discoverable while deferring dense memory labels
-    // until the user zooms in.
-    if (isSelected || isHighlighted || shouldShowNodeLabel(node, globalScale)) {
+    // until the user zooms in. The Labels toolbar toggle overrides all of that:
+    // off means off, including for the selected node, because the point of
+    // turning it off is to see the shape of the graph rather than read it. The
+    // hover tooltip and the inspector still name whatever is under the pointer.
+    if (labels && (isSelected || isHighlighted || shouldShowNodeLabel(node, globalScale))) {
       const fontSize = Math.max(10 / globalScale, 2);
       ctx.font = `${fontSize}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillStyle = palette.nodeLabel;

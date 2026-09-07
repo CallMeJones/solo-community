@@ -1,8 +1,9 @@
-// Top toolbar: library context, 2D/3D toggle, kind filters, search box.
+// Top toolbar: library context, 2D/3D toggle, the 2D label switch, kind
+// filters, search box.
 
 import { useState } from 'react';
 import { NODE_KINDS } from '../lib/nodeKindTheme';
-import { useNodeKindColors } from '../store/themeStore';
+import { useNodeKindColors, useThemeStore } from '../store/themeStore';
 import { COMMUNITY_LIBRARY_NAME, useGraphStore } from '../store/graphStore';
 import { SettingsDialog } from './SettingsDialog';
 import { Button } from './ui/Button';
@@ -15,6 +16,8 @@ export function Toolbar() {
   const toggleKind = useGraphStore((s) => s.toggleKind);
   const searchQuery = useGraphStore((s) => s.searchQuery);
   const setSearchQuery = useGraphStore((s) => s.setSearchQuery);
+  const labels = useThemeStore((s) => s.labels);
+  const setLabels = useThemeStore((s) => s.setLabels);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const nodeColors = useNodeKindColors();
 
@@ -51,6 +54,24 @@ export function Toolbar() {
           3D
         </button>
       </div>
+
+      {/* Labels. Only in 2D: the 3D view has never painted names into the
+          scene, so the control would sit there doing nothing. Both views name
+          the node under the pointer through the hover tooltip regardless. */}
+      {viewMode === '2d' && (
+        <label
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-slate-600"
+          title="Show the memory names beside the nodes"
+        >
+          <input
+            type="checkbox"
+            checked={labels}
+            onChange={(e) => setLabels(e.target.checked)}
+            className="h-3 w-3 accent-sky-500"
+          />
+          <span>Labels</span>
+        </label>
+      )}
 
       {/* Kind filters */}
       <div className="flex items-center gap-2">
