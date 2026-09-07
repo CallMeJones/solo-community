@@ -25,7 +25,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      PILOT_VERSION: '0.12.1'
+      # PILOT_VERSION is not set here: it is derived from Cargo.toml below.
+      # A literal pinned at this line failed a release once already, and it
+      # fails late -- after the hour of building the candidate it names.
       PILOT_TARGET: x86_64-pc-windows-msvc
       PILOT_ARTIFACT_DIR: ${{ github.workspace }}/pilot-artifacts
 
@@ -35,6 +37,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Derive the candidate version from the workspace manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw -LiteralPath 'Cargo.toml'
+          if ($manifest -notmatch '(?m)^version\s*=\s*"([^"]+)"\s*$') {
+            throw 'Could not read the workspace version from Cargo.toml'
+          }
+          $version = $Matches[1]
+          "PILOT_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Candidate version: $version"
 
       - name: Validate Core candidate and release inputs
         shell: pwsh
