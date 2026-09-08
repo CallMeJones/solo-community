@@ -53,6 +53,16 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
   const [days, setDays] = useState(0);
   const [limit, setLimit] = useState(100);
   const [groupLimit, setGroupLimit] = useState(60);
+  const [compact, setCompact] = useState(false);
+  const groupPageSize = compact ? 8 : 60;
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 760px)');
+    const update = () => setCompact(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
   const [filters, setFilters] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showMatches, setShowMatches] = useState(false);
@@ -102,8 +112,8 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
   );
   useEffect(() => {
     setLimit(100);
-    setGroupLimit(60);
-  }, [groupId, focusId, deferredQuery, source, days, state.visibleKinds]);
+    setGroupLimit(groupPageSize);
+  }, [groupId, focusId, deferredQuery, source, days, state.visibleKinds, groupPageSize]);
   useEffect(() => {
     if (lastConnection.current === connection) return;
     lastConnection.current = connection;
@@ -382,8 +392,11 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
             )}
             {isOverview && view !== 'list' && overview.groups.length > groupLimit && (
               <div className="memory-load-more">
-                <button className="workspace-button" onClick={() => setGroupLimit(groupLimit + 60)}>
-                  Show 60 more groups · {overview.groups.length - groupLimit} remaining
+                <button
+                  className="workspace-button"
+                  onClick={() => setGroupLimit(groupLimit + groupPageSize)}
+                >
+                  Show {groupPageSize} more groups · {overview.groups.length - groupLimit} remaining
                 </button>
               </div>
             )}
