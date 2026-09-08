@@ -114,6 +114,10 @@ jobs:
         working-directory: apps/web
         run: npm ci --no-audit --no-fund
 
+      - name: Audit web dependencies
+        working-directory: apps/web
+        run: npm audit --audit-level=low
+
       - name: Typecheck Web
         working-directory: apps/web
         run: npm run typecheck
