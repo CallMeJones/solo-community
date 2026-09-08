@@ -25,11 +25,13 @@ for (const routeCase of ROUTES) {
   });
 }
 
+// Unknown routes land on Memories, not Home: the unified workspace made the
+// memory library the startup surface.
 for (const hash of ['unknown']) {
-  test(`returns an unknown Community route to Home for #${hash}`, async ({ page }) => {
+  test(`returns an unknown Community route to Memories for #${hash}`, async ({ page }) => {
     await page.goto(`/#${hash}`);
 
-    await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Memories' })).toBeVisible();
   });
 }
 

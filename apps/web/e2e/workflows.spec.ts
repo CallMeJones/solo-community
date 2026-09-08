@@ -22,6 +22,7 @@ test.afterEach(async ({ page }) => {
 test('settings editor saves endpoints and navigates through quick checks', async ({ page }) => {
   await page.goto('/#settings');
 
+  await page.getByRole('button', { name: 'Advanced' }).click();
   await page.getByRole('button', { name: 'Edit settings' }).click();
   await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
 
@@ -37,7 +38,7 @@ test('settings editor saves endpoints and navigates through quick checks', async
 
   await page.getByRole('button', { name: 'MCP connections' }).click();
   await expect(page).toHaveURL(/#connections$/);
-  await expect(page.getByRole('heading', { name: 'Connections' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connected apps' })).toBeVisible();
 });
 
 test('connections probe completes a read-only MCP tool call', async ({ page }) => {
@@ -210,15 +211,15 @@ test('logs workflow changes line limit and refreshes the current tail', async ({
   await expect(page.getByText(`DEBUG fetch ${state.logFetchCount}`).first()).toBeVisible();
 });
 
-test('memories workflow searches nodes and clears graph UI state', async ({ page }) => {
+test('memories workflow searches the library and clears the search', async ({ page }) => {
   await page.goto('/#memories');
 
-  await expect(page.getByText(/Graph \d+\/\d+ nodes/)).toBeVisible();
-  await page.getByPlaceholder('Search nodes...').fill('alice');
-  await expect(page.getByRole('heading', { name: 'Search matches' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /alice/i }).first()).toBeVisible();
+  const search = page.getByPlaceholder(/Search your memories/);
+  await expect(page.getByText(/Showing \d+ of \d+ items/)).toBeVisible();
 
-  await page.getByRole('button', { name: 'Reset' }).click();
-  await expect(page.getByRole('heading', { name: 'Search matches' })).toBeHidden();
-  await expect(page.getByText('No node selected')).toBeVisible();
+  await search.fill('alice');
+  await expect(page.getByText(/alice/i).first()).toBeVisible();
+
+  await page.getByRole('button', { name: 'Clear search' }).click();
+  await expect(search).toHaveValue('');
 });

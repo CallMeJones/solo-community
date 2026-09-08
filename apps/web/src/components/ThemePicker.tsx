@@ -134,6 +134,12 @@ function OptionCard({
   description: string;
   children: React.ReactNode;
 }) {
+  // The selected card sits on the chip fill, which is lighter than the panel
+  // the others sit on. Muted ink that clears 4.5:1 against the panel does not
+  // clear it against the chip, so step the secondary text up a tone there
+  // rather than dropping the one card in focus below contrast.
+  const secondary = selected ? 'text-slate-300' : 'text-slate-400';
+
   return (
     <button
       type="button"
@@ -151,9 +157,9 @@ function OptionCard({
       <span className="min-w-0">
         <span className="block text-sm font-medium text-slate-100">
           {label}
-          {selected && <span className="ml-2 text-xs font-normal text-slate-400">active</span>}
+          {selected && <span className={`ml-2 text-xs font-normal ${secondary}`}>active</span>}
         </span>
-        <span className="mt-0.5 block truncate text-xs text-slate-400">{description}</span>
+        <span className={`mt-0.5 block truncate text-xs ${secondary}`}>{description}</span>
       </span>
     </button>
   );
