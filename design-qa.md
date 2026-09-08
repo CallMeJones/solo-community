@@ -63,6 +63,6 @@ At full size the header, sidebar, controls and inspector text were directly read
 - [x] Desktop and compact layout inspected.
 - [x] Large graph and real persistence workflows exercised.
 - [x] Clean source linked to embedded assets by verified provenance.
-- [x] Final native return and restart check (same window ID 918438).
+- [x] Final native return, restart (same window ID 918438), and clean Quit check.
 
 Follow-up polish (P3): refine long source-group labels and add more keyboard graph navigation beyond the accessible list and group selector.
