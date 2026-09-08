@@ -139,8 +139,12 @@ fn ten_thousand_pending_rows_replay_within_budget() {
     //     26120153333 attempt 1 with the prior 30s budget — see dev
     //     log 0131).
     //   - A bounded 60-300s override for unusually slow release runners;
-    //     the Windows release workflow uses 120s after observed runner
-    //     variance exceeded 60s without a code regression.
+    //     the Windows release workflow uses 240s. It was 60s, then 120s,
+    //     and on 2026-09-08 a release runner took 161s (run 34287825128)
+    //     while the same commit ran in 22s on a developer Windows box —
+    //     runner speed, not a code regression. Each raise here has bought
+    //     margin against the host, never against the replay path, which is
+    //     why the 30s developer ceiling below is the number that matters.
     //
     // The 30s developer ceiling remains the primary regression signal;
     // larger budgets are explicitly CI-only and capped.
