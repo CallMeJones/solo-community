@@ -499,7 +499,7 @@ export function GraphView({
         ? 8 + Math.min(6, Math.log2((node.ref_count ?? 1) + 1) * 0.6)
         : NODE_KIND_SIZES[node.kind] * entityImportanceScale(node);
     const scaledSize = onOpenGroup
-      ? Math.max(baseSize, 24 / globalScale)
+      ? Math.max(baseSize, (width < 500 ? 16 : 24) / globalScale)
       : isSelected
         ? baseSize * 1.6
         : baseSize;

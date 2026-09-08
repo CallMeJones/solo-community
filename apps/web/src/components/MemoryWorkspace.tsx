@@ -54,7 +54,7 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
   const [limit, setLimit] = useState(100);
   const [groupLimit, setGroupLimit] = useState(60);
   const [compact, setCompact] = useState(false);
-  const groupPageSize = compact ? 8 : 60;
+  const groupPageSize = compact ? 4 : 60;
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const media = window.matchMedia('(max-width: 760px)');
