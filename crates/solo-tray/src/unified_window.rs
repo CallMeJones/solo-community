@@ -21,6 +21,21 @@ use zeroize::Zeroizing;
 
 const START_URL: &str = "solo://app/index.html";
 const START_HTML: &str = include_str!("unified_start.html");
+// Wry maps custom protocols to an HTTP origin on Windows. Its load_url API
+// performs that mapping, but links clicked inside an HTTP document do not.
+#[cfg(target_os = "windows")]
+const DESKTOP_INIT: &str = r#"
+window.__SOLO_DESKTOP__ = true;
+document.addEventListener('click', event => {
+    const link = event.target instanceof Element ? event.target.closest('a') : null;
+    if (link?.getAttribute('href') === 'solo://app/index.html#settings') {
+        event.preventDefault();
+        window.location.assign('http://solo.app/index.html#settings');
+    }
+});
+"#;
+#[cfg(not(target_os = "windows"))]
+const DESKTOP_INIT: &str = "window.__SOLO_DESKTOP__=true;";
 
 enum Message {
     Command(Command),
@@ -109,7 +124,7 @@ pub fn run(mut state: AppState) -> Result<()> {
         })
         .with_navigation_handler(move |url| trusted_start_url(&url) || reqwest::Url::parse(&url).is_ok_and(|u|u.origin()==origin && u.path().starts_with("/desktop/") && u.username().is_empty() && u.password().is_none()))
         .with_new_window_req_handler(|_,_|wry::NewWindowResponse::Deny)
-        .with_initialization_script("window.__SOLO_DESKTOP__=true;")
+        .with_initialization_script(DESKTOP_INIT)
         .with_ipc_handler(move |request| {
             if !trusted_start_url(&request.uri().to_string()) || request.body().len()>32768 { return; }
             let body = Zeroizing::new(request.into_body());
