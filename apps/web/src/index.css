@@ -22,20 +22,13 @@
   font-size: 30px;
 }
 
-/* Unified desktop workspace. Inherit the existing palette on other themes. */
-:root[data-theme='dune'] .solo-workspace {
-  --solo-body-bg: #121210;
-  --solo-text: #f2f0eb;
-  --solo-text-secondary: #d5d2ca;
-  --solo-muted: #a8a59e;
-  --solo-border: #302e28;
-  --solo-void: #121210;
-  --solo-void-soft: #191815;
-  --solo-panel: #1c1b18;
-  --solo-panel-soft: #211f1b;
-  --solo-raised: #352b20;
-  --solo-chip: #594024;
-}
+/*
+ * Unified desktop workspace. It takes its colours from the active theme and
+ * declares none of its own: a block here redefining --solo-* tokens for one
+ * theme means the theme picker stops describing what the user sees. Dune
+ * used to be overridden with a flatter neutral set for exactly this reason
+ * and it made the product's default theme not look like itself.
+ */
 .solo-workspace {
   display: flex;
   height: 100dvh;
@@ -180,7 +173,9 @@
 }
 .workspace-primary {
   background: var(--solo-accent-solid);
-  color: #17100b;
+  /* The accent is near-black in the light theme, so a hardcoded dark ink here
+     rendered this button black on black. */
+  color: var(--solo-accent-fg);
   font-weight: 650;
   border: 1px solid var(--solo-accent-solid);
 }
@@ -192,14 +187,8 @@
 .workspace-button:hover {
   background: var(--solo-raised);
 }
-/* A checkbox wearing the button chrome, so a display switch sits in the
-   control row without inventing a second visual language for it. */
-.workspace-toggle {
+.memory-filters label {
   cursor: pointer;
-  gap: 7px;
-}
-.workspace-toggle input {
-  accent-color: var(--solo-accent-solid);
 }
 .workspace-primary:hover {
   filter: brightness(1.12);
@@ -309,10 +298,15 @@
   flex-direction: column;
   overflow: hidden;
 }
+/*
+ * Layout only. This selector is (0,2,0) and so beats the bare
+ * `.solo-graph-canvas` rule further down that paints --solo-graph-bg; giving
+ * it a background of its own replaced every theme’s graph backdrop — blooms,
+ * dot grid, vignette — with a flat fill.
+ */
 .memory-content .solo-graph-canvas {
   flex: 1;
   min-height: 0;
-  background: var(--solo-body-bg);
 }
 .memory-list {
   overflow: auto;

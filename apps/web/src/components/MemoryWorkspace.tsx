@@ -184,19 +184,6 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
             </button>
           ))}
         </div>
-        {/* Labels. Only in 2D: the 3D view has never painted names into the
-            scene and the list is already text, so the control would sit there
-            doing nothing. Hovering a node still names it in either graph. */}
-        {view === '2d' && (
-          <label className="workspace-button workspace-toggle">
-            <input
-              type="checkbox"
-              checked={labels}
-              onChange={(e) => setLabels(e.target.checked)}
-            />
-            Labels
-          </label>
-        )}
         <span className="library-label">Local library</span>
         <button
           className="workspace-button"
@@ -242,6 +229,17 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
               {KIND_LABELS[kind]}
             </label>
           ))}
+          {/* Not a filter on what is shown, but it belongs with the other
+              checkboxes rather than in the control row: it is the graph's
+              one display switch and there is nowhere else for it to live. */}
+          <label>
+            <input
+              type="checkbox"
+              checked={labels}
+              onChange={(e) => setLabels(e.target.checked)}
+            />
+            Graph labels
+          </label>
           <button
             className="workspace-button"
             onClick={() => {
