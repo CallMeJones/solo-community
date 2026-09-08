@@ -13141,10 +13141,19 @@ mod tests {
         /// the writer never touches the LLM at all — the call
         /// returns in single-digit milliseconds.
         ///
-        /// The wall-time bound is intentionally generous (100ms): we
-        /// want failure to mean "the writer-actor is BLOCKING on
-        /// SOMETHING (probably an LLM)", not flakiness from CI
-        /// jitter.
+        /// The claim is checked directly: the stub counts its calls, so
+        /// the pin asserts the writer made none. That is what "never
+        /// touches the LLM" means, and it holds however loaded the
+        /// machine is.
+        ///
+        /// The wall-time bound is kept as a second net for the "or
+        /// hang" half of the regression, which a call count cannot see
+        /// -- a blocked writer never returns to be counted. It was 100ms
+        /// and flaked on a CI runner at 198ms while the rest of the
+        /// workspace suite ran alongside it. The correct path returns in
+        /// single-digit milliseconds and the broken one hangs or grinds
+        /// per cluster, so seconds is the honest scale for this bound;
+        /// tightening it measures the runner, not the writer.
         #[test]
         fn consolidate_command_returns_quickly_without_blocking_on_llm() {
             use crate::test_support::open_test_db_at;
@@ -13170,6 +13179,7 @@ mod tests {
             // and the test would slow or hang per cluster. Post-P4
             // the writer never invokes it.
             let llm = Arc::new(StubLlmClient::default_stub().pretend_real_llm(true));
+            let llm_probe = Arc::clone(&llm);
             let steward = Some(Arc::new(Steward::new(llm, StewardConfig::default())));
 
             let runtime = rt_multi();
@@ -13216,12 +13226,21 @@ mod tests {
                     .expect("consolidate ok");
                 let elapsed = started.elapsed();
 
+                assert_eq!(
+                    llm_probe.call_count(),
+                    0,
+                    "the writer invoked the LLM {} time(s); pre-P4 it ran \
+                     the LLM loop inline. Post-P4 it MUST NOT — the \
+                     writer-actor's command path stays off the LLM \
+                     critical path. (If the pin fires the lesson is: the \
+                     v0.8.x `block_on` regressed.)",
+                    llm_probe.call_count(),
+                );
                 assert!(
-                    elapsed < StdDuration::from_millis(100),
-                    "consolidate took {elapsed:?}; pre-P4 it ran the LLM \
-                     loop inline. Post-P4 it MUST NOT — the writer-actor's \
-                     command path stays off the LLM critical path. (If the \
-                     pin fires the lesson is: the v0.8.x `block_on` regressed.)"
+                    elapsed < StdDuration::from_secs(5),
+                    "consolidate took {elapsed:?}; the writer-actor is \
+                     blocking on something. See the note above: this bound \
+                     is here for a hang, not for a slow runner."
                 );
                 // Sanity: cheap clustering pass DID run.
                 assert!(
