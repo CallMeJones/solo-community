@@ -71,7 +71,7 @@ Failed tests, dependency audit, or SDK packaging prevent downstream release jobs
 This does not prevent a repository administrator from manually uploading files;
 repository-level release policy still matters.
 
-The SDK version matches the 0.12.2 workspace. The locked `h2` dependency is updated
+The SDK version matches the 0.12.3 workspace. The locked `h2` dependency is updated
 to 0.4.16 for RUSTSEC-2026-0258.
 
 The existing LongMemEval harness is now part of Community; see
