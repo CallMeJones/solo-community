@@ -6,6 +6,7 @@
 //! Closing it via the X button minimises instead of quitting.
 //! Quit-from-tray is the canonical shutdown.
 
+mod navigation;
 use crate::daemon::{DaemonHandle, SupervisorState};
 use crate::logs::{Level, RingBuffer};
 use crate::notify::Notifier;
@@ -16,6 +17,7 @@ use crate::status::{DaemonHealth, StatusState};
 use crate::{autostart, tray};
 use eframe::{App, CreationContext, Frame};
 use egui::{Context, Key, RichText, ScrollArea, TextStyle, ViewportCommand};
+use navigation::{MainTab, NavHistory};
 use solo_core::{ProjectMemoryDescriptor, ProjectPolicyClient, render_project_policy};
 use solo_storage::{InitParams, SoloConfig, probe_embedder_config_from_env};
 use std::io::Read;
@@ -200,102 +202,10 @@ pub struct SoloTrayApp {
     update_ticks: u64,
 }
 
-/// How deep the back stack goes. Long enough that no realistic click path
-/// runs out, short enough that it never grows without bound.
-const NAV_HISTORY_LIMIT: usize = 32;
-
 /// How long the daemon may take to register a requested download before Solo
 /// Controls treats a still-idle status as a lost job. Generous because the
 /// request itself reaches GitHub first to re-resolve the release.
 const UPDATE_START_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// Back stack for the main window.
-///
-/// Split out from the window struct so the rules — no self-entry, bounded
-/// depth, Back falls through to Controls — are unit-testable without standing
-/// up an entire egui app.
-#[derive(Debug, Default)]
-struct NavHistory {
-    stack: Vec<MainTab>,
-}
-
-impl NavHistory {
-    /// Record `current` and return the tab to show. Re-selecting the current
-    /// tab records nothing, so clicking "Settings" twice still needs one Back.
-    fn navigate(&mut self, current: MainTab, to: MainTab) -> MainTab {
-        if current == to {
-            return current;
-        }
-        self.stack.push(current);
-        if self.stack.len() > NAV_HISTORY_LIMIT {
-            self.stack.remove(0);
-        }
-        to
-    }
-
-    /// Retrace one step, or land on Controls when the trail is empty — Back is
-    /// never a dead button.
-    fn back(&mut self) -> MainTab {
-        self.stack.pop().unwrap_or(MainTab::Controls)
-    }
-
-    /// The trail exists only to get back to Controls, so arriving there clears it.
-    fn home(&mut self) -> MainTab {
-        self.stack.clear();
-        MainTab::Controls
-    }
-
-    fn peek(&self) -> MainTab {
-        self.stack.last().copied().unwrap_or(MainTab::Controls)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MainTab {
-    Controls,
-    Dashboard,
-    Health,
-    Mcp,
-    Memory,
-    Projects,
-    Tools,
-    Settings,
-    Data,
-    Logs,
-}
-
-impl MainTab {
-    /// Whether this tab already owns its scrolling.
-    ///
-    /// Tools wraps its whole body in a scroll area and Logs drives a bounded
-    /// log viewport; nesting those inside an outer scroll area makes the inner
-    /// one grow to its content instead of scrolling. Every other tab laid its
-    /// content straight into the panel and simply ran off the bottom.
-    fn scrolls_itself(self) -> bool {
-        matches!(self, Self::Tools | Self::Logs)
-    }
-
-    /// Title shown in the navigation bar.
-    fn label(self) -> &'static str {
-        match self {
-            Self::Controls => "Solo Controls",
-            Self::Dashboard => "Dashboard",
-            Self::Health => "Health",
-            Self::Mcp => "MCP Status",
-            Self::Memory => "Memory",
-            Self::Projects => "Projects",
-            Self::Tools => "Connected Tools",
-            Self::Settings => "Settings",
-            Self::Data => "Data",
-            Self::Logs => "Logs",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogSource {
@@ -18345,11 +18255,11 @@ mod tests {
         // A long session bouncing between screens must not grow without bound.
         let mut nav = NavHistory::default();
         let mut at = MainTab::Controls;
-        for _ in 0..(NAV_HISTORY_LIMIT * 2) {
+        for _ in 0..(navigation::NAV_HISTORY_LIMIT * 2) {
             at = nav.navigate(at, MainTab::Tools);
             at = nav.navigate(at, MainTab::Settings);
         }
-        assert!(nav.stack.len() <= NAV_HISTORY_LIMIT);
+        assert!(nav.len() <= navigation::NAV_HISTORY_LIMIT);
     }
 
     #[test]

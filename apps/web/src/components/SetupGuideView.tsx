@@ -53,7 +53,7 @@ export function SetupGuideView({ onModeChange }: { onModeChange: (mode: SetupMod
     {
       id: 'daemon',
       label: 'Start Solo',
-      detail: 'daemon and unlock state',
+      detail: 'Keep your private memory available',
       value: daemonRunning ? 'running' : statusLabel(solo.status),
       state: daemonRunning ? 'done' : solo.status === 'pending' ? 'checking' : 'blocked',
       action: daemonRunning ? 'View diagnostics' : 'Open settings',
@@ -71,18 +71,18 @@ export function SetupGuideView({ onModeChange }: { onModeChange: (mode: SetupMod
     {
       id: 'codex',
       label: 'Connect Codex',
-      detail: 'native HTTP MCP config',
-      value: solo.data?.mcp.sessions ? `${solo.data.mcp.sessions} sessions` : 'not connected',
-      state: solo.data?.mcp.sessions ? 'done' : daemonRunning ? 'ready' : 'blocked',
+      detail: 'Open Codex and ask it to save your first memory',
+      value: daemonRunning ? 'verify in client' : 'waiting for Solo',
+      state: daemonRunning ? 'ready' : 'blocked',
       action: 'Open connections',
       mode: 'settings',
     },
     {
       id: 'claude',
       label: 'Connect Claude',
-      detail: 'Claude Desktop MCP config',
-      value: solo.data?.mcp.sessions ? `${solo.data.mcp.sessions} sessions` : 'not connected',
-      state: solo.data?.mcp.sessions ? 'done' : daemonRunning ? 'ready' : 'blocked',
+      detail: 'Open Claude and recall the memory you saved in Codex',
+      value: daemonRunning ? 'verify in client' : 'waiting for Solo',
+      state: daemonRunning ? 'ready' : 'blocked',
       action: 'Open connections',
       mode: 'settings',
     },
@@ -164,10 +164,20 @@ export function SetupGuideView({ onModeChange }: { onModeChange: (mode: SetupMod
 
       <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
         <h2 className="text-sm font-semibold text-slate-100">Readiness</h2>
+        <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm text-slate-300">
+          <li>In Codex, say: “Remember that my test project is called Cedar.”</li>
+          <li>In a new Claude conversation, ask: “What is my test project called?”</li>
+          <li>Correct it: “My test project is now called Birch. Update that memory.”</li>
+          <li>Return to Codex and ask again. Check that it recalls Birch.</li>
+        </ol>
+        <p className="mt-4 text-xs text-slate-400">
+          Active sessions do not identify which app is connected. Confirm each connection
+          with the recall check above, then create a backup in settings.
+        </p>
         <dl className="mt-4 space-y-3 text-sm">
           <StatusRow label="Daemon" value={daemonRunning ? 'running' : statusLabel(solo.status)} />
           <StatusRow label="Memory library" value={libraryName} />
-          <StatusRow label="Clients" value={String(solo.data?.mcp.sessions ?? 0)} />
+          <StatusRow label="Active sessions" value={String(solo.data?.mcp.sessions ?? 0)} />
           <StatusRow label="Documents" value={String(documentCount)} />
           <StatusRow
             label="Inbox"

@@ -17,7 +17,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  community-ci:
+    uses: ./.github/workflows/ci.yml
+
   ubuntu-package:
+    needs: community-ci
     name: Ubuntu 24.04 test package
     runs-on: ubuntu-24.04
     timeout-minutes: 60

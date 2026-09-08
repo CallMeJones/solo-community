@@ -12,6 +12,7 @@ import {
   useState,
   type ComponentType,
 } from 'react';
+import { ArrowsOut, Plus, Minus } from '@phosphor-icons/react';
 import { useGraphData } from '../hooks/useGraphData';
 import { useGraphStore } from '../store/graphStore';
 import { NODE_KIND_SIZES } from '../lib/nodeKindTheme';
@@ -31,6 +32,7 @@ import {
   documentIdForSummary,
   type PresentedGraphLink,
   type PresentedGraphNode,
+  type PresentedGraph,
 } from '../lib/graphPresentation';
 
 const ForceGraph2D = lazy(() => import('react-force-graph-2d')) as ComponentType<
@@ -45,6 +47,7 @@ interface ForceGraphNode extends PresentedGraphNode {
   x?: number;
   y?: number;
   z?: number;
+  __drawRadius?: number;
 }
 
 type ForceGraphLink = PresentedGraphLink;
@@ -61,6 +64,19 @@ interface BloomPassLike {
 
 /** The slice of the ForceGraph3D imperative handle this component uses. */
 interface ForceGraph3DHandle {
+  camera?: () => { fov: number };
+  cameraPosition?: (
+    position: { x: number; y: number; z: number },
+    lookAt: { x: number; y: number; z: number },
+    duration: number,
+  ) => void;
+  getGraphBbox?: () => { x: [number, number]; y: [number, number]; z: [number, number] } | null;
+  d3Force?: (name: string) => {
+    strength?: (value: number) => void;
+    distance?: (value: number) => void;
+  };
+  zoomToFit?: (duration?: number, padding?: number) => void;
+  zoom?: (scale?: number, duration?: number) => number;
   postProcessingComposer?: () => EffectComposerLike | undefined;
 }
 
@@ -206,7 +222,15 @@ function graphLinkParticleSpeed(link: ForceGraphLink): number {
   return 0.0035 + linkSeed(link) * 0.007;
 }
 
-export function GraphView() {
+export function GraphView({
+  presentation,
+  onOpenGroup,
+  onFocusNode,
+}: {
+  presentation?: PresentedGraph;
+  onOpenGroup?: (id: string) => void;
+  onFocusNode?: (id: string) => void;
+} = {}) {
   const { data, isLoading, error } = useGraphData();
   const viewMode = useGraphStore((s) => s.viewMode);
   const visibleKinds = useGraphStore((s) => s.visibleKinds);
@@ -222,7 +246,8 @@ export function GraphView() {
   const nodeColors = useNodeKindColors();
   const linkColors = useLinkKindColors();
   const particleColors = useParticleColors();
-  const effects = useThemeStore((s) => s.effects);
+  const requestedEffects = useThemeStore((s) => s.effects);
+  const effects = requestedEffects && !onOpenGroup;
   const labels = useThemeStore((s) => s.labels);
 
   // Container ref for sizing — ResizeObserver-backed so dimensions track
@@ -232,8 +257,53 @@ export function GraphView() {
   // regardless of viewport; the force layout then settled inside those
   // wrong bounds and visibly clipped on the right edge.)
   const containerRef = useRef<HTMLDivElement>(null);
+  const fg2dRef = useRef<ForceGraph3DHandle | null>(null);
+  const labelBoxes = useRef<Array<[number, number, number, number]>>([]);
+  const fitted = useRef(false);
+  const forceConfigured = useRef(false);
   const fg3dRef = useRef<ForceGraph3DHandle | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [SpriteText, setSpriteText] = useState<typeof import('three-spritetext').default | null>(
+    null,
+  );
+  useEffect(() => {
+    if (viewMode !== '3d') return;
+    let active = true;
+    void import('three-spritetext').then((module) => {
+      if (active) setSpriteText(() => module.default);
+    });
+    return () => {
+      active = false;
+    };
+  }, [viewMode]);
+  const groupColors = Object.values(nodeColors);
+  const groupColor = (id: string) =>
+    groupColors[
+      Array.from(id).reduce((hash, c) => (Math.imul(hash, 31) + c.charCodeAt(0)) >>> 0, 0) %
+        groupColors.length
+    ];
+  const label3d = useCallback(
+    (node: ForceGraphNode) => {
+      if (!SpriteText || (!onOpenGroup && node.id !== selectedNodeId)) return undefined;
+      const sprite = new SpriteText(
+        `${node.label.slice(0, 40)}${onOpenGroup ? `\n${node.ref_count ?? 0} items` : ''}`,
+        onOpenGroup ? 12 : 8,
+        palette.nodeLabel,
+      );
+      sprite.backgroundColor = palette.background;
+      // Keep labels readable as the user orbits through near and far groups.
+      // SpriteText inherits this Three material at runtime; Three is untyped
+      // in this app, so describe only the material property we use.
+      (sprite as unknown as { material: { sizeAttenuation: boolean } }).material.sizeAttenuation =
+        false;
+      sprite.textHeight = 0.016;
+      sprite.offsetY = -0.045;
+      sprite.padding = 0.003;
+      sprite.borderRadius = 0.002;
+      return sprite;
+    },
+    [SpriteText, onOpenGroup, selectedNodeId, palette],
+  );
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -255,9 +325,10 @@ export function GraphView() {
   }, []);
 
   const filtered = useMemo(() => {
+    if (presentation) return presentation;
     if (!data) return { nodes: [] as ForceGraphNode[], links: [] as ForceGraphLink[] };
     return buildGraphPresentation(data, visibleKinds, expandedNodeIds, searchQuery);
-  }, [data, visibleKinds, searchQuery, expandedNodeIds]);
+  }, [data, visibleKinds, searchQuery, expandedNodeIds, presentation]);
 
   const { width, height } = dimensions;
 
@@ -265,8 +336,64 @@ export function GraphView() {
   // render, and force-graph re-ingests the whole graph when that identity
   // changes — reheating the layout each time the status strip or a store value
   // ticks. `filtered` is already memoised; this keeps the wrapper stable too.
-  const graphData = useMemo(() => ({ nodes: filtered.nodes, links: filtered.links }), [filtered]);
+  const grouped = Boolean(onOpenGroup);
+  const graphData = useMemo(
+    () => ({
+      // A shallow overview keeps groups readable from the initial camera angle.
+      // Individual-memory neighborhoods retain the full three-dimensional layout.
+      nodes: filtered.nodes.map((node, i) => ({
+        ...node,
+        ...(grouped ? { fz: ((i % 3) - 1) * 25 } : {}),
+      })),
+      links: filtered.links.map((link) => ({ ...link })),
+    }),
+    [filtered, grouped],
+  );
   const linkCount = filtered.links.length;
+  useEffect(() => {
+    fitted.current = false;
+    forceConfigured.current = false;
+  }, [filtered, viewMode]);
+  const configureForces = () => {
+    if (forceConfigured.current) return;
+    const fg = (viewMode === '2d' ? fg2dRef : fg3dRef).current;
+    if (!fg) return;
+    fg.d3Force?.('charge')?.strength?.(onOpenGroup ? -550 : -80);
+    fg.d3Force?.('link')?.distance?.(onOpenGroup ? 150 : 65);
+    forceConfigured.current = true;
+  };
+  const fitGraph = useCallback(() => {
+    if (viewMode === '2d') {
+      fg2dRef.current?.zoomToFit?.(400, 80);
+      return;
+    }
+    const fg = fg3dRef.current,
+      box = fg?.getGraphBbox?.();
+    if (!box) return;
+    const center = {
+      x: (box.x[0] + box.x[1]) / 2,
+      y: (box.y[0] + box.y[1]) / 2,
+      z: (box.z[0] + box.z[1]) / 2,
+    };
+    const tangent = Math.tan(((fg?.camera?.().fov ?? 50) * Math.PI) / 360);
+    const halfHeight = (box.y[1] - box.y[0]) / 2 + 45;
+    const halfWidth = (box.x[1] - box.x[0]) / 2 + 90;
+    const distance =
+      Math.max(halfHeight, halfWidth / (width / height)) / tangent + (box.z[1] - box.z[0]) / 2;
+    fg?.cameraPosition?.({ ...center, z: center.z + distance }, center, 400);
+  }, [viewMode, width, height]);
+  useEffect(() => {
+    if (!width || !height) return;
+    fitted.current = false;
+    const frame = requestAnimationFrame(fitGraph);
+    return () => cancelAnimationFrame(frame);
+  }, [fitGraph, width, height]);
+  const fitOnce = () => {
+    if (!fitted.current) {
+      fitGraph();
+      fitted.current = true;
+    }
+  };
 
   // 3D bloom. The 2D view gets its glow from a blurred canvas pass, which has
   // no equivalent in WebGL — there, glow is a post-processing stage on the
@@ -351,7 +478,8 @@ export function GraphView() {
     (link: ForceGraphLink) => particleColors[link.kind],
     [particleColors],
   );
-  const nodeColorFor = useCallback((node: ForceGraphNode) => nodeColors[node.kind], [nodeColors]);
+  const nodeColorFor = (node: ForceGraphNode) =>
+    onOpenGroup ? groupColor(node.id) : nodeColors[node.kind];
 
   // Shared node-paint logic for 2D.
   const nodeCanvasObject = (
@@ -367,9 +495,20 @@ export function GraphView() {
     const isHighlighted = node.__highlighted;
     const baseSize = node.__aggregateForDocumentId
       ? 5
-      : NODE_KIND_SIZES[node.kind] * entityImportanceScale(node);
-    const size = isSelected ? baseSize * 1.6 : baseSize;
-    const color = nodeColors[node.kind];
+      : onOpenGroup
+        ? 8 + Math.min(6, Math.log2((node.ref_count ?? 1) + 1) * 0.6)
+        : NODE_KIND_SIZES[node.kind] * entityImportanceScale(node);
+    const scaledSize = onOpenGroup
+      ? Math.max(baseSize, (width < 500 ? 16 : 24) / globalScale)
+      : isSelected
+        ? baseSize * 1.6
+        : baseSize;
+    const size = Math.min(
+      scaledSize,
+      (onOpenGroup ? 32 : isSelected ? 14 : node.kind === 'cluster' ? 18 : 9) / globalScale,
+    );
+    node.__drawRadius = size;
+    const color = onOpenGroup ? groupColor(node.id) : nodeColors[node.kind];
 
     // Glow. This used to set `shadowBlur` and fill a disc per node per frame,
     // which re-blurred on every one of them and cost about seven times the CPU
@@ -389,16 +528,21 @@ export function GraphView() {
 
     ctx.beginPath();
     ctx.arc(x, y, size, 0, 2 * Math.PI, false);
-    ctx.fillStyle = color;
+    ctx.fillStyle = onOpenGroup ? withAlpha(color, 0.16) : color;
     ctx.fill();
+    if (onOpenGroup) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.8 / globalScale;
+      ctx.stroke();
+    }
 
-    if (node.__aggregateCount) {
-      const fontSize = Math.max(8 / globalScale, 2);
+    if (node.__aggregateCount || onOpenGroup) {
+      const fontSize = 13 / globalScale;
       ctx.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillStyle = '#fff7ed';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(node.__aggregateCount), x, y);
+      ctx.fillText(String(node.__aggregateCount ?? node.ref_count ?? 0), x, y);
     }
 
     // Recall ring — emerald — drawn at radius+5 so it sits OUTSIDE the
@@ -436,17 +580,38 @@ export function GraphView() {
     // off means off, including for the selected node, because the point of
     // turning it off is to see the shape of the graph rather than read it. The
     // hover tooltip and the inspector still name whatever is under the pointer.
-    if (labels && (isSelected || isHighlighted || shouldShowNodeLabel(node, globalScale))) {
-      const fontSize = Math.max(10 / globalScale, 2);
+    if (
+      labels &&
+      (isSelected || isHighlighted || onOpenGroup || shouldShowNodeLabel(node, globalScale))
+    ) {
+      const fontSize = 13 / globalScale;
       ctx.font = `${fontSize}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillStyle = palette.nodeLabel;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(node.label.slice(0, 32), x, y + size + 2);
+      const text = node.label.length > 36 ? node.label.slice(0, 35) + '…' : node.label;
+      const textWidth = ctx.measureText(text).width;
+      const box: [number, number, number, number] = [
+        x - textWidth / 2 - 3 / globalScale,
+        y + size + 2,
+        x + textWidth / 2 + 3 / globalScale,
+        y + size + 2 + fontSize + 3 / globalScale,
+      ];
+      const overlaps = labelBoxes.current.some(
+        (b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1],
+      );
+      if (!overlaps || isSelected) {
+        labelBoxes.current.push(box);
+        ctx.fillText(text, x, y + size + 2);
+      }
     }
   };
 
   const handleNodeClick = (node: ForceGraphNode, event: MouseEvent) => {
+    if (onOpenGroup) {
+      onOpenGroup(node.id);
+      return;
+    }
     const aggregateDocumentId = documentIdForSummary(node);
     if (aggregateDocumentId) {
       setSelectedNodeId(aggregateDocumentId);
@@ -454,6 +619,7 @@ export function GraphView() {
       return;
     }
     if (event.detail === 2) {
+      onFocusNode?.(node.id);
       toggleExpansion(node.id);
     } else {
       setSelectedNodeId(node.id);
@@ -480,6 +646,12 @@ export function GraphView() {
         !error &&
         (viewMode === '2d' ? (
           <ForceGraph2D
+            ref={fg2dRef}
+            onRenderFramePre={() => {
+              labelBoxes.current = [];
+            }}
+            onEngineStop={fitOnce}
+            onEngineTick={configureForces}
             graphData={graphData}
             width={width}
             height={height}
@@ -498,6 +670,7 @@ export function GraphView() {
               const x = node.x ?? 0;
               const y = node.y ?? 0;
               const size =
+                node.__drawRadius ??
                 (node.__aggregateForDocumentId
                   ? 5
                   : NODE_KIND_SIZES[node.kind] * entityImportanceScale(node)) + 2;
@@ -527,6 +700,9 @@ export function GraphView() {
         ) : (
           <ForceGraph3D
             ref={fg3dRef}
+            onEngineStop={fitOnce}
+            onEngineTick={configureForces}
+            cooldownTicks={100}
             graphData={graphData}
             // Geometry detail, not visual detail. Every node is a sphere and
             // every flow particle is another one, so segment counts multiply by
@@ -543,8 +719,15 @@ export function GraphView() {
             nodeId="id"
             nodeLabel={(node: ForceGraphNode) => createGraphTooltip(describeGraphNode(node))}
             nodeColor={nodeColorFor}
+            nodeThreeObject={label3d}
+            nodeThreeObjectExtend={true}
+            linkOpacity={0.65}
             nodeVal={(n: ForceGraphNode) =>
-              n.__aggregateForDocumentId ? 4 : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
+              n.__aggregateForDocumentId
+                ? 4
+                : onOpenGroup
+                  ? 15 + Math.log2((n.ref_count ?? 1) + 1) * 4
+                  : NODE_KIND_SIZES[n.kind] * entityImportanceScale(n)
             }
             linkColor={graphLinkColor}
             linkLabel={(link: ForceGraphLink) => createGraphTooltip(describeGraphEdge(link))}
@@ -562,27 +745,40 @@ export function GraphView() {
           />
         ))}
       {!isLoading && !error && (
-        <div className="pointer-events-none absolute bottom-3 left-3 max-w-sm rounded-md border border-slate-700/80 bg-slate-950/90 px-3 py-2 text-[11px] text-slate-300 shadow-lg">
-          <div className="flex flex-wrap gap-x-3 gap-y-1">
-            <GraphLegend color={linkColors.triple} label="fact relationship" />
-            <GraphLegend color={linkColors.cluster_member} label="memory cluster" />
-            <GraphLegend color={linkColors.document_chunk} label="document section" />
-          </div>
-          <p className="mt-1 text-slate-400">
-            Hover links for meaning. Double-click a node to reveal hidden neighbors.
-          </p>
+        <div className="graph-navigation">
+          {viewMode === '2d' && (
+            <>
+              <button
+                aria-label="Zoom in"
+                onClick={() => {
+                  const fg = fg2dRef.current;
+                  fg?.zoom?.((fg.zoom?.() ?? 1) * 1.4, 200);
+                }}
+              >
+                <Plus />
+              </button>
+              <button
+                aria-label="Zoom out"
+                onClick={() => {
+                  const fg = fg2dRef.current;
+                  fg?.zoom?.((fg.zoom?.() ?? 1) / 1.4, 200);
+                }}
+              >
+                <Minus />
+              </button>
+            </>
+          )}
+          <button aria-label="Fit graph" onClick={fitGraph}>
+            <ArrowsOut />
+          </button>
+          <span>
+            {onOpenGroup
+              ? 'Groups are connected where their items share relationships.'
+              : 'Select a memory to read it. Double-click to expand connections.'}
+          </span>
         </div>
       )}
     </div>
-  );
-}
-
-function GraphLegend({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1">
-      <span className="h-0.5 w-4" style={{ backgroundColor: color }} aria-hidden="true" />
-      {label}
-    </span>
   );
 }
 

@@ -87,19 +87,21 @@ describe('SetupGuideView', () => {
     const onModeChange = vi.fn();
     render(wrap(<SetupGuideView onModeChange={onModeChange} />));
 
-    expect(await screen.findByText('6 of 7 complete')).toBeInTheDocument();
+    expect(await screen.findByText('4 of 7 complete')).toBeInTheDocument();
     expect(screen.getAllByText('Community Memory Library').length).toBeGreaterThan(0);
     expect(screen.getByText('Start Solo')).toBeInTheDocument();
     expect(screen.getAllByText('Memory library').length).toBeGreaterThan(0);
     expect(screen.getByText('one private local library')).toBeInTheDocument();
     expect(screen.getByText('Connect Codex')).toBeInTheDocument();
-    expect(screen.getByText('native HTTP MCP config')).toBeInTheDocument();
+    expect(screen.getByText('Open Codex and ask it to save your first memory')).toBeInTheDocument();
     expect(screen.getByText('Connect Claude')).toBeInTheDocument();
-    expect(screen.getByText('Claude Desktop MCP config')).toBeInTheDocument();
+    expect(screen.getByText('Open Claude and recall the memory you saved in Codex')).toBeInTheDocument();
     expect(screen.getByText('Import memory')).toBeInTheDocument();
     expect(screen.getByText('Review inbox')).toBeInTheDocument();
     expect(screen.getByText('Create backup')).toBeInTheDocument();
-    expect(screen.getAllByText('1 sessions').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('verify in client')).toHaveLength(2);
+    expect(screen.queryByText('1 sessions')).not.toBeInTheDocument();
+    expect(screen.getByText(/Active sessions do not identify/)).toBeInTheDocument();
     expect(screen.getByText('1 docs')).toBeInTheDocument();
     expect(screen.getAllByText('1 reviewed').length).toBeGreaterThan(0);
     expect(screen.queryByText('Open health')).not.toBeInTheDocument();

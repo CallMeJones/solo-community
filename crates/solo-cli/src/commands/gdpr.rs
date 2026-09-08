@@ -24,10 +24,18 @@ use crate::commands::common::AdminContext;
 /// changing the top-level CLI surface.
 #[derive(Debug, Subcommand)]
 pub enum GdprCommand {
+    /// Report unattributed legacy records for manual review; changes no records.
+    Audit(AuditArgs),
     /// Hard-delete every row tied to `--subject`.
     /// Irreversible. Requires `--confirm`; large scopes also require
     /// `--double-confirm`.
     Forget(ForgetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AuditArgs {
+    #[arg(long, env = "SOLO_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -60,6 +68,19 @@ const DOUBLE_CONFIRM_EPISODE_THRESHOLD: u64 = 100;
 pub async fn run(cmd: GdprCommand) -> Result<()> {
     match cmd {
         GdprCommand::Forget(args) => run_forget(args).await,
+        GdprCommand::Audit(args) => {
+            let admin = AdminContext::bootstrap(args.data_dir)?;
+            let report = solo_storage::audit_attribution(
+                &admin.data_dir().join(solo_storage::COMMUNITY_DB_FILENAME),
+                admin.key(),
+            );
+            admin.shutdown().await?;
+            println!("{}", serde_json::to_string_pretty(&report?)?);
+            eprintln!(
+                "Unknown owners require manual review. Do not infer attribution or bulk-delete these records. Existing backups, exports and external copies need separate review."
+            );
+            Ok(())
+        }
     }
 }
 
@@ -130,13 +151,20 @@ async fn run_forget(args: ForgetArgs) -> Result<()> {
     .await
     .context("spawn_blocking forget_principal")??;
 
-    println!("✓ forgot subject=`{subject_trimmed}` in tenant=`{tenant_id}`");
+    println!("✓ forgot subject=`{subject_trimmed}` in library=`{tenant_id}`");
     println!(
         "  episodes_deleted = {}, triples_deleted = {}, chunks_deleted = {}, hnsw_rebuilt = {}",
         report.episodes_deleted, report.triples_deleted, report.chunks_deleted, report.hnsw_rebuilt
     );
     println!(
-        "  admin audit row id = {} (in tenants_index.db::audit_events_admin)",
+        "  documents_deleted = {}, assets_deleted = {}",
+        report.documents_deleted, report.assets_deleted
+    );
+    println!(
+        "  Existing backups, exports and unattributed legacy records require separate review."
+    );
+    println!(
+        "  admin audit row id = {} (in solo.db::audit_events_admin)",
         report.audit_admin_row_id
     );
 

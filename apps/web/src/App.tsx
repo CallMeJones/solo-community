@@ -35,8 +35,8 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { BackupView } from './components/BackupView';
 import { MemoryPolicyPanel } from './components/MemoryPolicyPanel';
 import { SetupGuideView } from './components/SetupGuideView';
-import { StatusStrip } from './components/StatusStrip';
-import { Toolbar } from './components/Toolbar';
+import { MemoryWorkspace } from './components/MemoryWorkspace';
+import { Books, Tray, Folder, PlugsConnected, Gear, ShieldCheck } from '@phosphor-icons/react';
 import { GraphEffectsToggle, NodePalettePicker, ThemePicker } from './components/ThemePicker';
 import { CopyButton } from './components/ui/CopyButton';
 import { DEFAULT_SOLO_API_URL, MCP_BRIDGE_URL } from './config/defaults';
@@ -64,9 +64,6 @@ import {
 
 type AppMode = AppRouteId;
 
-const GraphView = lazy(() =>
-  import('./components/GraphView').then((m) => ({ default: m.GraphView })),
-);
 const ImportView = lazy(() =>
   import('./components/ImportView').then((m) => ({ default: m.ImportView })),
 );
@@ -77,20 +74,15 @@ const LogsView = lazy(() => import('./components/LogsView').then((m) => ({ defau
 const ProjectsView = lazy(() =>
   import('./components/ProjectsView').then((m) => ({ default: m.ProjectsView })),
 );
-const InspectorPanel = lazy(() =>
-  import('./components/InspectorPanel').then((m) => ({ default: m.InspectorPanel })),
-);
 
 const APP_MODES: readonly CoreRouteId[] = CORE_ROUTE_IDS;
 
-const NAV_ITEMS: Array<{ mode: CoreRouteId; label: string }> = [
-  { mode: 'home', label: 'Home' },
-  { mode: 'memories', label: 'Memories' },
-  { mode: 'inbox', label: 'Inbox' },
-  { mode: 'import', label: 'Import' },
-  { mode: 'projects', label: 'Projects' },
-  { mode: 'settings', label: 'Settings' },
-];
+const NAV_ITEMS = [
+  { mode: 'memories', label: 'Memories', icon: Books },
+  { mode: 'inbox', label: 'Inbox', icon: Tray },
+  { mode: 'projects', label: 'Projects', icon: Folder },
+  { mode: 'connections', label: 'Connected apps', icon: PlugsConnected },
+] as const;
 
 const USE_MOCKS = import.meta.env.VITE_SOLO_USE_MOCKS === '1';
 
@@ -119,75 +111,68 @@ export default function App({ host = communityWebHost }: { host?: SoloWebHost })
     ...NAV_ITEMS,
     ...host.routes
       .filter((module) => module.nav !== false)
-      .map((module) => ({ mode: module.id, label: module.label })),
+      .map((module) => ({ mode: module.id, label: module.label, icon: Folder })),
   ];
   const moduleContext: SoloWebModuleContext = { apiUrl, navigate: setMode };
 
   return (
-    <div className="solo-surface flex h-screen w-screen flex-col bg-slate-950 text-slate-100 md:flex-row">
-      <aside className="flex shrink-0 flex-col border-b border-slate-800 bg-slate-950 md:w-56 md:border-b-0 md:border-r">
-        <div className="border-b border-slate-800 px-4 py-3 md:py-4">
-          <div className="text-base font-semibold text-slate-100">{host.productName}</div>
-          <div className="mt-1 text-xs text-slate-400">{host.tagline}</div>
+    <div className="solo-surface solo-workspace">
+      <aside className="workspace-sidebar">
+        <div className="workspace-brand">
+          <div>{host.productName}</div>
+          <p>
+            Private memory for
+            <br />a more capable you
+          </p>
         </div>
-
-        <nav
-          aria-label="Solo"
-          className="flex gap-1 overflow-x-auto px-3 py-3 md:flex-1 md:flex-col md:overflow-x-visible"
-        >
+        <nav aria-label="Solo">
           {navItems.map((item) => (
             <button
               key={item.mode}
               type="button"
               onClick={() => setMode(item.mode)}
               aria-current={mode === item.mode ? 'page' : undefined}
-              className={[
-                'h-9 shrink-0 rounded-md px-3 text-left text-sm transition-colors md:w-full',
-                mode === item.mode
-                  ? 'bg-slate-800 text-white'
-                  : 'text-slate-400 hover:bg-slate-900 hover:text-slate-100',
-              ].join(' ')}
             >
-              {item.label}
+              <item.icon size={23} />
+              <span>{item.label}</span>
             </button>
           ))}
         </nav>
-
-        <div className="hidden border-t border-slate-800 px-4 py-3 text-xs text-slate-400 md:block">
-          Solo API <span className="font-mono text-slate-300">{compactHost(apiUrl)}</span>
+        <div className="sidebar-footer">
+          <button
+            onClick={() => setMode('settings')}
+            aria-current={mode === 'settings' ? 'page' : undefined}
+          >
+            <Gear size={23} />
+            Settings
+          </button>
+          <div className="local-status">
+            <ShieldCheck size={18} />
+            <span>Local Community library</span>
+          </div>
         </div>
       </aside>
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <StatusStrip />
+      <div className="workspace-main">
+        {import.meta.env.VITE_SOLO_PREVIEW_LABEL && (
+          <div className="px-5 py-2 text-xs text-amber-200">
+            {import.meta.env.VITE_SOLO_PREVIEW_LABEL}
+          </div>
+        )}
         <HostSlotModules modules={host.statusModules} context={moduleContext} />
-        <div className="flex flex-1 overflow-hidden">
-          <main className="relative min-w-0 flex-1">
-            <Suspense fallback={<PanelLoading label="Loading" />}>
-              <ModeView
-                mode={mode}
-                host={host}
-                moduleContext={moduleContext}
-                onModeChange={setMode}
-                onSelectEpisode={(id) => {
-                  setSelectedNodeId(id);
-                  setMode('memories');
-                }}
-              />
-            </Suspense>
-          </main>
-          {mode === 'memories' && (
-            <aside
-              className="w-96 shrink-0 overflow-y-auto border-l border-slate-800 bg-slate-900/60 p-4"
-              tabIndex={0}
-              aria-label="Inspector panel"
-            >
-              <Suspense fallback={<PanelLoading label="Inspector" compact />}>
-                <InspectorPanel />
-              </Suspense>
-            </aside>
-          )}
-        </div>
+        <main className="workspace-route">
+          <Suspense fallback={<PanelLoading label="Loading" />}>
+            <ModeView
+              mode={mode}
+              host={host}
+              moduleContext={moduleContext}
+              onModeChange={setMode}
+              onSelectEpisode={(id) => {
+                setSelectedNodeId(id);
+                setMode('memories');
+              }}
+            />
+          </Suspense>
+        </main>
       </div>
     </div>
   );
@@ -234,18 +219,7 @@ function ModeView({
     case 'logs':
       return <LogsView />;
     case 'memories':
-      // Explicit flex column: <main> is a block container, so a bare `h-full`
-      // on GraphView resolved against main's *full* height and ignored the
-      // toolbar above it — overflowing the viewport and hiding the legend that
-      // anchors to the graph's bottom edge.
-      return (
-        <div className="flex h-full flex-col">
-          <Toolbar />
-          <div className="min-h-0 flex-1">
-            <GraphView />
-          </div>
-        </div>
-      );
+      return <MemoryWorkspace onImport={() => onModeChange('import')} />;
     case 'inbox':
       return <InboxView onSelectEpisode={onSelectEpisode} />;
     case 'import':
@@ -277,7 +251,13 @@ function HostSlotModules({
   context: SoloWebModuleContext;
 }) {
   if (modules.length === 0) return null;
-  return <>{modules.map((module) => <div key={module.id}>{module.render(context)}</div>)}</>;
+  return (
+    <>
+      {modules.map((module) => (
+        <div key={module.id}>{module.render(context)}</div>
+      ))}
+    </>
+  );
 }
 
 function HomeView({ onModeChange }: { onModeChange: (mode: AppMode) => void }) {
@@ -598,7 +578,7 @@ function ConnectionsView() {
   ];
 
   return (
-    <PageChrome title="Connections" eyebrow="Tools">
+    <PageChrome title="Connected apps" eyebrow="Your assistants">
       <div className="grid gap-3 lg:grid-cols-4">
         <MetricTile label="Solo MCP" value={solo.data?.ok ? 'ready' : statusLabel(solo.status)} />
         <MetricTile label="MCP sessions" value={String(solo.data?.mcp.sessions ?? 0)} />
@@ -704,6 +684,8 @@ function SettingsView({
 }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState('general');
+  const visible = (name: string) => category === name || category === 'all';
   const [ollamaModel, setOllamaModel] = useState('nomic-embed-text');
   const [ollamaDim, setOllamaDim] = useState('768');
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState('http://localhost:11434');
@@ -742,9 +724,51 @@ function SettingsView({
   });
 
   return (
-    <PageChrome title="Settings" eyebrow="Desktop">
+    <PageChrome title="Settings" eyebrow="On this device">
+      {(window as Window & { __SOLO_DESKTOP__?: boolean }).__SOLO_DESKTOP__ && (
+        <div className="settings-shortcuts">
+          <a className="workspace-button" href="solo://app/index.html#settings">
+            Device unlock & startup
+          </a>
+        </div>
+      )}
+      <div className="settings-shortcuts">
+        {(['setup', 'backups', 'health', 'logs', 'home'] as const).map((route) => (
+          <button className="workspace-button" key={route} onClick={() => onModeChange(route)}>
+            {
+              {
+                setup: 'Setup & recovery',
+                backups: 'Backup & restore',
+                health: 'Diagnostics',
+                logs: 'View logs',
+                home: 'Library status',
+              }[route]
+            }
+          </button>
+        ))}
+      </div>
+      <div className="settings-categories" role="group" aria-label="Settings category">
+        {[
+          { id: 'general', label: 'General' },
+          { id: 'memory', label: 'Memory & intelligence' },
+          { id: 'advanced', label: 'Advanced' },
+          { id: 'all', label: 'All settings' },
+        ].map((item) => (
+          <button
+            className="workspace-button"
+            key={item.id}
+            aria-pressed={category === item.id}
+            onClick={() => setCategory(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
       <div className="grid max-w-6xl gap-4 xl:grid-cols-2">
-        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+        <section
+          hidden={!visible('advanced')}
+          className="rounded-lg border border-slate-800 bg-slate-900/45 p-4"
+        >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-100">Endpoints</h2>
@@ -782,7 +806,10 @@ function SettingsView({
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+        <section
+          hidden={!visible('general')}
+          className="rounded-lg border border-slate-800 bg-slate-900/45 p-4"
+        >
           <h2 className="text-sm font-semibold text-slate-100">Appearance</h2>
           <p className="mt-1 text-xs text-slate-400">
             Applied immediately and remembered on this device.
@@ -791,8 +818,8 @@ function SettingsView({
 
           <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph colors</h3>
           <p className="mt-1 text-xs text-slate-400">
-            Node and connection colors in Memories. Independent of the theme — each palette
-            has a variant tuned for light and dark surfaces.
+            Node and connection colors in Memories. Independent of the theme — each palette has a
+            variant tuned for light and dark surfaces.
           </p>
           <NodePalettePicker />
 
@@ -800,7 +827,10 @@ function SettingsView({
           <GraphEffectsToggle />
         </section>
 
-        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+        <section
+          hidden={!visible('advanced')}
+          className="rounded-lg border border-slate-800 bg-slate-900/45 p-4"
+        >
           <h2 className="text-sm font-semibold text-slate-100">MCP Connections</h2>
           <dl className="mt-4 space-y-3 text-sm">
             <StatusRow label="Endpoint" value={mcpUrl} />
@@ -839,7 +869,10 @@ function SettingsView({
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+        <section
+          hidden={!visible('memory')}
+          className="rounded-lg border border-slate-800 bg-slate-900/45 p-4"
+        >
           <h2 className="text-sm font-semibold text-slate-100">Runtime &amp; Embedder</h2>
           <dl className="mt-4 space-y-3 text-sm">
             <StatusRow
@@ -948,15 +981,26 @@ function SettingsView({
           </div>
         </section>
 
-        <CapabilityPanel solo={solo} />
+        <div hidden={!visible('memory')}>
+          <CapabilityPanel solo={solo} />
+        </div>
 
-        <StewardLlmPanel solo={solo} />
+        <div hidden={!visible('memory')}>
+          <StewardLlmPanel solo={solo} />
+        </div>
 
-        <StewardCadencePanel solo={solo} />
+        <div hidden={!visible('memory')}>
+          <StewardCadencePanel solo={solo} />
+        </div>
 
-        <DerivedMemoryPanel onModeChange={onModeChange} />
+        <div hidden={!visible('memory')}>
+          <DerivedMemoryPanel onModeChange={onModeChange} />
+        </div>
 
-        <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
+        <section
+          hidden={!visible('advanced')}
+          className="rounded-lg border border-slate-800 bg-slate-900/45 p-4"
+        >
           <h2 className="text-sm font-semibold text-slate-100">Admin &amp; Diagnostics</h2>
           <div className="mt-4 grid gap-2">
             <button
@@ -1015,9 +1059,7 @@ function CapabilityPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-slate-100">Memory Capabilities</h2>
-          <p className="mt-1 text-xs text-slate-400">
-            What works now, what is waiting, and why.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">What works now, what is waiting, and why.</p>
         </div>
         <button
           type="button"
@@ -1039,7 +1081,9 @@ function CapabilityPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
               <div key={key} className="rounded-md border border-slate-800 bg-slate-950/60 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-slate-200">{label}</span>
-                  <span className={`rounded px-2 py-0.5 text-[11px] uppercase ${capabilityTone(capability.state)}`}>
+                  <span
+                    className={`rounded px-2 py-0.5 text-[11px] uppercase ${capabilityTone(capability.state)}`}
+                  >
                     {capability.state}
                   </span>
                 </div>
@@ -1217,12 +1261,14 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
 
       {llmMode === 'ollama' && (
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {([
-            ['local', 'Local model'],
-            ['signed_cloud', 'Cloud via local'],
-            ['cloud', 'Cloud direct'],
-            ['custom', 'Custom'],
-          ] as const).map(([route, label]) => (
+          {(
+            [
+              ['local', 'Local model'],
+              ['signed_cloud', 'Cloud via local'],
+              ['cloud', 'Cloud direct'],
+              ['custom', 'Custom'],
+            ] as const
+          ).map(([route, label]) => (
             <button
               key={route}
               type="button"
@@ -1255,31 +1301,31 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
           </label>
           {llmMode === 'ollama' ? (
             <>
-            <label className="text-xs font-medium uppercase text-slate-400">
-              Base URL
-              <input
-                value={llmBaseUrl}
-                disabled={ollamaRoute !== 'custom'}
-                onChange={(event) => {
-                  setDirty(true);
-                  setLlmBaseUrl(event.target.value);
-                }}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-slate-500"
-              />
-            </label>
-            {(ollamaRoute === 'cloud' || ollamaRoute === 'custom') && (
               <label className="text-xs font-medium uppercase text-slate-400">
-                API key env {ollamaRoute === 'custom' && '(optional)'}
+                Base URL
                 <input
-                  value={llmApiKeyEnv}
+                  value={llmBaseUrl}
+                  disabled={ollamaRoute !== 'custom'}
                   onChange={(event) => {
                     setDirty(true);
-                    setLlmApiKeyEnv(event.target.value);
+                    setLlmBaseUrl(event.target.value);
                   }}
-                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-slate-500"
                 />
               </label>
-            )}
+              {(ollamaRoute === 'cloud' || ollamaRoute === 'custom') && (
+                <label className="text-xs font-medium uppercase text-slate-400">
+                  API key env {ollamaRoute === 'custom' && '(optional)'}
+                  <input
+                    value={llmApiKeyEnv}
+                    onChange={(event) => {
+                      setDirty(true);
+                      setLlmApiKeyEnv(event.target.value);
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case text-slate-100 outline-none focus:border-sky-500"
+                  />
+                </label>
+              )}
             </>
           ) : (
             <label className="text-xs font-medium uppercase text-slate-400">
@@ -1304,7 +1350,9 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
       )}
 
       {llmMode !== 'none' && (
-        <div className={`mt-4 rounded-md border px-3 py-3 text-xs ${hostedProcessing ? 'border-amber-800/70 bg-amber-950/25 text-amber-100' : 'border-emerald-800/70 bg-emerald-950/25 text-emerald-100'}`}>
+        <div
+          className={`mt-4 rounded-md border px-3 py-3 text-xs ${hostedProcessing ? 'border-amber-800/70 bg-amber-950/25 text-amber-100' : 'border-emerald-800/70 bg-emerald-950/25 text-emerald-100'}`}
+        >
           <div className="font-medium">
             {hostedProcessing
               ? `Memory content will be processed off device by ${llmMode === 'ollama' ? (ollamaRoute === 'cloud' || ollamaRoute === 'signed_cloud' || normalizedLlmModel.endsWith('-cloud') ? 'Ollama Cloud' : 'the configured Ollama host') : llmMode === 'anthropic' ? 'Anthropic' : 'OpenAI'}.`
@@ -1321,7 +1369,10 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
                 }}
                 className="mt-0.5"
               />
-              <span>I understand selected memory content will leave this device and consent to this provider processing it.</span>
+              <span>
+                I understand selected memory content will leave this device and consent to this
+                provider processing it.
+              </span>
             </label>
           )}
         </div>
@@ -1360,11 +1411,14 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
         </p>
       )}
 
-      {llmSwitch.data?.restart_required && needsFreshSupervisorEnvironment && runtimeMatches !== true && (
-        <p className="mt-4 rounded-md border border-amber-800/70 bg-amber-950/25 px-3 py-2 text-xs text-amber-100">
-          Set the named environment variable, then fully quit and reopen Solo Controls. A daemon-only restart cannot inherit a newly added API key.
-        </p>
-      )}
+      {llmSwitch.data?.restart_required &&
+        needsFreshSupervisorEnvironment &&
+        runtimeMatches !== true && (
+          <p className="mt-4 rounded-md border border-amber-800/70 bg-amber-950/25 px-3 py-2 text-xs text-amber-100">
+            Set the named environment variable, then fully quit and reopen Solo Controls. A
+            daemon-only restart cannot inherit a newly added API key.
+          </p>
+        )}
 
       {runtimeRestart.data && (
         <p className="mt-4 rounded-md border border-emerald-800/70 bg-emerald-950/25 px-3 py-2 text-xs text-emerald-100">
@@ -1376,7 +1430,8 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
         <div className="mt-4 rounded-md border border-emerald-800/70 bg-emerald-950/20 px-3 py-3 text-xs text-emerald-100">
           <div className="font-medium">Backfill existing memories now</div>
           <p className="mt-1 text-emerald-200">
-            Run clustering and knowledge extraction immediately instead of waiting for the hourly schedule.
+            Run clustering and knowledge extraction immediately instead of waiting for the hourly
+            schedule.
           </p>
           {backfillStatus && (
             <div className="mt-3">
@@ -1401,20 +1456,20 @@ function StewardLlmPanel({ solo }: { solo: UseQueryResult<SoloStatus, Error> }) 
             disabled={backfill.isPending || backfillStatus?.status === 'running'}
             className="mt-3 rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-700"
           >
-            {backfillStatus?.status === 'running' || backfill.isPending ? 'Backfill running' : 'Backfill existing memories'}
+            {backfillStatus?.status === 'running' || backfill.isPending
+              ? 'Backfill running'
+              : 'Backfill existing memories'}
           </button>
         </div>
       )}
 
       <div className="mt-5 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => llmSwitch.mutate()}
-            disabled={
-              llmSwitch.isPending ||
-              signedCloudModelInvalid ||
-              (hostedProcessing && !hostedConsent)
-            }
+        <button
+          type="button"
+          onClick={() => llmSwitch.mutate()}
+          disabled={
+            llmSwitch.isPending || signedCloudModelInvalid || (hostedProcessing && !hostedConsent)
+          }
           className="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-700"
         >
           {llmSwitch.isPending ? 'Applying' : 'Apply LLM config'}
@@ -2796,5 +2851,5 @@ function compactHost(url: string): string {
 function modeFromHash(hash: string, host: SoloWebHost): AppMode {
   const value = hash.replace(/^#/, '').trim().toLowerCase();
   if (APP_MODES.includes(value as CoreRouteId)) return value as CoreRouteId;
-  return host.routes.some((module) => module.id === value) ? value : 'home';
+  return host.routes.some((module) => module.id === value) ? value : 'memories';
 }

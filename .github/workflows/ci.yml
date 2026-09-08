@@ -32,11 +32,6 @@
 #   - Build the release profile or run benchmarks. PRs ship debug-
 #     build correctness; release-build perf belongs in a separate
 #     scheduled workflow if/when wanted.
-#   - Gate publish.yml on this workflow's success. publish.yml has
-#     its own test gate (which itself mirrors this job's two-pass
-#     split). Making one workflow depend on the other adds brittleness
-#     without adding signal — both gates close the same window from
-#     different ends.
 #   - Deploy the rendered book. The `book` job validates the mdbook
 #     source can build; publishing the built HTML to GitHub Pages is
 #     a separate workflow (`book-deploy.yml`) that hasn't landed yet.
@@ -49,6 +44,8 @@ on:
   pull_request:
     branches: [main, pilot]
   workflow_dispatch:
+  # Release workflows call this same suite at their checked-out commit.
+  workflow_call:
 
 # Same PR / branch — cancel the older run when a new push arrives.
 # `github.ref` resolves to `refs/pull/<n>/merge` on PRs and to the
@@ -56,7 +53,7 @@ on:
 # fire-storm cancels its own predecessors but doesn't interfere with
 # concurrent main-pushes from other PRs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: community-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 # Read-only is enough — no asset uploads or release writes here.
@@ -116,6 +113,10 @@ jobs:
       - name: Install locked Web dependencies
         working-directory: apps/web
         run: npm ci --no-audit --no-fund
+
+      - name: Audit web dependencies
+        working-directory: apps/web
+        run: npm audit --audit-level=low
 
       - name: Typecheck Web
         working-directory: apps/web
@@ -279,8 +280,20 @@ jobs:
       - name: Enforce Community release boundary
         run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
 
-      - name: Test Community API
-        run: cargo test --locked -p solo-api
+      - name: Test Community API and capture native crashes
+        shell: pwsh
+        run: ./scripts/test_windows_api.ps1
+
+      - name: Retain failed API process diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-api-diagnostics-${{ github.sha }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: |
+            target/windows-api-diagnostics/**/*.log
+            target/windows-api-diagnostics/**/*.dmp
 
       - name: Test and lint Windows tray
         shell: pwsh

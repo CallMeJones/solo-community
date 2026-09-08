@@ -51,8 +51,7 @@ export function buildGraphPresentation(
   const nodes: PresentedGraphNode[] = visibleRealNodes.map((node) => ({
     ...node,
     __highlighted:
-      q.length > 0 &&
-      (node.label.toLowerCase().includes(q) || node.id.toLowerCase().includes(q)),
+      q.length > 0 && (node.label.toLowerCase().includes(q) || node.id.toLowerCase().includes(q)),
     __relationshipCount: relationshipCounts.get(node.id) ?? 0,
     __hiddenNeighborCount: hiddenNeighborCounts.get(node.id) ?? 0,
   }));
@@ -124,6 +123,8 @@ export function describeGraphNode(node: PresentedGraphNode): string {
 }
 
 export function describeGraphEdge(edge: PresentedGraphLink): string {
+  if (edge.meta?.grouped_relationships)
+    return `${edge.meta.evidence_count} stored relationships between these groups`;
   switch (edge.kind) {
     case 'triple': {
       const relationship = friendlyPredicate(edge.predicate ?? 'relationship');

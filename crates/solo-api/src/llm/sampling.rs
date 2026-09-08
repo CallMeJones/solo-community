@@ -570,6 +570,7 @@ fn extract_text(result: &CreateMessageResult) -> Result<String, &'static str> {
 mod tests {
     use super::*;
     use crate::test_support::{FakeMcpClient, FakeResponse, FakeSamplingError};
+    use futures::FutureExt as _;
     use rmcp::model::CreateMessageResult;
     use solo_storage::{
         EmbedderConfig, HnswParams, InitParams, KeyMaterial, LibraryHandle, MemoryLibrary,
@@ -650,6 +651,34 @@ mod tests {
         }
     }
 
+    async fn with_harness(test: impl AsyncFnOnce(&Harness)) {
+        let h = harness().await;
+        // Drop every test-local client before closing its library, including
+        // when an assertion panics. A detached native writer can outlive the
+        // test process and race SQLCipher cleanup on Windows.
+        let outcome = std::panic::AssertUnwindSafe(test(&h)).catch_unwind().await;
+        assert_eq!(
+            Arc::strong_count(&h._tenant),
+            2,
+            "test leaked a library handle"
+        );
+        let Harness {
+            _tmp,
+            _registry,
+            _tenant,
+            write_handle,
+            ..
+        } = h;
+        drop(write_handle);
+        drop(_tenant);
+        _registry.shutdown_with_snapshot(false).await;
+        drop(_registry);
+        drop(_tmp);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     /// Helper: count the `audit_events` rows whose `operation` is the
     /// given string. Opens a fresh connection to the tenant DB so we
     /// avoid contention with the writer-actor's own connection.
@@ -692,27 +721,30 @@ mod tests {
     /// exactly one `llm.sampling_call` audit row with `result = 'ok'`.
     #[tokio::test]
     async fn sampling_complete_happy_path_returns_text() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("derived theme")));
-        let client = SamplingLlmClient::with_sampling_client(
-            fake.clone(),
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
-        let messages = vec![Message::user("summarise these episodes")];
-        let result = client.complete(&messages).await.expect("ok");
-        assert_eq!(result.role, Role::Assistant);
-        assert_eq!(result.content, "derived theme");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("derived theme")));
+            let client = SamplingLlmClient::with_sampling_client(
+                fake.clone(),
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
+            let messages = vec![Message::user("summarise these episodes")];
+            let result = client.complete(&messages).await.expect("ok");
+            assert_eq!(result.role, Role::Assistant);
+            assert_eq!(result.content, "derived theme");
 
-        // Exactly one audit row landed.
-        assert_eq!(count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"), 1);
-        let (result_str, principal, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(result_str, "ok");
-        assert_eq!(principal.as_deref(), Some("alice"));
-        assert_eq!(details["model_hint"], "claude");
-        assert_eq!(details["model"], "fake-claude");
-        assert_eq!(details["messages_count"], 1);
-        assert_eq!(details["max_tokens"], 512);
+            // Exactly one audit row landed.
+            assert_eq!(count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"), 1);
+            let (result_str, principal, details) =
+                latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(result_str, "ok");
+            assert_eq!(principal.as_deref(), Some("alice"));
+            assert_eq!(details["model_hint"], "claude");
+            assert_eq!(details["model"], "fake-claude");
+            assert_eq!(details["messages_count"], 1);
+            assert_eq!(details["max_tokens"], 512);
+        })
+        .await;
     }
 
     /// Privacy invariant: the audit row's `details_json` MUST NOT
@@ -720,29 +752,32 @@ mod tests {
     /// the persisted JSON.
     #[tokio::test]
     async fn audit_row_omits_raw_prompt_text() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
-        let secret = "THE-USER-ID-IS-bobby-1234";
-        let messages = vec![
-            Message::system("you are a friendly assistant"),
-            Message::user(secret),
-        ];
-        client.complete(&messages).await.expect("ok");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
+            let secret = "THE-USER-ID-IS-bobby-1234";
+            let messages = vec![
+                Message::system("you are a friendly assistant"),
+                Message::user(secret),
+            ];
+            client.complete(&messages).await.expect("ok");
 
-        let (_, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        let serialised = serde_json::to_string(&details).expect("serialise details");
-        assert!(
-            !serialised.contains(secret),
-            "audit details must not carry raw prompt content; was: {serialised}"
-        );
-        assert!(
-            !serialised.contains("you are a friendly assistant"),
-            "audit details must not carry system prompt; was: {serialised}"
-        );
-        // Metadata IS present, even though the prompt is not.
-        assert_eq!(details["messages_count"], 1);
-        assert!(details["prompt_chars"].as_u64().unwrap() > 0);
+            let (_, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
+            let serialised = serde_json::to_string(&details).expect("serialise details");
+            assert!(
+                !serialised.contains(secret),
+                "audit details must not carry raw prompt content; was: {serialised}"
+            );
+            assert!(
+                !serialised.contains("you are a friendly assistant"),
+                "audit details must not carry system prompt; was: {serialised}"
+            );
+            // Metadata IS present, even though the prompt is not.
+            assert_eq!(details["messages_count"], 1);
+            assert!(details["prompt_chars"].as_u64().unwrap() > 0);
+        })
+        .await;
     }
 
     /// v0.9.1 P1 Fix 4 (F6 privacy bucketing): the audit row's
@@ -755,22 +790,25 @@ mod tests {
     /// audit row carries `8` (next pow2 ≥ 7), not 7.
     #[tokio::test]
     async fn audit_row_bucket_prompt_chars_to_pow2() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
-        // System: 6 chars + user: 1 char = 7 chars raw → bucket 8.
-        client
-            .complete(&[Message::system("hello "), Message::user("x")])
-            .await
-            .expect("ok");
-        let (_, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(
-            details["prompt_chars"].as_u64().unwrap(),
-            8,
-            "prompt_chars must be bucketed to next pow2 (7 → 8). \
-             raw count is a privacy side-channel; see Fix 4 F6 in \
-             v0.9.1 P1 dev log. got details={details}"
-        );
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
+            // System: 6 chars + user: 1 char = 7 chars raw → bucket 8.
+            client
+                .complete(&[Message::system("hello "), Message::user("x")])
+                .await
+                .expect("ok");
+            let (_, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(
+                details["prompt_chars"].as_u64().unwrap(),
+                8,
+                "prompt_chars must be bucketed to next pow2 (7 → 8). \
+                 raw count is a privacy side-channel; see Fix 4 F6 in \
+                 v0.9.1 P1 dev log. got details={details}"
+            );
+        })
+        .await;
     }
 
     /// Stability invariant: two prompts that fall in the SAME bucket
@@ -783,28 +821,31 @@ mod tests {
     /// across exact-character variations within the same bucket".)
     #[tokio::test]
     async fn audit_row_bucket_prompt_chars_is_stable_within_bucket() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
-        // 5 chars raw → bucket 8.
-        client
-            .complete(&[Message::user("hello")])
-            .await
-            .expect("ok");
-        let (_, _, details_5) = latest_sampling_audit_details(&h.db_path, &h.key);
-        // 7 chars raw → bucket 8.
-        client
-            .complete(&[Message::user("hellooo")])
-            .await
-            .expect("ok");
-        let (_, _, details_7) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(
-            details_5["prompt_chars"], details_7["prompt_chars"],
-            "5 chars and 7 chars must hash to the same bucket (8) — \
-             otherwise the bucketing is leaking raw fidelity. \
-             5-char details: {details_5}, 7-char details: {details_7}"
-        );
-        assert_eq!(details_5["prompt_chars"].as_u64().unwrap(), 8);
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
+            // 5 chars raw → bucket 8.
+            client
+                .complete(&[Message::user("hello")])
+                .await
+                .expect("ok");
+            let (_, _, details_5) = latest_sampling_audit_details(&h.db_path, &h.key);
+            // 7 chars raw → bucket 8.
+            client
+                .complete(&[Message::user("hellooo")])
+                .await
+                .expect("ok");
+            let (_, _, details_7) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(
+                details_5["prompt_chars"], details_7["prompt_chars"],
+                "5 chars and 7 chars must hash to the same bucket (8) — \
+                 otherwise the bucketing is leaking raw fidelity. \
+                 5-char details: {details_5}, 7-char details: {details_7}"
+            );
+            assert_eq!(details_5["prompt_chars"].as_u64().unwrap(), 8);
+        })
+        .await;
     }
 
     /// Unit-level pins for the bucketing helper. Catches a regression
@@ -830,25 +871,27 @@ mod tests {
     /// `result = 'forbidden'` + `details_json.reason = 'client_refused'`.
     #[tokio::test]
     async fn client_refusal_returns_forbidden_and_audits() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ignored")));
-        fake.reject_with("user dismissed approval");
-        let client = SamplingLlmClient::with_sampling_client(
-            fake,
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
-        let err = client
-            .complete(&[Message::user("anything")])
-            .await
-            .unwrap_err();
-        match err {
-            CoreError::Forbidden(_) => {}
-            other => panic!("expected Forbidden, got {other:?}"),
-        }
-        let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(result_str, "forbidden");
-        assert_eq!(details["reason"], "client_refused");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ignored")));
+            fake.reject_with("user dismissed approval");
+            let client = SamplingLlmClient::with_sampling_client(
+                fake,
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
+            let err = client
+                .complete(&[Message::user("anything")])
+                .await
+                .unwrap_err();
+            match err {
+                CoreError::Forbidden(_) => {}
+                other => panic!("expected Forbidden, got {other:?}"),
+            }
+            let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(result_str, "forbidden");
+            assert_eq!(details["reason"], "client_refused");
+        })
+        .await;
     }
 
     /// Timeout: tokio::time::timeout fires before the fake's `Slow`
@@ -860,24 +903,27 @@ mod tests {
     /// drag.
     #[tokio::test]
     async fn timeout_returns_error_with_timeout_reason() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::slow(
-            "late",
-            Duration::from_millis(800),
-        )));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None)
-            .with_timeout(Duration::from_millis(30));
-        let err = client
-            .complete(&[Message::user("hello")])
-            .await
-            .unwrap_err();
-        match err {
-            CoreError::Llm(msg) => assert!(msg.contains("timeout")),
-            other => panic!("expected Llm, got {other:?}"),
-        }
-        let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(result_str, "error");
-        assert_eq!(details["reason"], "timeout");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::slow(
+                "late",
+                Duration::from_millis(800),
+            )));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None)
+                    .with_timeout(Duration::from_millis(30));
+            let err = client
+                .complete(&[Message::user("hello")])
+                .await
+                .unwrap_err();
+            match err {
+                CoreError::Llm(msg) => assert!(msg.contains("timeout")),
+                other => panic!("expected Llm, got {other:?}"),
+            }
+            let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(result_str, "error");
+            assert_eq!(details["reason"], "timeout");
+        })
+        .await;
     }
 
     /// Malformed response: the fake returns a result with zero text
@@ -885,26 +931,32 @@ mod tests {
     /// `result = 'error'` + `details_json.reason = 'malformed_response'`.
     #[tokio::test]
     async fn malformed_response_returns_error_with_reason() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::EmptyContent));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
-        let err = client.complete(&[Message::user("hi")]).await.unwrap_err();
-        assert!(matches!(err, CoreError::Llm(_)));
-        let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(result_str, "error");
-        assert_eq!(details["reason"], "malformed_response");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::EmptyContent));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
+            let err = client.complete(&[Message::user("hi")]).await.unwrap_err();
+            assert!(matches!(err, CoreError::Llm(_)));
+            let (result_str, _, details) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(result_str, "error");
+            assert_eq!(details["reason"], "malformed_response");
+        })
+        .await;
     }
 
     /// `principal_subject = None` works — audit row still emits with
     /// NULL.
     #[tokio::test]
     async fn no_principal_emits_audit_with_null_principal() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
-        client.complete(&[Message::user("hi")]).await.expect("ok");
-        let (_, principal, _) = latest_sampling_audit_details(&h.db_path, &h.key);
-        assert_eq!(principal, None);
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake, h.write_handle.clone(), None);
+            client.complete(&[Message::user("hi")]).await.expect("ok");
+            let (_, principal, _) = latest_sampling_audit_details(&h.db_path, &h.key);
+            assert_eq!(principal, None);
+        })
+        .await;
     }
 
     /// Concurrency: 8 parallel `complete()` calls land 8 audit rows.
@@ -913,31 +965,33 @@ mod tests {
     /// interleaving / dropped rows).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn parallel_completes_serialise_audit_rows() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(
-            fake.clone(),
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
-        let mut futs = Vec::new();
-        for _ in 0..8 {
-            let c = client.clone();
-            futs.push(tokio::spawn(async move {
-                c.complete(&[Message::user("hi")]).await
-            }));
-        }
-        for f in futs {
-            f.await.expect("join").expect("ok");
-        }
-        assert_eq!(
-            count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
-            8,
-            "8 parallel calls must land 8 audit rows"
-        );
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client = SamplingLlmClient::with_sampling_client(
+                fake.clone(),
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
+            let mut futs = Vec::new();
+            for _ in 0..8 {
+                let c = client.clone();
+                futs.push(tokio::spawn(async move {
+                    c.complete(&[Message::user("hi")]).await
+                }));
+            }
+            for f in futs {
+                f.await.expect("join").expect("ok");
+            }
+            assert_eq!(
+                count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
+                8,
+                "8 parallel calls must land 8 audit rows"
+            );
 
-        // Each was a separate request to the fake.
-        assert_eq!(fake.record_requests().len(), 8);
+            // Each was a separate request to the fake.
+            assert_eq!(fake.record_requests().len(), 8);
+        })
+        .await;
     }
 
     /// `complete` translates the workspace's `Message::system` into the
@@ -945,94 +999,101 @@ mod tests {
     /// rmcp's `SamplingMessage::user_text` / `assistant_text`.
     #[tokio::test]
     async fn build_request_splits_system_from_messages() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client =
-            SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None);
-        client
-            .complete(&[
-                Message::system("be terse"),
-                Message::user("question"),
-                Message::assistant("answer"),
-            ])
-            .await
-            .expect("ok");
-        let recorded = fake.record_requests();
-        assert_eq!(recorded.len(), 1);
-        let req = &recorded[0];
-        assert_eq!(
-            req.system_prompt.as_deref(),
-            Some("be terse"),
-            "Role::System must map to system_prompt"
-        );
-        assert_eq!(req.messages.len(), 2);
-        // The remaining two messages are the user + assistant turns.
-        assert_eq!(req.messages[0].role, RmcpRole::User);
-        assert_eq!(req.messages[1].role, RmcpRole::Assistant);
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None);
+            client
+                .complete(&[
+                    Message::system("be terse"),
+                    Message::user("question"),
+                    Message::assistant("answer"),
+                ])
+                .await
+                .expect("ok");
+            let recorded = fake.record_requests();
+            assert_eq!(recorded.len(), 1);
+            let req = &recorded[0];
+            assert_eq!(
+                req.system_prompt.as_deref(),
+                Some("be terse"),
+                "Role::System must map to system_prompt"
+            );
+            assert_eq!(req.messages.len(), 2);
+            // The remaining two messages are the user + assistant turns.
+            assert_eq!(req.messages[0].role, RmcpRole::User);
+            assert_eq!(req.messages[1].role, RmcpRole::Assistant);
+        })
+        .await;
     }
 
     /// `model_preferences` carries the `claude` hint per plan §6.
     /// Pins the wire shape so a future change is a conscious decision.
     #[tokio::test]
     async fn build_request_includes_claude_model_hint() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client =
-            SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None);
-        client.complete(&[Message::user("hi")]).await.expect("ok");
-        let recorded = fake.record_requests();
-        let prefs = recorded[0].model_preferences.as_ref().expect("prefs");
-        let hint = prefs
-            .hints
-            .as_ref()
-            .and_then(|h| h.first())
-            .and_then(|h| h.name.clone())
-            .expect("hint name");
-        assert_eq!(hint, "claude");
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None);
+            client.complete(&[Message::user("hi")]).await.expect("ok");
+            let recorded = fake.record_requests();
+            let prefs = recorded[0].model_preferences.as_ref().expect("prefs");
+            let hint = prefs
+                .hints
+                .as_ref()
+                .and_then(|h| h.first())
+                .and_then(|h| h.name.clone())
+                .expect("hint name");
+            assert_eq!(hint, "claude");
+        })
+        .await;
     }
 
     /// `with_max_tokens(n)` propagates to the request's
     /// `max_tokens` field.
     #[tokio::test]
     async fn with_max_tokens_overrides_default() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client =
-            SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None)
-                .with_max_tokens(2048);
-        client.complete(&[Message::user("hi")]).await.expect("ok");
-        let recorded = fake.record_requests();
-        assert_eq!(recorded[0].max_tokens, 2048);
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client =
+                SamplingLlmClient::with_sampling_client(fake.clone(), h.write_handle.clone(), None)
+                    .with_max_tokens(2048);
+            client.complete(&[Message::user("hi")]).await.expect("ok");
+            let recorded = fake.record_requests();
+            assert_eq!(recorded[0].max_tokens, 2048);
+        })
+        .await;
     }
 
     /// Reconfiguring the fake mid-test produces distinct audit rows
     /// for each call (positive then negative).
     #[tokio::test]
     async fn reconfigurable_fake_distinguishes_audit_rows() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let client = SamplingLlmClient::with_sampling_client(
-            fake.clone(),
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let client = SamplingLlmClient::with_sampling_client(
+                fake.clone(),
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
 
-        client.complete(&[Message::user("a")]).await.expect("ok");
-        fake.reject_with("user said no");
-        let _ = client.complete(&[Message::user("b")]).await;
+            client.complete(&[Message::user("a")]).await.expect("ok");
+            fake.reject_with("user said no");
+            let _ = client.complete(&[Message::user("b")]).await;
 
-        let conn = open_sqlcipher(&h.db_path, &h.key).expect("open");
-        let mut stmt = conn
-            .prepare(
-                "SELECT result FROM audit_events WHERE operation = 'llm.sampling_call' ORDER BY ts_ms ASC, rowid ASC",
-            )
-            .expect("prepare");
-        let rows: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .expect("query")
-            .map(|r| r.expect("row"))
-            .collect();
-        assert_eq!(rows, vec!["ok".to_string(), "forbidden".to_string()]);
+            let conn = open_sqlcipher(&h.db_path, &h.key).expect("open");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT result FROM audit_events WHERE operation = 'llm.sampling_call' ORDER BY ts_ms ASC, rowid ASC",
+                )
+                .expect("prepare");
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query")
+                .map(|r| r.expect("row"))
+                .collect();
+            assert_eq!(rows, vec!["ok".to_string(), "forbidden".to_string()]);
+        }).await;
     }
 
     /// `extract_text` walks single-block content.
@@ -1226,28 +1287,31 @@ mod tests {
     /// expected text.
     #[tokio::test]
     async fn sampling_llm_client_uses_coordinator_in_production_path() {
-        let h = harness().await;
-        let fake: Arc<dyn SamplingClient> = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
-            fake.clone(),
-            Duration::from_millis(50),
-            10,
-        );
-        let client = SamplingLlmClient::with_sampling_client(
-            coord,
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
-        let result = client.complete(&[Message::user("test")]).await.expect("ok");
-        assert_eq!(result.role, Role::Assistant);
-        assert_eq!(result.content, "ok");
-        // Single audit row landed — per-call audit semantics
-        // unchanged by the coordinator wrap.
-        assert_eq!(
-            count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
-            1,
-            "one logical call → one audit row, even through coordinator"
-        );
+        with_harness(async |h| {
+            let fake: Arc<dyn SamplingClient> =
+                Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
+                fake.clone(),
+                Duration::from_millis(50),
+                10,
+            );
+            let client = SamplingLlmClient::with_sampling_client(
+                coord,
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
+            let result = client.complete(&[Message::user("test")]).await.expect("ok");
+            assert_eq!(result.role, Role::Assistant);
+            assert_eq!(result.content, "ok");
+            // Single audit row landed — per-call audit semantics
+            // unchanged by the coordinator wrap.
+            assert_eq!(
+                count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
+                1,
+                "one logical call → one audit row, even through coordinator"
+            );
+        })
+        .await;
     }
 
     /// End-to-end batching pin: N concurrent `complete()` calls within
@@ -1277,45 +1341,47 @@ mod tests {
         )
         .unwrap();
 
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text(&response)));
-        let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
-            fake.clone(),
-            // Wide window so all 5 submissions land in one batch.
-            Duration::from_secs(5),
-            10,
-        );
-        let client = SamplingLlmClient::with_sampling_client(
-            coord,
-            h.write_handle.clone(),
-            Some("alice".into()),
-        );
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text(&response)));
+            let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
+                fake.clone(),
+                // Wide window so all 5 submissions land in one batch.
+                Duration::from_secs(5),
+                10,
+            );
+            let client = SamplingLlmClient::with_sampling_client(
+                coord,
+                h.write_handle.clone(),
+                Some("alice".into()),
+            );
 
-        // Fire 5 concurrent `complete()` calls; the coordinator should
-        // coalesce them into ONE `FakeMcpClient::create_message` call.
-        let mut futs = Vec::new();
-        for i in 0..5 {
-            let c = client.clone();
-            futs.push(tokio::spawn(async move {
-                c.complete(&[Message::user(format!("task-{i}"))]).await
-            }));
-        }
-        for f in futs {
-            f.await.expect("join").expect("ok");
-        }
+            // Fire 5 concurrent `complete()` calls; the coordinator should
+            // coalesce them into ONE `FakeMcpClient::create_message` call.
+            let mut futs = Vec::new();
+            for i in 0..5 {
+                let c = client.clone();
+                futs.push(tokio::spawn(async move {
+                    c.complete(&[Message::user(format!("task-{i}"))]).await
+                }));
+            }
+            for f in futs {
+                f.await.expect("join").expect("ok");
+            }
 
-        // EXACTLY one inner RPC.
-        assert_eq!(
-            fake.record_requests().len(),
-            1,
-            "5 logical calls within window must coalesce to 1 inner RPC"
-        );
-        // BUT 5 audit rows — per-logical-call audit invariant preserved.
-        assert_eq!(
-            count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
-            5,
-            "5 logical calls → 5 audit rows (coordinator doesn't merge audits)"
-        );
+            // EXACTLY one inner RPC.
+            assert_eq!(
+                fake.record_requests().len(),
+                1,
+                "5 logical calls within window must coalesce to 1 inner RPC"
+            );
+            // BUT 5 audit rows — per-logical-call audit invariant preserved.
+            assert_eq!(
+                count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"),
+                5,
+                "5 logical calls → 5 audit rows (coordinator doesn't merge audits)"
+            );
+        })
+        .await;
     }
 
     /// Edge case: `coalesce_max_requests = 1` reduces the coordinator
@@ -1330,32 +1396,35 @@ mod tests {
     /// clamping for the `coalesce_max_requests = 0` case.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn coordinator_max_batch_one_acts_as_passthrough() {
-        let h = harness().await;
-        let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
-        let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
-            fake.clone(),
-            Duration::from_secs(5),
-            // max_batch=1 → every submission flushes immediately as
-            // a 1-element batch; pass-through behaviour.
-            1,
-        );
-        let client = SamplingLlmClient::with_sampling_client(coord, h.write_handle.clone(), None);
-        let mut futs = Vec::new();
-        for _ in 0..3 {
-            let c = client.clone();
-            futs.push(tokio::spawn(async move {
-                c.complete(&[Message::user("hi")]).await
-            }));
-        }
-        for f in futs {
-            f.await.expect("join").expect("ok");
-        }
-        // 3 logical calls → 3 inner RPCs (no coalescing).
-        assert_eq!(
-            fake.record_requests().len(),
-            3,
-            "max_batch=1 must pass through every submission as its own RPC"
-        );
-        assert_eq!(count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"), 3);
+        with_harness(async |h| {
+            let fake = Arc::new(FakeMcpClient::new(FakeResponse::text("ok")));
+            let coord: Arc<dyn SamplingClient> = super::super::SamplingCoordinator::with_settings(
+                fake.clone(),
+                Duration::from_secs(5),
+                // max_batch=1 → every submission flushes immediately as
+                // a 1-element batch; pass-through behaviour.
+                1,
+            );
+            let client =
+                SamplingLlmClient::with_sampling_client(coord, h.write_handle.clone(), None);
+            let mut futs = Vec::new();
+            for _ in 0..3 {
+                let c = client.clone();
+                futs.push(tokio::spawn(async move {
+                    c.complete(&[Message::user("hi")]).await
+                }));
+            }
+            for f in futs {
+                f.await.expect("join").expect("ok");
+            }
+            // 3 logical calls → 3 inner RPCs (no coalescing).
+            assert_eq!(
+                fake.record_requests().len(),
+                3,
+                "max_batch=1 must pass through every submission as its own RPC"
+            );
+            assert_eq!(count_audit_rows(&h.db_path, &h.key, "llm.sampling_call"), 3);
+        })
+        .await;
     }
 }

@@ -77,6 +77,13 @@ pub struct DocSearchHit {
 const MAX_DOC_SEARCH_CANDIDATES: usize = 200;
 const DOC_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DocSearchResult {
+    pub hits: Vec<DocSearchHit>,
+    pub retrieval_mode: crate::RetrievalMode,
+    pub warning: Option<String>,
+}
+
 /// Run a hybrid vector + lexical search restricted to document chunks.
 ///
 /// `limit` is clamped to `[1, 100]` (same convention as recall + the
@@ -99,7 +106,21 @@ pub async fn run_doc_search(
     query: &str,
     limit: usize,
 ) -> Result<Vec<DocSearchHit>> {
-    let result = run_doc_search_inner(
+    Ok(
+        run_doc_search_with_status(tenant, audit_principal, query, limit)
+            .await?
+            .hits,
+    )
+}
+
+/// Detailed result preserves degraded-mode metadata even when there are no hits.
+pub async fn run_doc_search_with_status(
+    tenant: &LibraryHandle,
+    audit_principal: Option<String>,
+    query: &str,
+    limit: usize,
+) -> Result<DocSearchResult> {
+    let result = run_doc_search_with_status_inner(
         tenant.embedder(),
         tenant.hnsw(),
         tenant.read(),
@@ -130,19 +151,30 @@ pub async fn run_doc_search_inner(
     query: &str,
     limit: usize,
 ) -> Result<Vec<DocSearchHit>> {
+    Ok(
+        run_doc_search_with_status_inner(embedder, hnsw, pool, query, limit)
+            .await?
+            .hits,
+    )
+}
+
+#[doc(hidden)]
+pub async fn run_doc_search_with_status_inner(
+    embedder: &Arc<dyn Embedder>,
+    hnsw: &Arc<dyn VectorIndex + Send + Sync>,
+    pool: &ReaderPool,
+    query: &str,
+    limit: usize,
+) -> Result<DocSearchResult> {
     if query.trim().is_empty() {
         return Err(Error::invalid_input("doc_search query must not be empty"));
     }
     let limit = limit.clamp(1, 100);
 
-    // Embed the query.
-    let q_emb = embedder.embed(query).await?;
-    let q_slice = q_emb
-        .as_f32_slice()
-        .ok_or_else(|| Error::embedder("embedder returned non-F32 vector; HNSW requires F32"))?;
-
     let candidate_limit = doc_search_candidate_limit(limit);
-    let hnsw_hits = hnsw.search(q_slice, candidate_limit)?;
+    let semantic =
+        crate::retrieval::semantic_candidates(embedder, hnsw, query, candidate_limit).await?;
+    let hnsw_hits = semantic.hits;
     let lexical_hits = fetch_lexical_chunk_hits(pool, query, candidate_limit).await?;
 
     // Decode HNSW ids: the index is shared between episodes and document
@@ -161,7 +193,11 @@ pub async fn run_doc_search_inner(
         })
         .collect();
     if decoded_chunk_hits.is_empty() && lexical_hits.is_empty() {
-        return Ok(Vec::new());
+        return Ok(DocSearchResult {
+            hits: Vec::new(),
+            retrieval_mode: semantic.mode,
+            warning: semantic.warning,
+        });
     }
 
     // SQL fetch — JOINs to `document_chunks` + `documents`, filters
@@ -225,7 +261,11 @@ pub async fn run_doc_search_inner(
     });
     hits.truncate(limit);
 
-    Ok(hits)
+    Ok(DocSearchResult {
+        hits,
+        retrieval_mode: semantic.mode,
+        warning: semantic.warning,
+    })
 }
 
 fn doc_search_candidate_limit(limit: usize) -> usize {
@@ -476,6 +516,37 @@ mod tests {
         )
         .expect("seed chunk");
         conn.last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn embedding_outage_preserves_document_search_and_reports_empty_degradation() {
+        let (embedder, hnsw, pool, _tmp, conn) = fixture();
+        let active = DocumentId::new();
+        let forgotten = DocumentId::new();
+        for id in [&active, &forgotten] {
+            seed_document(&conn, id, "fixture", "Invoice", "text/plain");
+            seed_chunk(&conn, id, &ChunkId::new(), 0, "quartzfalcon invoice");
+        }
+        mark_forgotten(&conn, &forgotten);
+        let failing: Arc<dyn Embedder> = Arc::new(crate::retrieval::tests::UnavailableEmbedder);
+        let result = run_doc_search_with_status_inner(&failing, &hnsw, &pool, "quartzfalcon", 5)
+            .await
+            .unwrap();
+        assert_eq!(result.retrieval_mode, crate::RetrievalMode::LexicalOnly);
+        assert!(result.warning.is_some());
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].doc_id, active.to_string());
+        assert!(result.hits[0].lexical_rank.is_some());
+        assert!(result.hits[0].vector_rank.is_none());
+        let empty = run_doc_search_with_status_inner(&failing, &hnsw, &pool, "unmatchedword", 5)
+            .await
+            .unwrap();
+        assert!(empty.hits.is_empty() && empty.warning.is_some());
+        let recovered =
+            run_doc_search_with_status_inner(&embedder, &hnsw, &pool, "quartzfalcon", 5)
+                .await
+                .unwrap();
+        assert_eq!(recovered.retrieval_mode, crate::RetrievalMode::Hybrid);
     }
 
     /// Mark a document forgotten. Mirrors the writer's

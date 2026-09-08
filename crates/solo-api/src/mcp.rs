@@ -2261,16 +2261,8 @@ fn build_tools() -> Vec<Tool> {
                         "description": "Optional human note about why this file is attached.",
                     },
                 },
-                "oneOf": [
-                    {
-                        "required": ["doc_id"],
-                        "not": { "required": ["asset_id"] }
-                    },
-                    {
-                        "required": ["asset_id"],
-                        "not": { "required": ["doc_id"] }
-                    }
-                ],
+                // Claude rejects a tool catalog containing top-level oneOf.
+                // The handler enforces exactly one target before any write.
                 "required": ["memory_id"],
             })),
         ),
@@ -4191,6 +4183,9 @@ impl SoloMcpServer {
         let body = serde_json::to_string_pretty(&hits_value)
             .map_err(|e| McpError::internal_error(format!("serialize recall text: {e}"), None))?;
         let mut contents = vec![Content::text(body)];
+        if let Some(warning) = &result.warning {
+            contents.push(Content::text(warning.clone()));
+        }
         if result.hits.is_empty() {
             contents.push(Content::text(format!(
                 "(index has {} vectors)",
@@ -4202,6 +4197,8 @@ impl SoloMcpServer {
             serde_json::json!({
                 "hits": hits_value,
                 "index_len": result.index_len,
+                "retrieval_mode": result.retrieval_mode,
+                "warning": result.warning,
             }),
         ))
     }
@@ -5246,7 +5243,7 @@ impl SoloMcpServer {
         // `solo_query::run_doc_search` validates empty queries (returns
         // InvalidInput → invalid_params via solo_to_mcp) and clamps
         // limit upstream of the embedder call.
-        let hits = solo_query::run_doc_search(
+        let search = solo_query::run_doc_search_with_status(
             self.inner.tenant.as_ref(),
             self.inner.audit_principal.clone(),
             &args.query,
@@ -5254,6 +5251,7 @@ impl SoloMcpServer {
         )
         .await
         .map_err(solo_to_mcp)?;
+        let hits = search.hits;
         cancellation.check()?;
 
         crate::mcp_progress::report_if_some(
@@ -5286,7 +5284,14 @@ impl SoloMcpServer {
             .collect::<Vec<_>>();
         let hits_value = serde_json::to_value(&hits)
             .map_err(|e| McpError::internal_error(format!("serialize doc hits: {e}"), None))?;
-        json_value_tool_result_with_links(serde_json::json!({ "hits": hits_value }), hit_links)
+        json_value_tool_result_with_links(
+            serde_json::json!({
+                "hits": hits_value,
+                "retrieval_mode": search.retrieval_mode,
+                "warning": search.warning,
+            }),
+            hit_links,
+        )
     }
 
     async fn handle_inspect_document(
@@ -5980,6 +5985,17 @@ mod dispatch_tests {
             ]
         );
         for t in &tools {
+            for unsupported in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    !t.input_schema.contains_key(unsupported),
+                    "{} has a top-level {unsupported}; Claude rejects the entire catalog",
+                    t.name
+                );
+            }
+            assert_eq!(
+                t.input_schema.get("type"),
+                Some(&serde_json::json!("object"))
+            );
             // rmcp 1.x: Tool.description is Option<Cow<'static, str>>.
             let desc = t.description.as_deref().unwrap_or("");
             assert!(!desc.is_empty(), "{} description empty", t.name);

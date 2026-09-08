@@ -63,7 +63,35 @@ pub async fn run(args: BackupArgs) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("backup worker panicked"))?
 }
 
+/// Export a recoverable encrypted bundle without any paid entitlement check.
+/// The configuration and database are captured under the same library lock.
+/// Existing destination folders are refused; incomplete folders remain on error.
+pub async fn run_bundle(data_dir: PathBuf, to_dir: PathBuf) -> Result<()> {
+    std::thread::Builder::new()
+        .name("solo-recovery-backup".into())
+        .stack_size(BACKUP_STACK_SIZE_BYTES)
+        .spawn(move || {
+            std::fs::create_dir(&to_dir)
+                .context("create new backup folder; destination must not exist")?;
+            run_inner_with_config(
+                BackupArgs {
+                    to: to_dir.join("solo.db"),
+                    force: false,
+                    data_dir: Some(data_dir),
+                },
+                Some(to_dir.join("solo.config.toml")),
+            )
+        })
+        .context("spawn recovery backup worker")?
+        .join()
+        .map_err(|_| anyhow::anyhow!("recovery backup worker panicked"))?
+}
+
 fn run_inner(args: BackupArgs) -> Result<()> {
+    run_inner_with_config(args, None)
+}
+
+fn run_inner_with_config(args: BackupArgs, config_destination: Option<PathBuf>) -> Result<()> {
     let data_dir = match args.data_dir {
         Some(p) => p,
         None => default_data_dir()
@@ -118,14 +146,14 @@ fn run_inner(args: BackupArgs) -> Result<()> {
         }
     }
 
-    let config = SoloConfig::read(&config_path).context("read solo.config.toml")?;
-    let salt = config.salt_bytes().context("decode salt from config")?;
-
     // Acquire the lockfile BEFORE prompting for the passphrase — fail-fast
     // if another Solo process holds the data dir.
     let lock_path = data_dir.join("solo.lock");
     let lock = Lockfile::acquire(&lock_path)
         .context("acquire solo.lock — daemon or another one-shot already running?")?;
+
+    let config = SoloConfig::read(&config_path).context("read solo.config.toml")?;
+    let salt = config.salt_bytes().context("decode salt from config")?;
 
     let passphrase = read_passphrase()?;
     let key = KeyMaterial::derive(&passphrase, &salt)
@@ -162,6 +190,11 @@ fn run_inner(args: BackupArgs) -> Result<()> {
     if force_replace {
         replace_with_completed_backup(&backup_dest, &args.to)
             .context("replace existing backup destination")?;
+    }
+    if let Some(destination) = config_destination {
+        let contents =
+            toml::to_string_pretty(&config).context("serialize matching backup configuration")?;
+        std::fs::write(&destination, contents).context("write matching backup configuration")?;
     }
     let elapsed = started.elapsed();
 

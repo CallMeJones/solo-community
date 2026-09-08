@@ -1,41 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! GDPR right-to-erasure (v0.8.0 P6) — hard-delete every row tied to a
-//! principal subject in one tenant.
+//! Hard erasure of attributed records and retained originals in one library.
 //!
-//! The Solo design decision (locked in 0090) is hard-delete, not soft-
-//! delete: rows go away, the HNSW gets rebuilt from the surviving rows.
-//! Tombstones would leak the deleted-subject's existence in compliance
-//! audits; the GDPR contract requires actual removal.
+//! The writer preflights shared asset ownership and paths, removes attributed
+//! derived records before their foreign keys can become NULL, and deletes
+//! episodes/chunks/documents/assets in one SQL transaction. Original blob
+//! removal is irreversible; an I/O or commit failure requires an idempotent
+//! retry. The writer also invalidates deleted vector IDs before another write
+//! can reuse them. Surviving vectors are then reconciled, and an operator audit
+//! entry is written to `solo.db::audit_events_admin`.
 //!
-//! ## Algorithm
-//!
-//! Single SQL transaction on the per-tenant DB, then a post-commit HNSW
-//! rebuild + an admin-tier audit row in `tenants_index.db`:
-//!
-//!   1. `BEGIN IMMEDIATE` on the per-tenant DB.
-//!   2. Collect `episodes.rowid` set for the subject.
-//!   3. `DELETE FROM triples WHERE source_episode_id IN (...)` — count
-//!      rows. (Today the schema doesn't carry `source_episode_id` on
-//!      triples; v0.8.0 P6's GDPR contract is best-effort under that
-//!      schema — see the inline note on `triples_deleted`.)
-//!   4. `DELETE FROM episodes WHERE principal_subject = ?` — count.
-//!   5. `DELETE FROM document_chunks WHERE ingested_by_principal = ?`
-//!      — count.
-//!   6. `COMMIT`.
-//!   7. If any rows deleted: full HNSW rebuild from the remaining
-//!      `episodes` + `document_chunks`. Rebuild is eager because GDPR
-//!      is rare; the write-side latency hit is operator-acceptable.
-//!   8. Emit `gdpr.forget_user` admin-audit row to
-//!      `tenants_index.db::audit_events_admin`. The admin tier is the
-//!      right home because the subject can no longer query their own
-//!      per-tenant DB audit_events post-deletion.
-//!
-//! ## Idempotency
-//!
-//! Re-running on an absent subject is a no-op: 0 rows deleted, HNSW
-//! NOT rebuilt, admin-audit row still emitted with count=0 so the
-//! operator's compliance trail records the attempt.
+//! Legacy records without attribution, existing exports/backups, and operator
+//! audit history are outside this automatic cascade. This is not a claim of
+//! physical secure wiping or exhaustive erasure of every external copy.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -45,9 +22,41 @@ use solo_core::{Embedder, Error, LibraryId, Result, VectorIndex};
 
 use crate::audit::{AuditOperation, AuditResult, insert_audit_admin_row};
 use crate::embedder_registry::EmbedderIdentity;
-use crate::hnsw_id::episode_hnsw_id;
+use crate::hnsw_id::{chunk_hnsw_id, episode_hnsw_id};
 use crate::init::open_sqlcipher;
 use crate::key_material::KeyMaterial;
+
+/// Coverage of principal attribution. Unattributed rows require manual review;
+/// counts do not establish who owns those rows or authorize their deletion.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AttributionReport {
+    pub episodes_total: u64,
+    pub episodes_unattributed: u64,
+    pub chunks_total: u64,
+    pub chunks_unattributed: u64,
+}
+
+/// Read existing attribution without opening the writer or changing records.
+/// Caller must hold the library lock. This report excludes external copies.
+pub fn audit_attribution(db_path: &Path, key: &KeyMaterial) -> Result<AttributionReport> {
+    if !db_path.is_file() {
+        return Err(Error::not_found("library database is missing"));
+    }
+    let conn = open_sqlcipher(db_path, key)?;
+    conn.execute_batch("PRAGMA query_only = ON;")
+        .map_err(|e| Error::storage(format!("set attribution audit read-only: {e}")))?;
+    attribution_report(&conn)
+}
+
+fn attribution_report(conn: &Connection) -> Result<AttributionReport> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM episodes),
+                (SELECT COUNT(*) FROM episodes WHERE principal_subject IS NULL OR trim(principal_subject) = ''),
+                (SELECT COUNT(*) FROM document_chunks),
+                (SELECT COUNT(*) FROM document_chunks WHERE ingested_by_principal IS NULL OR trim(ingested_by_principal) = '')",
+        [], |row| Ok(AttributionReport { episodes_total: row.get::<_, i64>(0)? as u64, episodes_unattributed: row.get::<_, i64>(1)? as u64, chunks_total: row.get::<_, i64>(2)? as u64, chunks_unattributed: row.get::<_, i64>(3)? as u64 })
+    ).map_err(|e| Error::storage(format!("audit attribution coverage: {e}")))
+}
 
 /// What `forget_principal` did. Returned to callers (typically the CLI
 /// `solo gdpr forget` subcommand) for surfacing in the user-visible
@@ -56,37 +65,35 @@ use crate::key_material::KeyMaterial;
 pub struct ForgetReport {
     /// Rows deleted from `episodes`.
     pub episodes_deleted: u64,
-    /// Rows deleted from `triples` whose `source_episode_id` referenced
-    /// one of the forgotten episodes (v0.8.1 P1 cascade — was always 0
-    /// in v0.8.0 because the FK column didn't exist).
+    /// Facts attributed to the erased episodes/documents directly or through
+    /// their relationship evidence.
     pub triples_deleted: u64,
     /// Rows deleted from `document_chunks`.
     pub chunks_deleted: u64,
-    /// Triples that referenced the forgotten subject's domain but had
-    /// `source_episode_id IS NULL` (pre-v0.8.1 rows whose provenance
-    /// didn't backfill against a live episode, plus any pre-v0.8.0
-    /// rows). These are orphans-by-design — the GDPR cascade cannot
-    /// attribute them to the deleted principal without an FK.
-    /// Surfaced for operator visibility.
+    /// Exclusively attributed document metadata removed with its chunks.
+    pub documents_deleted: u64,
+    /// Original asset records and their retained blobs removed.
+    pub assets_deleted: u64,
+    /// Remaining facts in affected clusters without resolvable source
+    /// attribution. Surfaced for operator review instead of guessed deletion.
     pub triples_orphan_null_source: u64,
     /// Did the post-tx HNSW rebuild run? `false` iff no rows were
     /// deleted (absent-subject idempotent case).
     pub hnsw_rebuilt: bool,
     /// `audit_id` of the row written to
-    /// `tenants_index.db::audit_events_admin`. Always present — even
+    /// `solo.db::audit_events_admin`. Always present — even
     /// the no-op (count=0) case emits a row so the compliance trail
     /// records the attempt.
     pub audit_admin_row_id: i64,
 }
 
-/// Delete every row in `tenant_handle`'s per-tenant DB that's
-/// attributed to `principal_subject`, then rebuild the HNSW from the
-/// surviving rows.
+/// Erase attributed records and originals from the target library, then
+/// reconcile surviving HNSW vectors. Call this synchronous maintenance entry
+/// point from a blocking worker (the CLI uses `spawn_blocking`).
 ///
 /// `tenant_handle` is the live `LibraryHandle` for the target tenant
 /// (so we can route through its writer + embedder + HNSW). `data_dir`
-/// + `key` are used to write the admin-audit row into
-/// `tenants_index.db`.
+/// + `key` are used to write the admin-audit row into `solo.db`.
 ///
 /// ## Concurrency
 ///
@@ -113,22 +120,21 @@ pub fn forget_principal(
     let hnsw = tenant_handle.hnsw().clone();
     let embedder_id = tenant_handle.embedder_id();
 
-    // Open a fresh connection on the per-tenant DB. We deliberately do
-    // NOT route through the writer-actor: the writer's mpsc is a
-    // single-write-at-a-time bottleneck, and GDPR is admin-tier
-    // (operator-initiated, rare). Routing through a dedicated
-    // connection avoids contention with regular writes and keeps the
-    // delete sequence in one place. The writer-actor's separate
-    // SQLCipher session sees the post-COMMIT state.
-    let mut conn = open_sqlcipher(&db_path, key)?;
-
+    // Serialize SQL and original-file erasure with uploads and backups. A
+    // separate connection alone cannot prevent a writer from healing a blob
+    // using metadata it read before erasure. Call from spawn_blocking (CLI).
     let DeleteOutcome {
         episodes_deleted,
         triples_deleted,
         triples_orphan_null_source,
         chunks_deleted,
-        episode_rowids,
-    } = delete_principal_rows(&mut conn, principal_subject)?;
+        documents_deleted,
+        assets_deleted,
+        ..
+    } = tenant_handle
+        .write()
+        .forget_principal_rows_blocking(principal_subject)?;
+    let conn = open_sqlcipher(&db_path, key)?;
 
     if triples_orphan_null_source > 0 {
         // Operator visibility: pre-v0.8.1 triples without a resolved
@@ -147,17 +153,8 @@ pub fn forget_principal(
         );
     }
 
-    let total_deleted = episodes_deleted + triples_deleted + chunks_deleted;
-
-    // Tombstone the deleted-episode HNSW entries cheaply BEFORE the
-    // rebuild path — that way an absent rebuild target (e.g. no rebuild
-    // because writer thread is offline) still leaves the HNSW free of
-    // deleted-subject vectors. The rebuild below (if it runs) is the
-    // strong correctness path; this is defense in depth.
-    for rowid in &episode_rowids {
-        // tombstone is idempotent + cheap; ignore any error.
-        let _ = hnsw.remove(episode_hnsw_id(*rowid));
-    }
+    let total_deleted =
+        episodes_deleted + triples_deleted + chunks_deleted + documents_deleted + assets_deleted;
 
     let hnsw_rebuilt = if total_deleted > 0 {
         rebuild_hnsw_after_forget(&conn, hnsw.as_ref(), embedder_id)?;
@@ -166,11 +163,7 @@ pub fn forget_principal(
         false
     };
 
-    // Admin-audit row goes to `tenants_index.db::audit_events_admin`.
-    // We open a separate SQLCipher connection to that file rather than
-    // route through `TenantRegistry::with_index` because the registry's
-    // mutex contention is unnecessary for this single write — the
-    // admin-audit table is independent of the tenants registry CRUD.
+    // Operator audit history remains in the Community database.
     let now_ms = chrono::Utc::now().timestamp_millis();
     let admin_path = data_dir.join(crate::memory_library::COMMUNITY_DB_FILENAME);
     let admin_conn = open_sqlcipher(&admin_path, key)?;
@@ -180,6 +173,8 @@ pub fn forget_principal(
         "triples_deleted": triples_deleted,
         "triples_orphan_null_source": triples_orphan_null_source,
         "chunks_deleted": chunks_deleted,
+        "documents_deleted": documents_deleted,
+        "assets_deleted": assets_deleted,
         "hnsw_rebuilt": hnsw_rebuilt,
     });
     let audit_admin_row_id = insert_audit_admin_row(
@@ -214,6 +209,8 @@ pub fn forget_principal(
         triples_deleted,
         triples_orphan_null_source,
         chunks_deleted,
+        documents_deleted,
+        assets_deleted,
         hnsw_rebuilt,
         audit_admin_row_id,
     })
@@ -221,18 +218,37 @@ pub fn forget_principal(
 
 /// Outcome of one `delete_principal_rows` pass.
 ///
-/// `triples_orphan_null_source` is a v0.8.1 counter — for every cluster
-/// the deleted episodes belonged to, how many triples reference that
-/// cluster but have `source_episode_id IS NULL`. These are orphans-by-
-/// design (pre-v0.8.1 rows whose `provenance_json` couldn't be back-
-/// filled to a live episode). Surfaced for operator visibility; the
-/// triple rows themselves are NOT deleted.
-struct DeleteOutcome {
+/// Includes the surviving legacy facts in affected clusters without source
+/// attribution, plus vector IDs to invalidate inside the writer actor.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DeleteOutcome {
     episodes_deleted: u64,
     triples_deleted: u64,
     triples_orphan_null_source: u64,
     chunks_deleted: u64,
+    documents_deleted: u64,
+    assets_deleted: u64,
     episode_rowids: Vec<i64>,
+    chunk_rowids: Vec<i64>,
+}
+
+impl DeleteOutcome {
+    pub(crate) fn invalidate_vectors(&self, index: &dyn VectorIndex) {
+        for id in self
+            .episode_rowids
+            .iter()
+            .map(|id| episode_hnsw_id(*id))
+            .chain(self.chunk_rowids.iter().map(|id| chunk_hnsw_id(*id)))
+        {
+            // SQL filtering remains authoritative if a vector implementation
+            // cannot invalidate an entry. Never race a following writer's
+            // reuse of a deleted SQLite rowid by doing this outside the actor.
+            if let Err(error) = index.remove(id) {
+                tracing::warn!(%error, "principal erasure vector invalidation failed");
+            }
+        }
+    }
 }
 
 /// SQL-side delete cascade. Runs inside one BEGIN IMMEDIATE tx.
@@ -240,10 +256,80 @@ struct DeleteOutcome {
 /// Returns a [`DeleteOutcome`] summarising per-table counts plus the
 /// affected episode rowids (so the caller can tombstone the HNSW for
 /// those rowids before / instead of triggering a full rebuild).
+#[cfg(test)]
 fn delete_principal_rows(conn: &mut Connection, principal_subject: &str) -> Result<DeleteOutcome> {
+    delete_principal_rows_with_assets(conn, principal_subject, None)
+}
+
+pub(crate) fn delete_principal_rows_with_assets(
+    conn: &mut Connection,
+    principal_subject: &str,
+    snapshot_dir: Option<&Path>,
+) -> Result<DeleteOutcome> {
+    if principal_subject.trim().is_empty() {
+        return Err(Error::invalid_input("principal subject must not be empty"));
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| Error::storage(format!("BEGIN IMMEDIATE for forget: {e}")))?;
+    let assets = crate::gdpr_assets::prepare(&tx, principal_subject, snapshot_dir)?;
+    let chunk_rowids = {
+        let mut stmt = tx
+            .prepare("SELECT rowid FROM document_chunks WHERE ingested_by_principal = ?")
+            .map_err(|e| Error::storage(format!("select erased chunk vectors: {e}")))?;
+        stmt.query_map(params![principal_subject], |r| r.get::<_, i64>(0))
+            .map_err(|e| Error::storage(format!("query erased chunk vectors: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| Error::storage(format!("collect erased chunk vectors: {e}")))?
+    };
+
+    // Capture attribution before cascades or SET NULL erase it. Temporary scope
+    // tables also avoid SQLite's bind-variable limit for large principals.
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS solo_forget_triples (id TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS solo_forget_edges (id TEXT PRIMARY KEY);
+         DELETE FROM solo_forget_triples;
+         DELETE FROM solo_forget_edges;",
+    )
+    .map_err(|e| Error::storage(format!("prepare graph erasure scope: {e}")))?;
+    tx.execute(
+        "INSERT OR IGNORE INTO solo_forget_triples
+         SELECT triple_id FROM triples WHERE source_episode_id IN
+             (SELECT rowid FROM episodes WHERE principal_subject = ?1)
+         UNION SELECT triple_id FROM relationship_evidence WHERE
+             source_episode_id IN (SELECT rowid FROM episodes WHERE principal_subject = ?1)
+             OR memory_id IN (SELECT memory_id FROM episodes WHERE principal_subject = ?1)
+             OR chunk_id IN (SELECT chunk_id FROM document_chunks WHERE ingested_by_principal = ?1)
+             OR doc_id IN (SELECT id FROM solo_forget_docs)",
+        params![principal_subject],
+    )
+    .map_err(|e| Error::storage(format!("collect attributed graph facts: {e}")))?;
+    tx.execute(
+        "INSERT OR IGNORE INTO solo_forget_edges SELECT edge_id FROM relationship_evidence
+         WHERE triple_id IN (SELECT id FROM solo_forget_triples)",
+        [],
+    )
+    .map_err(|e| Error::storage(format!("collect affected graph relationships: {e}")))?;
+
+    // Remove newly introduced derived records before ON DELETE SET NULL can
+    // sever their attribution. Summaries of mixed clusters must be regenerated
+    // from the surviving raw episodes rather than retaining erased content.
+    for sql in [
+        "DELETE FROM memory_claims WHERE source_episode_id IN
+            (SELECT rowid FROM episodes WHERE principal_subject = ?1)
+            OR chunk_id IN (SELECT chunk_id FROM document_chunks WHERE ingested_by_principal = ?1)
+            OR doc_id IN (SELECT id FROM solo_forget_docs)
+            OR triple_id IN (SELECT id FROM solo_forget_triples)",
+        "DELETE FROM triple_reviews WHERE source_episode_id IN
+            (SELECT rowid FROM episodes WHERE principal_subject = ?1)
+            OR triple_id IN (SELECT id FROM solo_forget_triples)",
+        "DELETE FROM semantic_abstractions WHERE cluster_id IN
+            (SELECT ce.cluster_id FROM cluster_episodes ce JOIN episodes e USING (memory_id)
+             WHERE e.principal_subject = ?1)",
+    ] {
+        tx.execute(sql, params![principal_subject])
+            .map_err(|e| Error::storage(format!("erase attributed derived memory: {e}")))?;
+    }
 
     // Step 1: collect rowids of episodes belonging to the subject. We
     // use `?` parameterisation defensively even though `principal_subject`
@@ -261,67 +347,38 @@ fn delete_principal_rows(conn: &mut Connection, principal_subject: &str) -> Resu
     };
     rowids.sort_unstable();
 
-    // Step 2: triples cascade. v0.8.1 P1 wired
-    // `triples.source_episode_id` via migration 0007. Delete every
-    // triple whose source_episode_id is one of the forgotten episodes'
-    // rowids. Rowids may be absent (deleted-subject has no episodes ⇒
-    // empty set ⇒ no-op DELETE) so we early-exit the IN-clause build.
-    //
-    // Pre-v0.8.1 triples with NULL source_episode_id remain as orphans-
-    // by-design; the caller logs the count via `triples_orphan_null_source`
-    // for operator visibility. They cannot be cascaded without a
-    // resolvable FK back to an episode.
-    //
-    // Orphan-count probe uses cluster_episodes membership: if the
-    // forgotten episode rowid was part of cluster C, and there are
-    // triples with cluster_id = C but source_episode_id IS NULL, those
-    // are the orphans we surface. This is a strict count (not a delete)
-    // — operator workflow decides cleanup.
-    let (triples_deleted, triples_orphan_null_source): (u64, u64) = if rowids.is_empty() {
-        (0, 0)
-    } else {
-        // Compose the IN-list. We pass rowids as positional `?`
-        // parameters — bound safely via `rusqlite::params_from_iter`
-        // so no SQL injection surface. The list size is bounded by
-        // the deleted-principal's episode count; for human-scale
-        // tenants this is comfortably under SQLite's
-        // SQLITE_MAX_VARIABLE_NUMBER (default 32766 since 3.32).
-        let placeholders = std::iter::repeat("?")
-            .take(rowids.len())
-            .collect::<Vec<_>>()
-            .join(",");
+    // Delete attributable facts before their source foreign keys become NULL.
+    let triples_deleted =
+        tx.execute(
+            "DELETE FROM triples WHERE triple_id IN (SELECT id FROM solo_forget_triples)",
+            [],
+        )
+        .map_err(|e| Error::storage(format!("DELETE triples: {e}")))? as u64;
+    // Evidence cascades with triples. Only remove affected relationships that
+    // have lost all support; independently supported and manual edges survive.
+    tx.execute_batch(
+        "DELETE FROM relationship_edges WHERE edge_id IN (SELECT id FROM solo_forget_edges)
+             AND NOT EXISTS (SELECT 1 FROM relationship_evidence re
+                             WHERE re.edge_id = relationship_edges.edge_id);
+         UPDATE relationship_edges SET evidence_count =
+             (SELECT COUNT(*) FROM relationship_evidence re
+              WHERE re.edge_id = relationship_edges.edge_id)
+         WHERE edge_id IN (SELECT id FROM solo_forget_edges);",
+    )
+    .map_err(|e| Error::storage(format!("erase unsupported graph relationships: {e}")))?;
 
-        let delete_sql = format!("DELETE FROM triples WHERE source_episode_id IN ({placeholders})");
-        let deleted =
-            tx.execute(&delete_sql, rusqlite::params_from_iter(rowids.iter()))
-                .map_err(|e| Error::storage(format!("DELETE triples: {e}")))? as u64;
-
-        // Orphan count: triples whose cluster contains a forgotten
-        // episode but whose own source_episode_id is NULL. This is the
-        // pre-v0.8.1 case — `provenance_json` either didn't resolve or
-        // was absent. LEFT JOIN through cluster_episodes is the right
-        // shape because clusters fan out to many episodes; even one
-        // forgotten member makes the orphan count include the cluster's
-        // null-source triples.
-        let orphan_sql = format!(
-            "SELECT COUNT(*) FROM triples t \
-             WHERE t.source_episode_id IS NULL \
-               AND t.cluster_id IN ( \
-                    SELECT DISTINCT ce.cluster_id FROM cluster_episodes ce \
-                     JOIN episodes e ON e.memory_id = ce.memory_id \
-                     WHERE e.rowid IN ({placeholders}) \
-               )"
-        );
-        let orphans: i64 = tx
-            .query_row(
-                &orphan_sql,
-                rusqlite::params_from_iter(rowids.iter()),
-                |r| r.get(0),
-            )
-            .map_err(|e| Error::storage(format!("COUNT orphan triples: {e}")))?;
-
-        (deleted, orphans.max(0) as u64)
-    };
+    // Legacy facts without resolvable attribution remain operator-visible.
+    let triples_orphan_null_source: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM triples t WHERE t.source_episode_id IS NULL
+             AND t.cluster_id IN (
+                 SELECT ce.cluster_id FROM cluster_episodes ce
+                 JOIN episodes e ON e.memory_id = ce.memory_id
+                 WHERE e.principal_subject = ?1)",
+            params![principal_subject],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::storage(format!("COUNT orphan triples: {e}")))?;
 
     // Step 3: episodes themselves. CASCADE on FK from `embeddings` +
     // `pending_index` + `cluster_episodes` handles the row-level fanout
@@ -342,14 +399,8 @@ fn delete_principal_rows(conn: &mut Connection, principal_subject: &str) -> Resu
         )
         .map_err(|e| Error::storage(format!("DELETE episodes: {e}")))? as u64;
 
-    // Step 4: document_chunks. The 0003 schema cascades from
-    // `documents` to `document_chunks`, but here we delete chunks
-    // directly because the principal is who *ingested* the document —
-    // the document row stays (a hypothetical multi-principal corpus
-    // could have other chunks under the same doc_id; not a v0.8.0
-    // concern but the design is correct). Cascades from chunk deletion
-    // to `chunk_embeddings` + `pending_index` (kind='chunk') run
-    // automatically per the 0003 FKs.
+    // Shared documents keep their other principals' chunks. Exclusively
+    // attributed documents and originals are removed by the preflighted plan.
     let chunks_deleted: u64 =
         tx.execute(
             "DELETE FROM document_chunks WHERE ingested_by_principal = ?",
@@ -357,15 +408,20 @@ fn delete_principal_rows(conn: &mut Connection, principal_subject: &str) -> Resu
         )
         .map_err(|e| Error::storage(format!("DELETE document_chunks: {e}")))? as u64;
 
+    assets.delete(&tx)?;
+
     tx.commit()
         .map_err(|e| Error::storage(format!("COMMIT forget: {e}")))?;
 
     Ok(DeleteOutcome {
         episodes_deleted,
         triples_deleted,
-        triples_orphan_null_source,
+        triples_orphan_null_source: triples_orphan_null_source.max(0) as u64,
         chunks_deleted,
+        documents_deleted: assets.documents_deleted,
+        assets_deleted: assets.assets_deleted,
         episode_rowids: rowids,
+        chunk_rowids,
     })
 }
 
@@ -535,6 +591,29 @@ mod tests {
     }
 
     #[test]
+    fn attribution_audit_counts_unknown_owners_without_assigning_or_deleting() {
+        let (_tmp, db_path) = seed_two_principal_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE episodes SET principal_subject = NULL WHERE principal_subject = 'alice'",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE document_chunks SET ingested_by_principal = ' ' WHERE ingested_by_principal = 'bob'", []).unwrap();
+        let report = attribution_report(&conn).unwrap();
+        assert_eq!(
+            report,
+            AttributionReport {
+                episodes_total: 5,
+                episodes_unattributed: 3,
+                chunks_total: 4,
+                chunks_unattributed: 1
+            }
+        );
+        assert_eq!(attribution_report(&conn).unwrap(), report);
+    }
+
+    #[test]
     fn delete_principal_rows_targets_only_named_subject() {
         let (_tmp, db_path) = seed_two_principal_db();
         let mut conn = Connection::open(&db_path).unwrap();
@@ -571,6 +650,133 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bob_chunks, 1);
+    }
+
+    #[test]
+    fn erasure_invalidates_both_vector_kinds_and_preserves_other_ids() {
+        let (_tmp, db_path) = seed_two_principal_db();
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        let outcome = delete_principal_rows(&mut conn, "alice").unwrap();
+        let index = crate::test_support::StubVectorIndex::new(2);
+        assert_eq!(outcome.chunk_rowids.len(), 3);
+        for id in outcome
+            .episode_rowids
+            .iter()
+            .map(|id| episode_hnsw_id(*id))
+            .chain(outcome.chunk_rowids.iter().map(|id| chunk_hnsw_id(*id)))
+        {
+            index.add(id, &[1.0, 0.0]).unwrap();
+        }
+        let survivor = episode_hnsw_id(9999);
+        index.add(survivor, &[1.0, 0.0]).unwrap();
+        outcome.invalidate_vectors(&index);
+        let hits = index.search(&[1.0, 0.0], 100).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, survivor);
+    }
+
+    #[test]
+    fn erasure_removes_claims_and_reviews_before_attribution_is_lost() {
+        let (_tmp, db_path) = seed_two_principal_db();
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;
+            INSERT INTO memory_claims
+                (claim_id,candidate_fingerprint,subject_id,predicate,object_id,object_kind,
+                 source_episode_id,confidence,quality_score,status,created_at_ms,updated_at_ms)
+            SELECT memory_id,memory_id,principal_subject,'likes','private detail','literal',
+                   rowid,0.9,0.9,'active',1,1 FROM episodes;
+            INSERT INTO triple_reviews
+                (review_id,candidate_fingerprint,source_episode_id,subject_id,predicate,
+                 object_id,object_kind,confidence,reason_code,reason,provenance_json,created_at_ms,updated_at_ms)
+            SELECT memory_id,memory_id,rowid,principal_subject,'likes','private detail','literal',
+                   0.9,'review','review','{}',1,1 FROM episodes;").unwrap();
+        delete_principal_rows(&mut conn, "alice").unwrap();
+        for table in ["memory_claims", "triple_reviews"] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 2, "only Bob's records should survive in {table}");
+            let orphaned: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE source_episode_id IS NULL"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(orphaned, 0);
+        }
+    }
+
+    #[test]
+    fn erasure_removes_unsupported_edges_and_preserves_independent_evidence() {
+        let (_tmp, db_path) = seed_two_principal_db();
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        let alice: i64 = conn
+            .query_row(
+                "SELECT rowid FROM episodes WHERE principal_subject = 'alice' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let bob: i64 = conn
+            .query_row(
+                "SELECT rowid FROM episodes WHERE principal_subject = 'bob' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for (triple, source) in [
+            ("private", Some(alice)),
+            ("shared-a", Some(alice)),
+            ("shared-b", Some(bob)),
+            ("chunk-only", None),
+        ] {
+            seed_triple_with_source(&conn, triple, "subject", "likes", "detail", source, None);
+        }
+        conn.execute_batch(
+            "INSERT INTO entities (entity_id,canonical_name,created_at_ms,updated_at_ms)
+                 VALUES ('subject','Subject',1,1);
+             INSERT INTO relationship_edges
+                 (edge_id,subject_entity_id,predicate,object_literal,object_kind,
+                  valid_from_ms,confidence,evidence_count,created_at_ms,updated_at_ms)
+             VALUES ('private','subject','likes','private detail','literal',1,0.9,1,1,1),
+                    ('shared','subject','likes','shared detail','literal',1,0.9,2,1,1),
+                    ('chunk-only','subject','likes','document detail','literal',1,0.9,1,1,1),
+                    ('manual','subject','likes','unattributed detail','literal',1,0.9,0,1,1);
+             INSERT INTO relationship_evidence
+                 (evidence_id,edge_id,triple_id,source_episode_id,extraction_confidence,created_at_ms)
+             SELECT triple_id,CASE WHEN triple_id LIKE 'shared-%' THEN 'shared' ELSE triple_id END,
+                    triple_id,source_episode_id,0.9,1 FROM triples;
+             UPDATE relationship_evidence SET chunk_id =
+                 (SELECT chunk_id FROM document_chunks WHERE ingested_by_principal = 'alice' LIMIT 1)
+             WHERE triple_id = 'chunk-only';"
+        ).unwrap();
+        let outcome = delete_principal_rows(&mut conn, "alice").unwrap();
+        assert_eq!(outcome.triples_deleted, 3);
+        let edges: Vec<(String, i64)> = conn
+            .prepare("SELECT edge_id,evidence_count FROM relationship_edges ORDER BY edge_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(edges, vec![("manual".into(), 0), ("shared".into(), 1)]);
+        let surviving_source: i64 = conn
+            .query_row(
+                "SELECT source_episode_id FROM relationship_evidence",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(surviving_source, bob);
+        assert_eq!(
+            delete_principal_rows(&mut conn, "alice")
+                .unwrap()
+                .triples_deleted,
+            0
+        );
     }
 
     #[test]

@@ -273,13 +273,22 @@ pub async fn memory_context_inner(
     let (recall, recall_health) = match run_recall_inner(embedder, hnsw, pool, query, limit).await {
         Ok(recall) => {
             let count = recall.hits.len();
-            (recall, section_ok(count))
+            let mut health = section_ok(count);
+            if let Some(warning) = &recall.warning {
+                health.status = "degraded".into();
+                health.warning = Some(warning.clone());
+                health.explanation =
+                    format!("{count} keyword result(s); semantic retrieval is unavailable.");
+            }
+            (recall, health)
         }
         Err(e) => (
             RecallResult {
                 hits: Vec::new(),
                 index_len: hnsw.len(),
                 candidates_considered: 0,
+                retrieval_mode: crate::RetrievalMode::LexicalOnly,
+                warning: Some("Recall is unavailable.".into()),
             },
             section_degraded(format!("recall failed: {e}")),
         ),

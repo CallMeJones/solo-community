@@ -32,6 +32,8 @@ pub mod doc_search;
 pub mod inbox;
 pub mod inspect;
 pub mod recall;
+mod retrieval;
+pub use retrieval::RetrievalMode;
 pub mod update;
 
 pub use assets::{
@@ -52,7 +54,7 @@ pub use doc_inspect::{
     CHUNK_PREVIEW_CHARS, ChunkSummary, DocumentInspectResult, DocumentRecord, DocumentSummary,
     inspect_document, list_documents,
 };
-pub use doc_search::{DocSearchHit, run_doc_search};
+pub use doc_search::{DocSearchHit, DocSearchResult, run_doc_search, run_doc_search_with_status};
 pub use inbox::{INBOX_MAX_LIMIT, MemoryInboxItem, memory_inbox};
 pub use inspect::{EpisodeRecord, inspect_one};
 pub use recall::{RecallHit, RecallResult, run_recall};
