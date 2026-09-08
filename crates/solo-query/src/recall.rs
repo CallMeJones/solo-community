@@ -67,6 +67,8 @@ pub struct RecallResult {
     /// Number of raw vector + lexical candidates returned before Solo
     /// de-duplicates and filters out non-episode/inactive rows.
     pub candidates_considered: usize,
+    pub retrieval_mode: crate::RetrievalMode,
+    pub warning: Option<String>,
 }
 
 /// Run the recall pipeline. Returns a `RecallResult` with at most
@@ -128,13 +130,10 @@ pub async fn run_recall_inner(
     }
     let limit = limit.clamp(1, 100);
 
-    let q_emb = embedder.embed(query).await?;
-    let q_slice = q_emb
-        .as_f32_slice()
-        .ok_or_else(|| Error::embedder("embedder returned non-F32 vector; HNSW requires F32"))?;
-
     let candidate_limit = recall_candidate_limit(limit);
-    let hnsw_hits = hnsw.search(q_slice, candidate_limit)?;
+    let semantic =
+        crate::retrieval::semantic_candidates(embedder, hnsw, query, candidate_limit).await?;
+    let hnsw_hits = semantic.hits;
     let index_len = hnsw.len();
     let lexical_hits = fetch_lexical_episode_hits(pool, query, candidate_limit).await?;
     let candidates_considered = hnsw_hits.len() + lexical_hits.len();
@@ -158,6 +157,8 @@ pub async fn run_recall_inner(
             hits: Vec::new(),
             index_len,
             candidates_considered,
+            retrieval_mode: semantic.mode,
+            warning: semantic.warning,
         });
     }
 
@@ -222,6 +223,8 @@ pub async fn run_recall_inner(
         hits,
         index_len,
         candidates_considered,
+        retrieval_mode: semantic.mode,
+        warning: semantic.warning,
     })
 }
 
@@ -557,6 +560,44 @@ mod tests {
                 r.hits
             );
         });
+        shutdown(&runtime, pool, handle, tmp, join);
+    }
+
+    #[test]
+    fn embedding_outage_preserves_lexical_recall_and_forgotten_filtering() {
+        let runtime = rt();
+        let (embedder, hnsw, pool, handle, tmp, join) = fixture(&runtime);
+        let conn = rusqlite::Connection::open(tmp.path().join("test.db")).unwrap();
+        insert_episode_direct(&conn, "quartzfalcon active invoice");
+        let forgotten = insert_episode_direct(&conn, "quartzfalcon forgotten invoice");
+        conn.execute(
+            "UPDATE episodes SET status = 'forgotten' WHERE rowid = ?",
+            [forgotten],
+        )
+        .unwrap();
+        runtime.block_on(async {
+            let failing: Arc<dyn Embedder> = Arc::new(crate::retrieval::tests::UnavailableEmbedder);
+            let result = run_recall_inner(&failing, &hnsw, &pool, "quartzfalcon", 5)
+                .await
+                .unwrap();
+            assert_eq!(result.retrieval_mode, crate::RetrievalMode::LexicalOnly);
+            assert!(result.warning.is_some());
+            assert_eq!(result.hits.len(), 1);
+            assert!(result.hits[0].content.contains("active"));
+            assert!(result.hits[0].lexical_rank.is_some());
+            assert!(result.hits[0].vector_rank.is_none());
+            let empty = run_recall_inner(&failing, &hnsw, &pool, "unmatchedword", 5)
+                .await
+                .unwrap();
+            assert!(empty.hits.is_empty());
+            assert!(empty.warning.is_some());
+            let recovered = run_recall_inner(&embedder, &hnsw, &pool, "quartzfalcon", 5)
+                .await
+                .unwrap();
+            assert_eq!(recovered.retrieval_mode, crate::RetrievalMode::Hybrid);
+            assert!(recovered.warning.is_none());
+        });
+        drop(conn);
         shutdown(&runtime, pool, handle, tmp, join);
     }
 

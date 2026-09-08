@@ -55,6 +55,9 @@ pub async fn run(args: RecallArgs) -> Result<()> {
     .await
     .context("recall")?;
 
+    if let Some(warning) = &result.warning {
+        eprintln!("{warning}");
+    }
     if result.hits.is_empty() {
         if result.index_len == 0 {
             println!("(no results — index has 0 vectors)");

@@ -12,15 +12,15 @@ user-owned memory.
 
 ## Status
 
-**v0.12.0 Community candidate** - Solo is now a full local memory stack:
+**v0.12.2 Community** - Solo is a full local memory stack:
 an encrypted local Memory Library, a single-writer actor for durable
 writes, HNSW/vector recall, document/RAG memory, the embedded Solo Web UI,
 and MCP over stdio plus Streamable HTTP on `/mcp`.
-This release adds resumable document uploads, retained source assets,
+Community includes resumable document uploads, retained source assets,
 native document extraction, temporal relationship paths, provenance
 explanations, and stricter memory-claim quality review. The Community product
 ships Core + Solo Desktop. See the
-[v0.12.0 release notes](docs/releases/v0.12.0.md).
+[v0.12.2 release notes](docs/releases/v0.12.2.md).
 
 ```
 remember/update -> embedding row + pending_index -> writer commit

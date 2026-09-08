@@ -12,6 +12,7 @@
 
 pub mod asset_download;
 pub mod auth;
+mod browser_boundary;
 mod desktop_assets;
 pub mod document_upload;
 mod graph_paths;

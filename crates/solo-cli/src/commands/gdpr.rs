@@ -130,13 +130,20 @@ async fn run_forget(args: ForgetArgs) -> Result<()> {
     .await
     .context("spawn_blocking forget_principal")??;
 
-    println!("✓ forgot subject=`{subject_trimmed}` in tenant=`{tenant_id}`");
+    println!("✓ forgot subject=`{subject_trimmed}` in library=`{tenant_id}`");
     println!(
         "  episodes_deleted = {}, triples_deleted = {}, chunks_deleted = {}, hnsw_rebuilt = {}",
         report.episodes_deleted, report.triples_deleted, report.chunks_deleted, report.hnsw_rebuilt
     );
     println!(
-        "  admin audit row id = {} (in tenants_index.db::audit_events_admin)",
+        "  documents_deleted = {}, assets_deleted = {}",
+        report.documents_deleted, report.assets_deleted
+    );
+    println!(
+        "  Existing backups, exports and unattributed legacy records require separate review."
+    );
+    println!(
+        "  admin audit row id = {} (in solo.db::audit_events_admin)",
         report.audit_admin_row_id
     );
 

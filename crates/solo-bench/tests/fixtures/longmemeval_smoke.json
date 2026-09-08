@@ -1,0 +1,31 @@
+[
+  {
+    "question_id": "solo-smoke-1",
+    "question_type": "single-session-user",
+    "question": "Where is codeword cobalt stored?",
+    "answer": "In the correct benchmark session.",
+    "question_date": "2026/01/03",
+    "haystack_session_ids": ["noise-session", "answer-session"],
+    "haystack_dates": ["2026/01/01", "2026/01/02"],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "This is an ordinary unrelated note."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Codeword cobalt is stored in the correct benchmark session.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "I will remember where codeword cobalt is stored."
+        }
+      ]
+    ],
+    "answer_session_ids": ["answer-session"]
+  }
+]

@@ -68,6 +68,7 @@ pub mod document;
 pub mod embedder;
 pub mod embedder_registry;
 pub mod gdpr;
+mod gdpr_assets;
 pub mod hnsw_id;
 pub mod hnsw_rebuild;
 pub mod init;

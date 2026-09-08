@@ -1199,6 +1199,11 @@ pub enum WriteCommand {
         audit_principal: Option<String>,
         reply: oneshot::Sender<Result<ForgetAssetReport>>,
     },
+    /// Synchronous operator maintenance, serialized with asset writes/backups.
+    ForgetPrincipalRows {
+        principal: String,
+        reply: std::sync::mpsc::Sender<Result<crate::gdpr::DeleteOutcome>>,
+    },
     Consolidate {
         scope: ConsolidationScope,
         audit_principal: Option<String>,
@@ -1424,6 +1429,22 @@ pub struct WriteHandle {
 }
 
 impl WriteHandle {
+    pub(crate) fn forget_principal_rows_blocking(
+        &self,
+        principal: &str,
+    ) -> Result<crate::gdpr::DeleteOutcome> {
+        let (reply, receive) = std::sync::mpsc::channel();
+        self.tx
+            .try_send(WriteCommand::ForgetPrincipalRows {
+                principal: principal.to_owned(),
+                reply,
+            })
+            .map_err(|_| Error::storage("writer unavailable or busy; retry principal erasure"))?;
+        receive
+            .recv()
+            .map_err(|_| Error::storage("writer dropped principal erasure reply"))?
+    }
+
     pub async fn remember(&self, episode: Episode, embedding: Embedding) -> Result<MemoryId> {
         self.remember_as(None, episode, embedding).await
     }
@@ -2966,6 +2987,17 @@ impl WriterActor {
                 if durable_ok {
                     self.emit_invalidate(AuditOperation::MemoryForgetAsset.as_str(), "asset");
                 }
+            }
+            WriteCommand::ForgetPrincipalRows { principal, reply } => {
+                let result = crate::gdpr::delete_principal_rows_with_assets(
+                    &mut self.conn,
+                    &principal,
+                    self.snapshot_dir.as_deref(),
+                );
+                if let Ok(outcome) = &result {
+                    outcome.invalidate_vectors(self.hnsw.as_ref());
+                }
+                let _ = reply.send(result);
             }
             WriteCommand::Consolidate {
                 scope,
@@ -9015,7 +9047,7 @@ fn cleanup_failed_staged_asset_blob(staged_path: &Path, final_path: &Path, promo
     }
 }
 
-fn safe_asset_storage_path(snapshot_dir: &Path, storage_path: &str) -> Result<PathBuf> {
+pub(crate) fn safe_asset_storage_path(snapshot_dir: &Path, storage_path: &str) -> Result<PathBuf> {
     let rel = Path::new(storage_path);
     if rel.is_absolute() {
         return Err(Error::storage(format!(

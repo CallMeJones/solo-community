@@ -20,7 +20,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  community-ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   windows-candidate:
+    needs: community-ci
     name: Windows Community candidate
     runs-on: windows-latest
     timeout-minutes: 120

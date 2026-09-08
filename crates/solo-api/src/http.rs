@@ -661,6 +661,7 @@ pub fn router_with_host_routes(
         ));
     let authed = authed.merge(mcp_router.with_state(state.clone()));
 
+    let authentication_configured = auth.is_some();
     let authed = if let Some(cfg) = auth {
         // Dispatch via AuthValidator (bearer | OIDC) and insert the
         // authenticated principal for audit logging.
@@ -676,6 +677,10 @@ pub fn router_with_host_routes(
     public
         .merge(authed)
         .layer(cors)
+        .layer(axum::middleware::from_fn_with_state(
+            authentication_configured,
+            crate::browser_boundary::validate_request,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -735,6 +740,8 @@ fn build_cors_layer() -> CorsLayer {
             axum::http::HeaderName::from_static(crate::document_upload::UPLOAD_LENGTH_HEADER),
         ])
         .expose_headers([
+            axum::http::HeaderName::from_static("x-solo-retrieval-mode"),
+            axum::http::HeaderName::from_static("x-solo-retrieval-warning"),
             axum::http::HeaderName::from_static(crate::mcp_session::MCP_SESSION_ID_HEADER),
             axum::http::HeaderName::from_static(crate::document_upload::UPLOAD_OFFSET_HEADER),
             axum::http::HeaderName::from_static(crate::document_upload::UPLOAD_LENGTH_HEADER),
@@ -745,7 +752,7 @@ fn build_cors_layer() -> CorsLayer {
 /// True if `origin` is an HTTP(S) origin whose host is `localhost` or a
 /// literal loopback IP (IPv4 127/8 or IPv6 `::1`).
 /// Anything else (incl. nip.io tricks like `127.0.0.1.nip.io`) is rejected.
-fn is_localhost_origin(origin: &str) -> bool {
+pub(crate) fn is_localhost_origin(origin: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(origin) else {
         return false;
     };
@@ -914,6 +921,10 @@ pub fn openapi_spec() -> serde_json::Value {
                 },
                 "RecallResult": {
                     "type": "object",
+                    "properties": {
+                        "retrieval_mode": { "type": "string", "enum": ["hybrid", "lexical_only"] },
+                        "warning": { "type": ["string", "null"], "description": "Explains degraded retrieval, including empty keyword-only results." }
+                    },
                     "description":
                         "Recall response. Fields are stable across v0.1 but not exhaustively documented here — \
                          see `solo_query::RecallResult` in the source for the canonical shape. \
@@ -5875,11 +5886,25 @@ async fn search_docs_handler(
     TenantExtractor(tenant): TenantExtractor,
     AuditPrincipal(principal): AuditPrincipal,
     Json(body): Json<SearchDocsBody>,
-) -> Result<Json<Vec<solo_query::DocSearchHit>>, ApiError> {
-    let hits = solo_query::run_doc_search(tenant.as_ref(), principal, &body.query, body.limit)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(hits))
+) -> Result<(HeaderMap, Json<Vec<solo_query::DocSearchHit>>), ApiError> {
+    let result =
+        solo_query::run_doc_search_with_status(tenant.as_ref(), principal, &body.query, body.limit)
+            .await
+            .map_err(ApiError::from)?;
+    // Preserve the existing array response while exposing degradation even
+    // when no chunks match. MCP returns the same metadata in structured data.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-solo-retrieval-mode",
+        HeaderValue::from_static(result.retrieval_mode.as_str()),
+    );
+    if result.warning.is_some() {
+        headers.insert(
+            "x-solo-retrieval-warning",
+            HeaderValue::from_static("semantic-search-unavailable"),
+        );
+    }
+    Ok((headers, Json(result.hits)))
 }
 
 async fn inspect_document_handler(
@@ -24333,6 +24358,38 @@ mod handler_tests {
                 call_with_tenant(r, "POST", "/mcp", Some(req), "never-registered").await;
             assert_eq!(status, StatusCode::OK, "body: {body}");
             assert!(body.pointer("/result/tools").is_some());
+        });
+        h.shutdown(&runtime);
+    }
+
+    #[test]
+    fn browser_boundary_rejects_foreign_hosts_for_memory_mcp_and_public_routes() {
+        let runtime = rt();
+        let h = Harness::new(&runtime);
+        runtime.block_on(async {
+            for (method, uri) in [
+                ("GET", "/health"),
+                ("GET", "/memory/example"),
+                ("POST", "/mcp"),
+                ("OPTIONS", "/mcp"),
+            ] {
+                for origin in [None, Some("http://attacker.invalid:17821")] {
+                    let mut req = Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("host", "attacker.invalid:17821");
+                    if let Some(origin) = origin {
+                        req = req.header("origin", origin);
+                    }
+                    let response = h
+                        .router
+                        .clone()
+                        .oneshot(req.body(Body::empty()).unwrap())
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+                }
+            }
         });
         h.shutdown(&runtime);
     }
