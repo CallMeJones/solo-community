@@ -13290,7 +13290,7 @@ mod handler_tests {
             // We must drop our reference here so the inner WriteHandle
             // can be released when the registry drops below. Without
             // this, the writer thread's mpsc never closes and the join
-            // times out at 5s.
+            // times out.
             let tenant_handle = self.tenant_handle;
             // v0.10.0: same story for the new `registry` Arc clone the
             // tenants-list tests use to seed extra index rows — the
@@ -13305,19 +13305,25 @@ mod handler_tests {
                 drop(self.router); // drops state → drops pool inside runtime ctx
                 if let Some(join) = join {
                     let (tx, rx) = std::sync::mpsc::channel();
+                    let temp_dir = self._tmp;
                     std::thread::spawn(move || {
-                        let _ = tx.send(join.join());
+                        let result = join.join();
+                        // The joiner owns the directory even if the waiting test
+                        // times out, so native database handles always close first.
+                        drop(temp_dir);
+                        let _ = tx.send(result);
                     });
                     tokio::task::spawn_blocking(move || {
-                        rx.recv_timeout(std::time::Duration::from_secs(5))
+                        // ProcDump and shared Windows CI runners can delay native
+                        // shutdown beyond five seconds. Keep a bounded wait that
+                        // allows diagnostic overhead without accepting a hang.
+                        rx.recv_timeout(std::time::Duration::from_secs(30))
                     })
                     .await
                     .expect("blocking task")
-                    .expect("writer thread did not exit within 5s")
+                    .expect("writer thread did not exit within 30s")
                     .expect("writer thread panicked");
                 }
-                // Retain the database directory until the native writer has closed it.
-                drop(self._tmp);
             });
         }
     }
