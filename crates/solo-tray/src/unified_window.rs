@@ -155,7 +155,7 @@ pub fn run(mut state: AppState) -> Result<()> {
     ] {
         menu.append(&tray_icon::menu::MenuItem::with_id(id, label, true, None))?;
     }
-    let _tray = tray::build_tray(menu, crate::status::DaemonHealth::Starting);
+    let tray_icon = tray::build_tray(menu, crate::status::DaemonHealth::Starting);
     let data_dir = tray::resolve_data_dir();
     let mut busy = false;
     let mut remember_after_unlock = false;
@@ -166,6 +166,7 @@ pub fn run(mut state: AppState) -> Result<()> {
     let mut initializing = false;
     let mut ready = false;
     let mut observed_pid = None;
+    let mut last_tray_health = crate::status::DaemonHealth::Starting;
     let mut ready_after = SystemTime::now();
     let mut last_tick = Instant::now();
     if let Some(secret) = state.initial_passphrase.take() {
@@ -199,7 +200,7 @@ pub fn run(mut state: AppState) -> Result<()> {
                 Command::Quit {}=>{quitting=true;state.daemon_handle.blocking_lock().request_quit();},
             },
             Event::UserEvent(Message::Initialized(result))=>{ initializing=false; if quitting {busy=false;pending_secret=None;} else {match result {Ok(secret)=>start(&state,secret),Err(error)=>{message=error;busy=false;pending_secret=None;}}} },
-            Event::WindowEvent{event:WindowEvent::CloseRequested,..}=>{if _tray.is_some(){window.set_visible(false);}else{quitting=true;state.daemon_handle.blocking_lock().request_quit();}},
+            Event::WindowEvent{event:WindowEvent::CloseRequested,..}=>{if tray_icon.is_some(){window.set_visible(false);}else{quitting=true;state.daemon_handle.blocking_lock().request_quit();}},
             _=>{},
         }
         if last_tick.elapsed()<Duration::from_millis(200){return;}
@@ -218,7 +219,9 @@ pub fn run(mut state: AppState) -> Result<()> {
             return;
         }
         let mut running=false;
+        let mut supervisor_state=None;
         if let Ok(handle)=state.daemon_handle.try_lock() {
+            supervisor_state=Some(handle.state.clone());
             running=handle.state==daemon::SupervisorState::Running && handle.command==daemon::Command_::Run;
             if observed_pid!=handle.pid {observed_pid=handle.pid;ready_after=SystemTime::now();}
             if let daemon::SupervisorState::StartupFailed(ref error)=handle.state {
@@ -228,7 +231,26 @@ pub fn run(mut state: AppState) -> Result<()> {
                 busy=true;let _=webview.load_url(START_URL);entered_workspace=false;
             }
         }
-        ready=running && state.status_state.try_lock().is_ok_and(|s|s.health==crate::status::DaemonHealth::Healthy && s.last_ok_at.is_some_and(|at|at>=ready_after));
+        let status_snapshot=state.status_state.try_lock().ok().map(|s|(s.health,s.last_ok_at));
+        ready=running && status_snapshot.is_some_and(|(health,last_ok_at)|health==crate::status::DaemonHealth::Healthy && last_ok_at.is_some_and(|at|at>=ready_after));
+        let tray_health=match supervisor_state {
+            Some(daemon::SupervisorState::Locked|daemon::SupervisorState::Starting|daemon::SupervisorState::Restarting)=>crate::status::DaemonHealth::Starting,
+            Some(daemon::SupervisorState::StartupFailed(_)|daemon::SupervisorState::Stopped)=>crate::status::DaemonHealth::Down,
+            Some(daemon::SupervisorState::Running|daemon::SupervisorState::Crashed(_))=>status_snapshot.map_or(last_tray_health,|(health,_)|health),
+            None=>last_tray_health,
+        };
+        if tray_health!=last_tray_health {
+            if let Some(icon)=tray_icon.as_ref() {
+                let _=icon.set_icon(Some(tray::icon_for(tray_health,1.0)));
+                let tooltip=match tray_health {
+                    crate::status::DaemonHealth::Healthy=>"Solo daemon: healthy",
+                    crate::status::DaemonHealth::Starting=>"Solo daemon: starting / reconnecting",
+                    crate::status::DaemonHealth::Down=>"Solo daemon: stopped",
+                };
+                let _=icon.set_tooltip(Some(tooltip));
+            }
+            last_tray_health=tray_health;
+        }
         if ready && busy {
             busy=false;
             if remember_after_unlock && let Some(secret)=pending_secret.take() {
