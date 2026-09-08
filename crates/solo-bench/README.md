@@ -99,6 +99,11 @@ dirty beside any shared result. `publishable: true` only identifies a bundled
 semantic-model run; it is not a quality threshold or proof of answer accuracy.
 Provider degradation aborts the run rather than silently mixing retrieval modes.
 
+The official dataset contains repeated session IDs. Every corpus occurrence is
+retained, including its date, and duplicate results still occupy their raw rank.
+Recall and NDCG credit a relevant session ID only at its first occurrence. Each
+question reports its duplicate occurrence count; no question is skipped for this.
+
 `solo eval` remains a deterministic heuristic fixture check. Use this harness
 to measure the production retrieval path; do not present the fixture score as
 production recall accuracy.

@@ -80,9 +80,9 @@ impl LongMemEvalEntry {
             .iter()
             .map(String::as_str)
             .collect();
-        if corpus_ids.len() != sessions {
-            bail!("question {} has duplicate session ids", self.question_id);
-        }
+        // The official cleaned corpus contains repeated session IDs, sometimes
+        // with different dates. Preserve every occurrence and its raw rank;
+        // scoring below credits each relevant ID only once.
         for answer_id in &self.answer_session_ids {
             if !corpus_ids.contains(answer_id.as_str()) {
                 bail!(
@@ -124,6 +124,7 @@ pub struct QuestionResult {
     pub question_date: String,
     pub answer_session_ids: Vec<String>,
     pub corpus_sessions: usize,
+    pub duplicate_session_occurrences: usize,
     pub scored: bool,
     pub first_relevant_rank: Option<usize>,
     pub reciprocal_rank: f64,
@@ -199,10 +200,11 @@ pub fn score_ranked_sessions(
                 .map(String::as_str)
                 .filter(|id| relevant.contains(id))
                 .collect();
+            let mut credited = HashSet::new();
             let dcg = top
                 .iter()
                 .enumerate()
-                .filter(|(_, id)| relevant.contains(id.as_str()))
+                .filter(|(_, id)| relevant.contains(id.as_str()) && credited.insert(id.as_str()))
                 .map(|(idx, _)| 1.0 / ((idx + 2) as f64).log2())
                 .sum::<f64>();
             let ideal_relevant = relevant.len().min(k);
@@ -326,6 +328,12 @@ impl LongMemEvalRunner {
 
     pub async fn run_entry(&self, entry: LongMemEvalEntry) -> Result<QuestionResult> {
         entry.validate()?;
+        let duplicate_session_occurrences = entry.haystack_session_ids.len()
+            - entry
+                .haystack_session_ids
+                .iter()
+                .collect::<HashSet<_>>()
+                .len();
         let mut sessions = Vec::new();
         for ((session, session_id), date) in entry
             .haystack_sessions
@@ -409,6 +417,7 @@ impl LongMemEvalRunner {
                 question_date: entry.question_date,
                 answer_session_ids: entry.answer_session_ids,
                 corpus_sessions: sessions.len(),
+                duplicate_session_occurrences,
                 scored,
                 first_relevant_rank,
                 reciprocal_rank,
@@ -567,6 +576,18 @@ mod tests {
         assert_eq!(metrics[2].recall_all, 1.0);
     }
 
+    #[test]
+    fn duplicate_relevant_ids_do_not_inflate_ndcg_or_compress_ranks() {
+        let ranked = vec!["gold-a".into(), "gold-a".into(), "gold-b".into()];
+        let gold = vec!["gold-a".into(), "gold-b".into()];
+        let (_, _, _, metrics) = score_ranked_sessions(&ranked, &gold, &[1, 2, 3]);
+        assert_eq!(metrics[0].ndcg, 1.0);
+        assert_eq!(metrics[1].recall_all, 0.0);
+        assert!(metrics[1].ndcg < 1.0);
+        assert_eq!(metrics[2].recall_all, 1.0);
+        assert!(metrics[2].ndcg < 1.0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runner_scores_exact_session_ids_through_solo_recall() {
         let entry = LongMemEvalEntry {
@@ -585,6 +606,16 @@ mod tests {
         };
         let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new("stub", "v1", 16));
         let runner = LongMemEvalRunner::new(embedder, ContentMode::UserTurns, 2, 2).unwrap();
+        let mut repeated = entry.clone();
+        repeated.haystack_session_ids.push("answer-session".into());
+        repeated.haystack_dates.push("2025/01/03".into());
+        repeated
+            .haystack_sessions
+            .push(vec![turn("user", "another codeword cobalt occurrence")]);
+        let repeated_result = runner.run_entry(repeated).await.unwrap();
+        assert_eq!(repeated_result.corpus_sessions, 3);
+        assert_eq!(repeated_result.duplicate_session_occurrences, 1);
+        assert!(repeated_result.metrics.iter().all(|m| m.ndcg <= 1.0));
         let result = runner.run_entry(entry).await.unwrap();
         assert_eq!(result.ranked_sessions[0].session_id, "answer-session");
         assert_eq!(
