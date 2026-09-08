@@ -21,6 +21,7 @@ mod settings;
 mod single_instance;
 mod status;
 mod tray;
+mod unified_window;
 mod update;
 mod window;
 
@@ -79,6 +80,7 @@ fn main() -> Result<()> {
                 "Usage: solo-tray [OPTIONS]\n\n",
                 "Options:\n",
                 "  --version, -V  Print version and exit\n",
+                "  --legacy-controls  Open the previous operator controls\n",
                 "  --help, -h     Print this help and exit\n",
                 "  --desktop-window --desktop-url <URL> [--desktop-route-file <PATH>]\n",
                 "                 Open Solo in an owned webview window\n\n",
@@ -195,6 +197,14 @@ fn main() -> Result<()> {
         runtime_handle: runtime.handle().clone(),
         initial_passphrase,
     };
+
+    // The normal application owns one Tao event loop and one visible webview.
+    // Retain the old operator surface only as an explicit recovery option.
+    if !argv.iter().any(|arg| arg == "--legacy-controls") {
+        #[cfg(target_os = "linux")]
+        gtk::init().map_err(|e| anyhow::anyhow!("GTK initialization failed: {e}"))?;
+        return unified_window::run(app_state);
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

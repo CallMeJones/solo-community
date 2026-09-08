@@ -213,54 +213,22 @@ describe('App desktop shell', () => {
     );
   });
 
-  it('opens on Home and keeps graph, inbox, and inspector paths reachable', async () => {
+  it('opens on Memories with list, graph, inbox and selected details reachable', async () => {
     stubSetupFetch();
     renderApp();
-
-    expect(screen.getByRole('heading', { name: 'Home' })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText('Next actions')).toBeInTheDocument());
-    expect(screen.getByText('Solo status')).toBeInTheDocument();
-    expect(await screen.findByText('Pending Steward')).toBeInTheDocument();
-    expect(screen.getAllByText('7 clusters').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('1 item').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('no facts or triples yet')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /view memories/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /review inbox/i })).toBeInTheDocument();
-    expect(screen.queryByText('Memory Surface')).not.toBeInTheDocument();
-
+    expect(screen.getByRole('heading', { name: 'Memories' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Inspector stub')).not.toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: 'Solo' });
-    for (const label of [
-      'Home',
-      'Memories',
-      'Inbox',
-      'Import',
-      'Projects',
-      'Settings',
-    ]) {
-      expect(within(nav).getByRole('button', { name: label })).toBeInTheDocument();
-    }
-    for (const hidden of [
-      'Setup',
-      'Health',
-      'Connections',
-      'Profiles',
-      'Backups',
-      'Logs',
-    ]) {
-      expect(within(nav).queryByRole('button', { name: hidden })).not.toBeInTheDocument();
-    }
-
-    fireEvent.click(screen.getByRole('button', { name: /^memories$/i }));
-    expect(await screen.findByText('Toolbar stub')).toBeInTheDocument();
+    for (const name of ['Memories', 'Inbox', 'Projects', 'Connected apps'])
+      expect(within(nav).getByRole('button', { name })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '2D' }));
     expect(await screen.findByText('Graph view stub')).toBeInTheDocument();
-    expect(await screen.findByText('Inspector stub')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^inbox$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Inbox' }));
     expect(await screen.findByText('Inbox view stub')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText('Graph view stub')).not.toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /^select episode$/i }));
-    expect(await screen.findByText('Graph view stub')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select episode' }));
     expect(await screen.findByText('Inspector stub')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Explore connections' })).toBeInTheDocument();
   });
 
   it('surfaces document import and backup workflows', async () => {
@@ -273,6 +241,7 @@ describe('App desktop shell', () => {
     expect(screen.getByRole('button', { name: 'Import 0 files' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
     fireEvent.click(await screen.findByRole('button', { name: /^backups$/i }));
     expect(await screen.findByRole('heading', { name: 'Backups' })).toBeInTheDocument();
     expect(screen.getByText('Hot Backup')).toBeInTheDocument();
@@ -283,7 +252,9 @@ describe('App desktop shell', () => {
     stubSetupFetch();
     renderApp();
 
-    fireEvent.click(screen.getByRole('button', { name: /setup solo/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
+    fireEvent.click(screen.getByRole('button', { name: /setup & recovery/i }));
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Setup' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText('First Run').length).toBeGreaterThan(0));
@@ -298,6 +269,7 @@ describe('App desktop shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /connect codex/i }));
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
     expect(screen.getByText('MCP Connections')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'MCP connections' })).toBeInTheDocument();
     expect(screen.getByText(/solo setup-client codex .* --apply/)).toBeInTheDocument();
@@ -308,15 +280,13 @@ describe('App desktop shell', () => {
     window.history.replaceState(null, '', '/#connections');
     renderApp();
 
-    expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connected apps' })).toBeInTheDocument();
     expect(screen.getAllByText('http://127.0.0.1:17821/mcp').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Copy dry-run')).toHaveLength(3);
     expect(screen.getAllByText('Copy install')).toHaveLength(3);
     expect(screen.getAllByText('Copy Doctor')).toHaveLength(4);
     expect(
-      screen.getByText(
-        'solo setup-client doctor --url http://127.0.0.1:17821/mcp',
-      ),
+      screen.getByText('solo setup-client doctor --url http://127.0.0.1:17821/mcp'),
     ).toBeInTheDocument();
     expect(screen.getByText(/claude mcp add --transport http --scope user/)).toBeInTheDocument();
     expect(screen.getByText('Copy Claude Code')).toBeInTheDocument();
@@ -333,7 +303,9 @@ describe('App desktop shell', () => {
 
     renderApp();
 
-    expect(await screen.findByText('solo.test:9000')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
+    expect((await screen.findAllByText('http://solo.test:9000')).length).toBeGreaterThan(0);
   });
 
   it('surfaces daemon health and the Memory Library in the shell', async () => {
@@ -365,7 +337,7 @@ describe('App desktop shell', () => {
 
     renderApp();
 
-    expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connected apps' })).toBeInTheDocument();
   });
 
   it('opens health from a hash deep link', async () => {
@@ -390,6 +362,7 @@ describe('App desktop shell', () => {
     const rendered = renderApp();
 
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
     fireEvent.click(await screen.findByRole('button', { name: /^logs$/i }));
     expect(await screen.findByText('Logs view stub')).toBeInTheDocument();
     rendered.unmount();
@@ -545,10 +518,12 @@ describe('App desktop shell', () => {
     renderApp();
 
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
 
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByText('Solo HTTP - installed desktop default')).toBeInTheDocument();
     expect(screen.getByText('endpoints persist; bearer is session-only')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'All settings' }));
     expect(screen.getByText('MCP Connections')).toBeInTheDocument();
     expect(screen.getByText('Runtime & Embedder')).toBeInTheDocument();
     expect(await screen.findByText('stub@v1 16d f32')).toBeInTheDocument();
@@ -651,7 +626,7 @@ describe('App desktop shell', () => {
 
     expect(screen.getByText('Admin & Diagnostics')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^MCP connections$/i }));
-    expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connected apps' })).toBeInTheDocument();
   });
 
   it('rejects the retired profiles hash deep link', async () => {
@@ -659,7 +634,7 @@ describe('App desktop shell', () => {
 
     renderApp();
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Memories' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Profiles' })).not.toBeInTheDocument();
   });
 

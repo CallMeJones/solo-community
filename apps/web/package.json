@@ -24,11 +24,13 @@
     "test:live": "vitest run tests/live-contract.test.ts"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@tanstack/react-query": "5.100.10",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-force-graph-2d": "1.29.1",
     "react-force-graph-3d": "1.29.1",
+    "three-spritetext": "1.10.0",
     "zustand": "5.0.13"
   },
   "devDependencies": {

@@ -293,21 +293,23 @@ export function InboxView({ onSelectEpisode }: InboxViewProps) {
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
           <section aria-label="Recent episodes" className="min-w-0">
             <SectionHeader title="Review queue" loading={inboxQuery.isLoading} />
-            <ReviewControls
-              reviewFilter={reviewFilter}
-              sourceFilter={sourceFilter}
-              sourceOptions={sourceOptions}
-              visibleCount={visibleEpisodes.length}
-              loadedCount={recentEpisodes.length}
-              summary={inboxSummary}
-              bulkReviewingState={bulkReviewingState}
-              canApproveVisible={bulkReviewTargets(visibleEpisodes, 'approved').length > 0}
-              canDismissVisible={bulkReviewTargets(visibleEpisodes, 'dismissed').length > 0}
-              canResetVisible={bulkReviewTargets(visibleEpisodes, 'needs_review').length > 0}
-              onReviewFilterChange={setReviewFilter}
-              onSourceFilterChange={setSourceFilter}
-              onBulkReview={handleBulkReview}
-            />
+            {recentEpisodes.length > 0 && (
+              <ReviewControls
+                reviewFilter={reviewFilter}
+                sourceFilter={sourceFilter}
+                sourceOptions={sourceOptions}
+                visibleCount={visibleEpisodes.length}
+                loadedCount={recentEpisodes.length}
+                summary={inboxSummary}
+                bulkReviewingState={bulkReviewingState}
+                canApproveVisible={bulkReviewTargets(visibleEpisodes, 'approved').length > 0}
+                canDismissVisible={bulkReviewTargets(visibleEpisodes, 'dismissed').length > 0}
+                canResetVisible={bulkReviewTargets(visibleEpisodes, 'needs_review').length > 0}
+                onReviewFilterChange={setReviewFilter}
+                onSourceFilterChange={setSourceFilter}
+                onBulkReview={handleBulkReview}
+              />
+            )}
             {inboxQuery.error && <ErrorMessage message={String(inboxQuery.error)} />}
             {episodeActionError && <ErrorMessage message={episodeActionError} />}
             {!inboxQuery.isLoading && !inboxQuery.error && (

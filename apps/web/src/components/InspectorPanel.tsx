@@ -14,6 +14,7 @@ import { useSelectedNode } from '../hooks/useSelectedNode';
 import { useNodeKindColors } from '../store/themeStore';
 import { useGraphStore } from '../store/graphStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { sourceLabel } from '../lib/memoryExplorer';
 
 const USE_MOCKS = import.meta.env.VITE_SOLO_USE_MOCKS === '1';
 
@@ -24,10 +25,7 @@ function KindBadge({ kind }: { kind: NodeKind }) {
       className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider"
       style={{ backgroundColor: `${nodeColors[kind]}22`, color: nodeColors[kind] }}
     >
-      <span
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ backgroundColor: nodeColors[kind] }}
-      />
+      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: nodeColors[kind] }} />
       {kind}
     </span>
   );
@@ -60,7 +58,10 @@ interface ContradictionState {
   resolvingKey: string | null;
 }
 
-export function InspectorPanel() {
+export function InspectorPanel({
+  embedded = false,
+  onRevealConnections,
+}: { embedded?: boolean; onRevealConnections?: (id: string) => void } = {}) {
   const queryClient = useQueryClient();
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
   const setSelectedNodeId = useGraphStore((s) => s.setSelectedNodeId);
@@ -136,11 +137,7 @@ export function InspectorPanel() {
     const neighborKind = neighborQueryKind(data.node.kind);
     setSimilar({ loading: true, error: null, result: null, forNodeId: selectedNodeId });
     try {
-      const result = await fetchNeighbors(
-        selectedNodeId,
-        { kind: neighborKind, limit: 8 },
-        {},
-      );
+      const result = await fetchNeighbors(selectedNodeId, { kind: neighborKind, limit: 8 }, {});
       const ids = new Set<string>([selectedNodeId, ...result.nodes.map((n) => n.id)]);
       addRecalled(ids);
       setSimilar({ loading: false, error: null, result, forNodeId: selectedNodeId });
@@ -284,18 +281,20 @@ export function InspectorPanel() {
     <div className="flex flex-col gap-4 text-sm">
       <div className="flex items-start justify-between">
         <KindBadge kind={node.kind} />
-        <button
-          onClick={() => setSelectedNodeId(null)}
-          className="text-xs text-slate-400 hover:text-slate-300"
-          aria-label="Close inspector"
-        >
-          Clear
-        </button>
+        {!embedded && (
+          <button
+            onClick={() => setSelectedNodeId(null)}
+            className="text-xs text-slate-400 hover:text-slate-300"
+            aria-label="Close inspector"
+          >
+            Clear
+          </button>
+        )}
       </div>
 
       <div>
         <h2 className="text-base font-semibold leading-tight text-slate-100">{node.label}</h2>
-        <p className="mt-1 font-mono text-[10px] text-slate-400">{node.id}</p>
+        {!embedded && <p className="mt-1 font-mono text-[10px] text-slate-400">{node.id}</p>}
       </div>
 
       {full_text && (
@@ -323,7 +322,10 @@ export function InspectorPanel() {
             </div>
             <button
               type="button"
-              onClick={() => toggleExpansion(node.id)}
+              onClick={() => {
+                toggleExpansion(node.id);
+                if (!isExpanded) onRevealConnections?.(node.id);
+              }}
               disabled={documentChunkCount === 0}
               className="shrink-0 rounded-md border border-orange-800 bg-slate-950 px-2 py-1 text-[10px] uppercase tracking-wider text-orange-200 hover:border-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -338,7 +340,8 @@ export function InspectorPanel() {
       )}
 
       {canEditMemory && (
-        <section>
+        <details open={!embedded}>
+          <summary className="mb-3 cursor-pointer text-sm">Edit memory</summary>
           <div className="mb-1 flex items-center justify-between">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Correction
@@ -371,7 +374,7 @@ export function InspectorPanel() {
               Saved
             </p>
           )}
-        </section>
+        </details>
       )}
 
       {node.kind === 'entity' && (
@@ -406,12 +409,14 @@ export function InspectorPanel() {
         {node.kind === 'episode' && node.source_type && (
           <div className="rounded-md bg-slate-900 p-2">
             <div className="text-slate-400">Source</div>
-            <div className="truncate text-xs font-medium text-slate-100">{node.source_type}</div>
+            <div className="truncate text-xs font-medium text-slate-100">
+              {sourceLabel(node.source_type)}
+            </div>
           </div>
         )}
         {node.kind === 'episode' && typeof node.salience === 'number' && (
           <div className="rounded-md bg-slate-900 p-2">
-            <div className="text-slate-400">Salience</div>
+            <div className="text-slate-400">Importance</div>
             <div className="text-xs font-medium text-slate-100">
               {Math.round(node.salience * 100)}%
             </div>
@@ -421,7 +426,7 @@ export function InspectorPanel() {
           <div className="col-span-2 rounded-md bg-slate-900 p-2">
             <div className="text-slate-400">Created</div>
             <div className="font-mono text-xs text-slate-200">
-              {new Date(node.ts_ms).toISOString()}
+              {new Date(node.ts_ms).toLocaleString()}
             </div>
           </div>
         )}
