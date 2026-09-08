@@ -49,6 +49,7 @@
 //! `OneShotContext`, so writer + reader pool + lockfile stay live for
 //! the server's lifetime and clean up properly afterwards.
 
+use crate::browser_boundary::is_localhost_origin;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -747,31 +748,6 @@ fn build_cors_layer() -> CorsLayer {
             axum::http::HeaderName::from_static(crate::document_upload::UPLOAD_LENGTH_HEADER),
             axum::http::HeaderName::from_static(crate::document_upload::UPLOAD_STATUS_HEADER),
         ])
-}
-
-/// True if `origin` is an HTTP(S) origin whose host is `localhost` or a
-/// literal loopback IP (IPv4 127/8 or IPv6 `::1`).
-/// Anything else (incl. nip.io tricks like `127.0.0.1.nip.io`) is rejected.
-pub(crate) fn is_localhost_origin(origin: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(origin) else {
-        return false;
-    };
-    if !matches!(parsed.scheme(), "http" | "https")
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return false;
-    }
-    parsed.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .trim_matches(['[', ']'])
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    })
 }
 
 /// Bind + serve (v0.7.x legacy shape). `shutdown` is awaited inside
@@ -13327,7 +13303,6 @@ mod handler_tests {
                 drop(tenant_handle); // drop Harness's direct tenant Arc
                 drop(registry); // drop Harness's direct registry Arc
                 drop(self.router); // drops state → drops pool inside runtime ctx
-                drop(self._tmp);
                 if let Some(join) = join {
                     let (tx, rx) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
@@ -13341,6 +13316,8 @@ mod handler_tests {
                     .expect("writer thread did not exit within 5s")
                     .expect("writer thread panicked");
                 }
+                // Retain the database directory until the native writer has closed it.
+                drop(self._tmp);
             });
         }
     }

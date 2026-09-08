@@ -26,6 +26,38 @@ use crate::hnsw_id::{chunk_hnsw_id, episode_hnsw_id};
 use crate::init::open_sqlcipher;
 use crate::key_material::KeyMaterial;
 
+/// Coverage of principal attribution. Unattributed rows require manual review;
+/// counts do not establish who owns those rows or authorize their deletion.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AttributionReport {
+    pub episodes_total: u64,
+    pub episodes_unattributed: u64,
+    pub chunks_total: u64,
+    pub chunks_unattributed: u64,
+}
+
+/// Read existing attribution without opening the writer or changing records.
+/// Caller must hold the library lock. This report excludes external copies.
+pub fn audit_attribution(db_path: &Path, key: &KeyMaterial) -> Result<AttributionReport> {
+    if !db_path.is_file() {
+        return Err(Error::not_found("library database is missing"));
+    }
+    let conn = open_sqlcipher(db_path, key)?;
+    conn.execute_batch("PRAGMA query_only = ON;")
+        .map_err(|e| Error::storage(format!("set attribution audit read-only: {e}")))?;
+    attribution_report(&conn)
+}
+
+fn attribution_report(conn: &Connection) -> Result<AttributionReport> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM episodes),
+                (SELECT COUNT(*) FROM episodes WHERE principal_subject IS NULL OR trim(principal_subject) = ''),
+                (SELECT COUNT(*) FROM document_chunks),
+                (SELECT COUNT(*) FROM document_chunks WHERE ingested_by_principal IS NULL OR trim(ingested_by_principal) = '')",
+        [], |row| Ok(AttributionReport { episodes_total: row.get::<_, i64>(0)? as u64, episodes_unattributed: row.get::<_, i64>(1)? as u64, chunks_total: row.get::<_, i64>(2)? as u64, chunks_unattributed: row.get::<_, i64>(3)? as u64 })
+    ).map_err(|e| Error::storage(format!("audit attribution coverage: {e}")))
+}
+
 /// What `forget_principal` did. Returned to callers (typically the CLI
 /// `solo gdpr forget` subcommand) for surfacing in the user-visible
 /// summary and for downstream tests / scripting.
@@ -556,6 +588,29 @@ mod tests {
         .unwrap();
 
         (tmp, db_path)
+    }
+
+    #[test]
+    fn attribution_audit_counts_unknown_owners_without_assigning_or_deleting() {
+        let (_tmp, db_path) = seed_two_principal_db();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE episodes SET principal_subject = NULL WHERE principal_subject = 'alice'",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE document_chunks SET ingested_by_principal = ' ' WHERE ingested_by_principal = 'bob'", []).unwrap();
+        let report = attribution_report(&conn).unwrap();
+        assert_eq!(
+            report,
+            AttributionReport {
+                episodes_total: 5,
+                episodes_unattributed: 3,
+                chunks_total: 4,
+                chunks_unattributed: 1
+            }
+        );
+        assert_eq!(attribution_report(&conn).unwrap(), report);
     }
 
     #[test]

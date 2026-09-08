@@ -32,3 +32,12 @@ for (const hash of ['unknown']) {
     await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();
   });
 }
+
+// One session cannot establish that two distinct assistants are connected.
+test('setup explains cross-client recall without claiming verified clients', async ({ page }) => {
+  await page.goto('/#setup');
+  await expect(page.getByText('verify in client')).toHaveCount(2);
+  await expect(page.getByText(/Active sessions do not identify/)).toBeVisible();
+  await expect(page.getByText(/Return to Codex and ask again/)).toBeVisible();
+  await page.screenshot({ path: process.env.SOLO_SETUP_SCREENSHOT || 'test-results/setup-guide.png', fullPage: true });
+});

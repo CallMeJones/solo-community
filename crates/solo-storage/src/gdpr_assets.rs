@@ -83,7 +83,7 @@ pub(crate) fn prepare(
         let root = snapshot_dir.ok_or_else(|| {
             Error::storage("principal erasure requires the library asset directory")
         })?;
-        let path = crate::writer::safe_asset_storage_path(root, &storage_path)?;
+        let path = crate::asset_files::safe_asset_storage_path(root, &storage_path)?;
         if path.file_name().and_then(|v| v.to_str()) != Some(sha256.as_str()) {
             return Err(Error::storage("principal erasure asset path/hash mismatch"));
         }

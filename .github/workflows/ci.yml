@@ -276,8 +276,20 @@ jobs:
       - name: Enforce Community release boundary
         run: cargo test --locked -p solo-cli --no-default-features --test community_boundary
 
-      - name: Test Community API
-        run: cargo test --locked -p solo-api
+      - name: Test Community API and capture native crashes
+        shell: pwsh
+        run: ./scripts/test_windows_api.ps1
+
+      - name: Retain failed API process diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-api-diagnostics-${{ github.sha }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: |
+            target/windows-api-diagnostics/**/*.log
+            target/windows-api-diagnostics/**/*.dmp
 
       - name: Test and lint Windows tray
         shell: pwsh

@@ -1,16 +1,16 @@
 {
-    "schema_version":  3,
-    "source_repository":  "CallMeJones/solo-community",
-    "source_path":  "apps/web",
-    "source_commit":  "49c70d073131e4073c751cf3c22144121e4dd8d7",
-    "source_dirty":  false,
-    "package_lock_sha256":  "c64f9ffc9ca332ea98518fdfdaef0587a60c5d0b7c9c29b9c281c64a7b07382d",
-    "dist_tree_sha256":  "b29df2b8c9b6efe5a686b59c8f568c5ec3a879583bf1993b8f611572dca6deab",
-    "build_invocation_id":  "b5ab2951ed45436491c2c0bc5367b36b",
-    "build_started_at_utc":  "2026-09-07T21:55:30.4627334Z",
-    "build_completed_at_utc":  "2026-09-07T21:57:04.1478412Z",
-    "build_commands":  [
-                           "npm ci --no-audit --no-fund",
-                           "npm run build:pilot"
-                       ]
+  "schema_version": 3,
+  "source_repository": "CallMeJones/solo-community",
+  "source_path": "apps/web",
+  "source_commit": "feb2ade37bd65cbffb0bd4893dcce7fbaeeb6c16",
+  "source_dirty": false,
+  "package_lock_sha256": "c64f9ffc9ca332ea98518fdfdaef0587a60c5d0b7c9c29b9c281c64a7b07382d",
+  "dist_tree_sha256": "5ba0dac2e6fcc2a7d9f2889b08038883fed7fa034e15570add65cf0c8caa16f4",
+  "build_invocation_id": "71d2bf5e5de242ab9913684523618e18",
+  "build_started_at_utc": "2026-09-08T12:05:34.0421535Z",
+  "build_completed_at_utc": "2026-09-08T12:05:50.3010693Z",
+  "build_commands": [
+    "npm ci --no-audit --no-fund",
+    "npm run build:pilot"
+  ]
 }

@@ -2261,16 +2261,8 @@ fn build_tools() -> Vec<Tool> {
                         "description": "Optional human note about why this file is attached.",
                     },
                 },
-                "oneOf": [
-                    {
-                        "required": ["doc_id"],
-                        "not": { "required": ["asset_id"] }
-                    },
-                    {
-                        "required": ["asset_id"],
-                        "not": { "required": ["doc_id"] }
-                    }
-                ],
+                // Claude rejects a tool catalog containing top-level oneOf.
+                // The handler enforces exactly one target before any write.
                 "required": ["memory_id"],
             })),
         ),
@@ -5993,6 +5985,17 @@ mod dispatch_tests {
             ]
         );
         for t in &tools {
+            for unsupported in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    !t.input_schema.contains_key(unsupported),
+                    "{} has a top-level {unsupported}; Claude rejects the entire catalog",
+                    t.name
+                );
+            }
+            assert_eq!(
+                t.input_schema.get("type"),
+                Some(&serde_json::json!("object"))
+            );
             // rmcp 1.x: Tool.description is Option<Cow<'static, str>>.
             let desc = t.description.as_deref().unwrap_or("");
             assert!(!desc.is_empty(), "{} description empty", t.name);

@@ -87,7 +87,7 @@ fn is_trusted_request(request: &Request, authenticated: bool) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
-    if crate::http::is_localhost_origin(origin) {
+    if is_localhost_origin(origin) {
         return true;
     }
     // Authenticated deployments can serve their own remote browser UI. This
@@ -116,6 +116,31 @@ fn is_trusted_request(request: &Request, authenticated: bool) -> bool {
         .host_str()
         .is_some_and(|host| host.eq_ignore_ascii_case(authority.host()))
         && origin.port_or_known_default() == Some(authority.port_u16().unwrap_or(default_port))
+}
+
+/// True if `origin` is an HTTP(S) origin whose host is `localhost` or a
+/// literal loopback IP (IPv4 127/8 or IPv6 `::1`).
+/// Anything else (incl. nip.io tricks like `127.0.0.1.nip.io`) is rejected.
+pub(crate) fn is_localhost_origin(origin: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    parsed.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    })
 }
 
 #[cfg(test)]

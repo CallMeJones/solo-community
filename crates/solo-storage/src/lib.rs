@@ -60,6 +60,7 @@
 #![allow(dead_code)]
 
 pub mod asset_blob;
+mod asset_files;
 pub mod audit;
 pub mod backup;
 pub mod config;
@@ -124,7 +125,9 @@ pub use document::{ChunkConfig, ChunkSpec, ParseError, ParsedDocument, chunk_tex
 pub use embedder::{
     OllamaEmbedder, StubEmbedder, build_embedder_from_env, probe_embedder_config_from_env,
 };
-pub use gdpr::{ForgetReport, estimate_forget_scope, forget_principal};
+pub use gdpr::{
+    AttributionReport, ForgetReport, audit_attribution, estimate_forget_scope, forget_principal,
+};
 pub use library_backup::{BackupReport, RestoreReport, backup_library, restore_library};
 pub use redaction::{RedactionMatch, RedactionRegistry, RedactionResult};
 pub use schema_import::{

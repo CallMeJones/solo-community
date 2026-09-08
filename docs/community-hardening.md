@@ -82,3 +82,12 @@ benchmark. The previous no-op p99 target is removed. The separate `solo eval`
 command remains a heuristic fixture check and does not establish production
 recall accuracy. No previous benchmark score is promoted to a result for this
 new build.
+
+
+## Legacy attribution review
+
+Stop Solo and run `solo gdpr audit --data-dir <library>` with the library passphrase. The report counts all episodes/chunks and the subset without a principal, including blank ownership fields. It changes no records and does not infer the missing owner. Review source provenance individually; do not assign every legacy row to the current user or treat a zero count as proof that external copies were erased. Existing backups and exports need their own retention review.
+
+## Client interoperability
+
+The attachment tool advertises an object schema without a root `oneOf`: Claude rejected the entire tool catalog when that construct was present. Solo still requires exactly one of `doc_id` and `asset_id` before writing. Catalog tests check every input schema for this compatibility constraint.
