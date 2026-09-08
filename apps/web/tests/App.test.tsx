@@ -294,7 +294,7 @@ describe('App desktop shell', () => {
     expect(screen.getByText('Import memory')).toBeInTheDocument();
     expect(screen.getByText('Review inbox')).toBeInTheDocument();
     expect(screen.getByText('Create backup')).toBeInTheDocument();
-    expect(screen.getByText('6 of 7 complete')).toBeInTheDocument();
+    expect(screen.getByText('4 of 7 complete')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /connect codex/i }));
     expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument();
