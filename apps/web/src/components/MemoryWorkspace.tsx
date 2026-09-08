@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react';
 import { useGraphData } from '../hooks/useGraphData';
 import { useGraphStore } from '../store/graphStore';
+import { useThemeStore } from '../store/themeStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { rememberMemory, errorMessage } from '../api/client';
 import type { GraphResponse, NodeKind } from '../api/types';
@@ -43,6 +44,8 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
   const query = useGraphData();
   const data = query.data ?? EMPTY;
   const state = useGraphStore();
+  const labels = useThemeStore((s) => s.labels);
+  const setLabels = useThemeStore((s) => s.setLabels);
   const connection = useSettingsStore((s) => s.connectionRevision);
   const lastConnection = useRef(connection);
   const [view, setView] = useState<'list' | '2d' | '3d'>('list');
@@ -181,6 +184,19 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
             </button>
           ))}
         </div>
+        {/* Labels. Only in 2D: the 3D view has never painted names into the
+            scene and the list is already text, so the control would sit there
+            doing nothing. Hovering a node still names it in either graph. */}
+        {view === '2d' && (
+          <label className="workspace-button workspace-toggle">
+            <input
+              type="checkbox"
+              checked={labels}
+              onChange={(e) => setLabels(e.target.checked)}
+            />
+            Labels
+          </label>
+        )}
         <span className="library-label">Local library</span>
         <button
           className="workspace-button"

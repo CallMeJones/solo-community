@@ -192,6 +192,15 @@
 .workspace-button:hover {
   background: var(--solo-raised);
 }
+/* A checkbox wearing the button chrome, so a display switch sits in the
+   control row without inventing a second visual language for it. */
+.workspace-toggle {
+  cursor: pointer;
+  gap: 7px;
+}
+.workspace-toggle input {
+  accent-color: var(--solo-accent-solid);
+}
 .workspace-primary:hover {
   filter: brightness(1.12);
 }
