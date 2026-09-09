@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { errorMessage, runBackup } from '../api/client';
+import type { BackupRequest } from '../api/client';
 import { fetchSoloStatus } from '../api/health';
 import { configPath, libraryDbPath, suggestedBackupPath } from '../lib/backupPaths';
 import { COMMUNITY_LIBRARY_NAME } from '../store/graphStore';
@@ -28,15 +29,14 @@ export function BackupView() {
     }
   }, [destinationEdited, suggestedDestination]);
 
+  // The request is built from the mutate call’s variables rather than read
+  // out of this closure. React Query refreshes a mutation’s options in an
+  // effect, so a mutationFn closing over state can still see the previous
+  // render’s value if it fires between commit and effect — which on a loaded
+  // machine meant a backup POSTed an empty destination the instant after the
+  // field was prefilled.
   const backup = useMutation({
-    mutationFn: () =>
-      runBackup(
-        {
-          to: destination.trim(),
-          force,
-        },
-        {},
-      ),
+    mutationFn: (request: BackupRequest) => runBackup(request, {}),
   });
   const trimmedDestination = destination.trim();
   const httpBody = JSON.stringify({ to: trimmedDestination, force }, null, 2);
@@ -64,7 +64,7 @@ export function BackupView() {
             </div>
             <button
               type="button"
-              onClick={() => backup.mutate()}
+              onClick={() => backup.mutate({ to: trimmedDestination, force })}
               disabled={!canRun}
               className="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-700"
             >
