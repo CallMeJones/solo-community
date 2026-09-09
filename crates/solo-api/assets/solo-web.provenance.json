@@ -2,13 +2,13 @@
     "schema_version":  3,
     "source_repository":  "CallMeJones/solo-community",
     "source_path":  "apps/web",
-    "source_commit":  "ef62221132194032bacfa785eb8eb67a0dc64acf",
+    "source_commit":  "40e6a7af05ae3b7c5a33695711897243ecb0673a",
     "source_dirty":  false,
     "package_lock_sha256":  "f90718baf47254de77dd130b846bf850ba97eb43ee3ac85ea68c523f8c9417e7",
-    "dist_tree_sha256":  "cd6b47a38ca0c98adff0a9412779f60b0cb5f25aa5a2c60ed943a5b9d1aeaccc",
-    "build_invocation_id":  "7f12c6b1838141de98a1f0c345576e10",
-    "build_started_at_utc":  "2026-09-08T22:47:17.3549780Z",
-    "build_completed_at_utc":  "2026-09-08T22:49:26.7840031Z",
+    "dist_tree_sha256":  "72d28afc67a5c49df543e00e546f900fd887b1e9693896a426d700eeb910d2d7",
+    "build_invocation_id":  "93ebc377a90e411680c493d12989809b",
+    "build_started_at_utc":  "2026-09-09T00:15:09.7118978Z",
+    "build_completed_at_utc":  "2026-09-09T00:17:17.9945016Z",
     "build_commands":  [
                            "npm ci --no-audit --no-fund",
                            "npm run build:pilot"
