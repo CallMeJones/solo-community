@@ -120,13 +120,25 @@ $buildInvocationId = [guid]::NewGuid().ToString('N')
 $buildStartedAt = [DateTime]::UtcNow.ToString('o')
 Push-Location $webRoot
 try {
-    & $npm.Source ci --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) {
-        throw "npm ci failed with exit code $LASTEXITCODE"
+    # Windows PowerShell 5.1 turns a native command's stderr into a terminating
+    # ErrorRecord while ErrorActionPreference is Stop, and npm writes ordinary
+    # progress and deprecation notices there -- so a successful `npm ci` failed
+    # this script on the first warning it printed. Fold stderr into output and
+    # judge these by their exit code, the only signal that means failure.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $npm.Source ci --no-audit --no-fund 2>&1 | ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed with exit code $LASTEXITCODE"
+        }
+        & $npm.Source run build:pilot 2>&1 | ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run build:pilot failed with exit code $LASTEXITCODE"
+        }
     }
-    & $npm.Source run build:pilot
-    if ($LASTEXITCODE -ne 0) {
-        throw "npm run build:pilot failed with exit code $LASTEXITCODE"
+    finally {
+        $ErrorActionPreference = $previousPreference
     }
 }
 finally {
