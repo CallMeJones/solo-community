@@ -24,6 +24,7 @@ import {
   useParticleColors,
   useThemeStore,
 } from '../store/themeStore';
+import { qualityProfile } from '../lib/graphQuality';
 import {
   buildGraphPresentation,
   createGraphTooltip,
@@ -94,27 +95,25 @@ function graphLinkWidth(link: ForceGraphLink): number {
 }
 
 /**
- * Roughly how many particles the 2D canvas can animate before the render loop
- * stops being free. Every particle is drawn every frame, forever — unlike the
- * force layout, this work never settles, so it is the one effect that has to be
- * budgeted against graph size rather than switched on flat.
- */
-const PARTICLE_BUDGET = 260;
-
-/**
  * Particles per edge, weighted so the strongest relationships read as the
- * busiest, then thinned to keep the total near [`PARTICLE_BUDGET`].
+ * busiest, then thinned to keep the total near `budget`.
  *
  * Returns 0 wholesale when effects are off — force-graph skips the per-frame
- * particle work entirely at 0, which is the point of the toggle.
+ * particle work entirely at 0, which is the point of the toggle. A `null`
+ * budget skips the thinning instead, so every edge flows.
  */
-function graphLinkParticleCount(link: ForceGraphLink, effects: boolean, linkCount: number): number {
+function graphLinkParticleCount(
+  link: ForceGraphLink,
+  effects: boolean,
+  linkCount: number,
+  budget: number | null,
+): number {
   if (!effects) return 0;
   const weight = link.kind === 'triple' ? 3 : link.kind === 'semantic' ? 1 : 2;
-  if (linkCount <= 0) return weight;
+  if (budget === null || linkCount <= 0) return weight;
 
   // Average weight is ~2, so this is the fraction of edges that can carry one.
-  const share = PARTICLE_BUDGET / (linkCount * 2);
+  const share = budget / (linkCount * 2);
   if (share >= 1) return weight;
   // Below budget, keep particles only on the strongest edges and only on a
   // deterministic subset of them, so the flow still reads without every edge
@@ -126,18 +125,6 @@ function graphLinkParticleCount(link: ForceGraphLink, effects: boolean, linkCoun
 function graphLinkParticleWidth(link: ForceGraphLink): number {
   return link.kind === 'triple' ? 2.8 : 2;
 }
-
-/**
- * Above this many nodes the 3D view trades sphere smoothness for frame time.
- * Chosen to sit under a realistic library rather than a demo one.
- */
-const LARGE_GRAPH_NODES = 250;
-
-/**
- * Fraction of the canvas resolution the 3D bloom is computed at. Halving each
- * axis quarters the pixels the blur mips touch.
- */
-const BLOOM_RESOLUTION_SCALE = 0.5;
 
 /** How far the halo extends past the node, as a multiple of its radius. */
 const GLOW_SPREAD = 2.6;
@@ -247,7 +234,11 @@ export function GraphView({
   const linkColors = useLinkKindColors();
   const particleColors = useParticleColors();
   const requestedEffects = useThemeStore((s) => s.effects);
-  const effects = requestedEffects && !onOpenGroup;
+  const quality = qualityProfile(useThemeStore((s) => s.renderQuality));
+  const { particleBudget, largeGraphNodes, bloomResolutionScale } = quality;
+  // The grouped overview is the densest thing this draws, so the optimized
+  // profile takes glow and flow off there whatever the user's switch says.
+  const effects = requestedEffects && (quality.effectsInGroupedOverview || !onOpenGroup);
   const labels = useThemeStore((s) => s.labels);
 
   // Container ref for sizing — ResizeObserver-backed so dimensions track
@@ -284,6 +275,10 @@ export function GraphView({
     ];
   const label3d = useCallback(
     (node: ForceGraphNode) => {
+      // Same rule the 2D path applies: off means off, including for the
+      // selected node and including the group names in the overview. The
+      // tooltip and the inspector still name whatever is under the pointer.
+      if (!labels) return undefined;
       if (!SpriteText || (!onOpenGroup && node.id !== selectedNodeId)) return undefined;
       const sprite = new SpriteText(
         `${node.label.slice(0, 40)}${onOpenGroup ? `\n${node.ref_count ?? 0} items` : ''}`,
@@ -302,7 +297,7 @@ export function GraphView({
       sprite.borderRadius = 0.002;
       return sprite;
     },
-    [SpriteText, onOpenGroup, selectedNodeId, palette],
+    [SpriteText, labels, onOpenGroup, selectedNodeId, palette],
   );
 
   useLayoutEffect(() => {
@@ -337,17 +332,20 @@ export function GraphView({
   // changes — reheating the layout each time the status strip or a store value
   // ticks. `filtered` is already memoised; this keeps the wrapper stable too.
   const grouped = Boolean(onOpenGroup);
+  const flattenGroups = grouped && quality.flattenGroupedOverview;
   const graphData = useMemo(
     () => ({
-      // A shallow overview keeps groups readable from the initial camera angle.
-      // Individual-memory neighborhoods retain the full three-dimensional layout.
+      // A shallow overview keeps groups readable from the initial camera angle,
+      // which is what the optimized profile wants. Advanced lets the overview
+      // use the same full three-dimensional layout that individual-memory
+      // neighborhoods have always had.
       nodes: filtered.nodes.map((node, i) => ({
         ...node,
-        ...(grouped ? { fz: ((i % 3) - 1) * 25 } : {}),
+        ...(flattenGroups ? { fz: ((i % 3) - 1) * 25 } : {}),
       })),
       links: filtered.links.map((link) => ({ ...link })),
     }),
-    [filtered, grouped],
+    [filtered, flattenGroups],
   );
   const linkCount = filtered.links.length;
   useEffect(() => {
@@ -424,14 +422,15 @@ export function GraphView({
       void import('three/examples/jsm/postprocessing/UnrealBloomPass.js').then(
         ({ UnrealBloomPass }) => {
           if (cancelled) return;
-          // Half resolution. UnrealBloom runs a bright-pass plus five blur
-          // mips every frame, so its cost scales with the pixel count — and a
-          // glow is the one effect that loses nothing to being blurred at lower
-          // resolution. Full-res bloom cost about five times the frame rate.
+          // UnrealBloom runs a bright-pass plus five blur mips every frame, so
+          // its cost scales with the pixel count — and a glow is the one effect
+          // that loses least to being blurred at lower resolution. The
+          // optimized profile halves each axis for that reason; full-res bloom
+          // cost about five times the frame rate.
           const pass = new UnrealBloomPass(
             {
-              x: Math.max(1, Math.round((width || 1) * BLOOM_RESOLUTION_SCALE)),
-              y: Math.max(1, Math.round((height || 1) * BLOOM_RESOLUTION_SCALE)),
+              x: Math.max(1, Math.round((width || 1) * bloomResolutionScale)),
+              y: Math.max(1, Math.round((height || 1) * bloomResolutionScale)),
             },
             bloom.strength,
             bloom.radius,
@@ -464,15 +463,15 @@ export function GraphView({
         attached.pass.dispose?.();
       }
     };
-  }, [viewMode, effects, palette.bloom, width, height]);
+  }, [viewMode, effects, palette.bloom, bloomResolutionScale, width, height]);
 
   // Accessors are memoised because force-graph reconfigures itself whenever one
   // changes identity; recreating them each render made every unrelated re-render
   // touch the renderer.
   const graphLinkColor = useCallback((link: ForceGraphLink) => linkColors[link.kind], [linkColors]);
   const particleCount = useCallback(
-    (link: ForceGraphLink) => graphLinkParticleCount(link, effects, linkCount),
-    [effects, linkCount],
+    (link: ForceGraphLink) => graphLinkParticleCount(link, effects, linkCount, particleBudget),
+    [effects, linkCount, particleBudget],
   );
   const particleColor = useCallback(
     (link: ForceGraphLink) => particleColors[link.kind],
@@ -709,7 +708,9 @@ export function GraphView({
             // the graph size — the default 8x8 sphere is 128 triangles that a
             // node a few pixels wide cannot show. Dropped further once the
             // graph is large enough for the totals to matter.
-            nodeResolution={filtered.nodes.length > LARGE_GRAPH_NODES ? 6 : 8}
+            nodeResolution={
+              largeGraphNodes !== null && filtered.nodes.length > largeGraphNodes ? 6 : 8
+            }
             linkDirectionalParticleResolution={2}
             width={width}
             height={height}

@@ -37,7 +37,12 @@ import { MemoryPolicyPanel } from './components/MemoryPolicyPanel';
 import { SetupGuideView } from './components/SetupGuideView';
 import { MemoryWorkspace } from './components/MemoryWorkspace';
 import { Books, Tray, Folder, PlugsConnected, Gear, ShieldCheck } from '@phosphor-icons/react';
-import { GraphEffectsToggle, NodePalettePicker, ThemePicker } from './components/ThemePicker';
+import {
+  GraphEffectsToggle,
+  GraphQualityPicker,
+  NodePalettePicker,
+  ThemePicker,
+} from './components/ThemePicker';
 import { CopyButton } from './components/ui/CopyButton';
 import { DEFAULT_SOLO_API_URL, MCP_BRIDGE_URL } from './config/defaults';
 import { useGraphData } from './hooks/useGraphData';
@@ -825,6 +830,14 @@ function SettingsView({
 
           <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph effects</h3>
           <GraphEffectsToggle />
+
+          <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph quality</h3>
+          <p className="mt-1 text-xs text-slate-400">
+            How much work the memory viewport does to draw itself. Optimized is tuned to stay
+            smooth everywhere; Advanced spends more on a machine that has it. Neither changes
+            what your memories are or how you move through them.
+          </p>
+          <GraphQualityPicker />
         </section>
 
         <section

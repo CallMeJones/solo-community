@@ -19,5 +19,5 @@ export const ROUTES: RouteCase[] = [
   // Settings opens on its General category; Endpoints and the steward panels
   // are present in the DOM but hidden behind the other tabs, so asserting on
   // them here checks nothing a reader of this list would expect.
-  { hash: 'settings', texts: ['Settings', 'Appearance', 'Graph colors'] },
+  { hash: 'settings', texts: ['Settings', 'Appearance', 'Graph colors', 'Graph quality'] },
 ];

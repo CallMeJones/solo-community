@@ -108,3 +108,72 @@ describe('MemoryWorkspace graph label switch', () => {
     expect(openFilters()).toBeInTheDocument();
   });
 });
+
+/**
+ * The grouped overview is the default, and the escape hatch out of it lived
+ * only in the breadcrumb row beside the item count — easy to miss when what
+ * you want is simply "show me everything". It is now also a filter switch.
+ */
+describe('MemoryWorkspace show-every-memory switch', () => {
+  beforeEach(() => {
+    useGraphStore.setState({
+      selectedNodeId: null,
+      viewMode: '2d',
+      visibleKinds: new Set(['episode', 'document', 'cluster', 'entity']),
+      searchQuery: '',
+      expandedNodeIds: new Set(),
+      recalledNodeIds: new Set(),
+    });
+    localStorage.clear();
+  });
+
+  const openShowEvery = () => {
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
+    return screen.getByLabelText('Show every memory') as HTMLInputElement;
+  };
+
+  /**
+   * The breadcrumb button is hidden in list view, where there is no graph to
+   * ungroup. The filter switch is not — same as the labels switch beside it.
+   */
+  const showGraph = () => fireEvent.click(screen.getByRole('button', { name: '2D' }));
+
+  it('lives in the filters panel, not the control row', () => {
+    renderWorkspace();
+    expect(screen.queryByLabelText('Show every memory')).not.toBeInTheDocument();
+    expect(openShowEvery()).toBeInTheDocument();
+  });
+
+  it('starts grouped and switches to every memory', () => {
+    renderWorkspace();
+    showGraph();
+    const checkbox = openShowEvery();
+    expect(checkbox.checked).toBe(false);
+    // The breadcrumb offers the same thing under the name it has always had.
+    expect(screen.getByRole('button', { name: 'Full graph' })).toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+
+    expect((screen.getByLabelText('Show every memory') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('button', { name: 'Grouped overview' })).toBeInTheDocument();
+  });
+
+  it('agrees with the breadcrumb button, which drives the same state', () => {
+    renderWorkspace();
+    showGraph();
+    expect(openShowEvery().checked).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full graph' }));
+
+    expect((screen.getByLabelText('Show every memory') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('is left alone by Clear filters, which is about what is shown, not how', () => {
+    renderWorkspace();
+    fireEvent.click(openShowEvery());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+
+    expect((screen.getByLabelText('Show every memory') as HTMLInputElement).checked).toBe(true);
+  });
+});

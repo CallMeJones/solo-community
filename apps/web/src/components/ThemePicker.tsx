@@ -1,5 +1,5 @@
-// Appearance controls for the Settings page: theme, graph node palette, and
-// the graph effects toggle.
+// Appearance controls for the Settings page: theme, graph node palette, the
+// graph effects toggle, and how richly the memory viewport draws itself.
 //
 // Every control applies immediately rather than behind a save step — the whole
 // point is to judge a choice against the real UI — and persists via themeStore.
@@ -7,7 +7,12 @@
 import { THEME_ORDER, THEMES, type ThemeId } from '../lib/theme';
 import { NODE_KINDS } from '../lib/nodeKindTheme';
 import { NODE_PALETTES, NODE_PALETTE_ORDER, type NodePaletteId } from '../lib/nodePalettes';
-import { prefersReducedMotion, useActiveTheme, useThemeStore } from '../store/themeStore';
+import {
+  prefersReducedMotion,
+  useActiveTheme,
+  useThemeStore,
+  type RenderQuality,
+} from '../store/themeStore';
 
 export function ThemePicker() {
   const theme = useThemeStore((s) => s.theme);
@@ -71,6 +76,76 @@ export function GraphEffectsToggle() {
         </span>
       </label>
     </div>
+  );
+}
+
+/**
+ * How much the memory viewport is allowed to spend on drawing itself.
+ *
+ * Described in terms of what the reader sees rather than the knobs behind it:
+ * nobody chooses a bloom resolution, they choose whether the graph looks rich
+ * or runs smoothly on the machine in front of them.
+ */
+const RENDER_QUALITIES: ReadonlyArray<{
+  id: RenderQuality;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'optimized',
+    label: 'Optimized',
+    description: 'Smooth on any machine. Flow on the strongest connections.',
+  },
+  {
+    id: 'advanced',
+    label: 'Advanced',
+    description: 'Flow on every connection, smoother spheres, depth in groups.',
+  },
+];
+
+export function GraphQualityPicker() {
+  const quality = useThemeStore((s) => s.renderQuality);
+  const setQuality = useThemeStore((s) => s.setRenderQuality);
+
+  return (
+    <div role="radiogroup" aria-label="Graph quality" className="mt-4 grid gap-2 sm:grid-cols-2">
+      {RENDER_QUALITIES.map(({ id, label, description }) => (
+        <OptionCard
+          key={id}
+          selected={quality === id}
+          onSelect={() => setQuality(id)}
+          label={label}
+          description={description}
+        >
+          <QualityMark advanced={id === 'advanced'} />
+        </OptionCard>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Three dots standing in for nodes: flat and plain for optimized, haloed and
+ * staggered for advanced. Literal colors for the same reason as ThemeSwatch —
+ * it has to read the same whichever theme is active.
+ */
+function QualityMark({ advanced }: { advanced: boolean }) {
+  return (
+    <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center gap-1">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="block rounded-full"
+          style={{
+            width: advanced ? 7 : 6,
+            height: advanced ? 7 : 6,
+            background: '#38bdf8',
+            marginTop: advanced ? [4, -3, 2][i] : 0,
+            boxShadow: advanced ? '0 0 6px 2px rgba(56, 189, 248, 0.55)' : 'none',
+          }}
+        />
+      ))}
+    </span>
   );
 }
 

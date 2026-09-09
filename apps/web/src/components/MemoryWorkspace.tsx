@@ -132,6 +132,11 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
     setShowMatches(false);
     state.setSelectedNodeId(null);
   };
+  const showEverything = (on: boolean) => {
+    setFullGraph(on);
+    setGroupId(null);
+    setFocusId(null);
+  };
   const resetScope = () => {
     setGroupId(null);
     setFocusId(null);
@@ -229,9 +234,12 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
               {KIND_LABELS[kind]}
             </label>
           ))}
-          {/* Not a filter on what is shown, but it belongs with the other
-              checkboxes rather than in the control row: it is the graph's
-              one display switch and there is nowhere else for it to live. */}
+          {/* Neither of these filters what is shown, but they belong with the
+              other checkboxes rather than in the control row: they are the
+              graph's display switches and there is nowhere else for them to
+              live. The full-graph one is also in the breadcrumb, which is
+              where it is reachable from inside a group -- both go through
+              showEverything so they cannot disagree. */}
           <label>
             <input
               type="checkbox"
@@ -239,6 +247,14 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
               onChange={(e) => setLabels(e.target.checked)}
             />
             Graph labels
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={fullGraph}
+              onChange={(e) => showEverything(e.target.checked)}
+            />
+            Show every memory
           </label>
           <button
             className="workspace-button"
@@ -275,13 +291,7 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
             : `Showing ${explored.graph.nodes.length} of ${explored.matches.length} items`}
         </span>
         {view !== 'list' && (
-          <button
-            onClick={() => {
-              setFullGraph(!fullGraph);
-              setGroupId(null);
-              setFocusId(null);
-            }}
-          >
+          <button onClick={() => showEverything(!fullGraph)}>
             {fullGraph ? 'Grouped overview' : 'Full graph'}
           </button>
         )}

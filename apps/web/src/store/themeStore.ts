@@ -20,18 +20,39 @@ const THEME_KEY = 'solo.theme';
 const PALETTE_KEY = 'solo.graph.palette';
 const EFFECTS_KEY = 'solo.graph.effects';
 const LABELS_KEY = 'solo.graph.labels';
+const QUALITY_KEY = 'solo.graph.quality';
+
+/**
+ * How much work the memory viewport is allowed to do per frame.
+ *
+ * `optimized` is the tuned default every machine gets: budgeted flow
+ * particles, coarser spheres on a large graph, half-resolution bloom and a
+ * shallow grouped overview. `advanced` lifts those caps for a machine with the
+ * GPU to spare. Neither changes what the viewport shows or how it navigates --
+ * only how richly it is drawn.
+ */
+export type RenderQuality = 'optimized' | 'advanced';
+
+export const DEFAULT_RENDER_QUALITY: RenderQuality = 'optimized';
+
+export function isRenderQuality(value: string | null): value is RenderQuality {
+  return value === 'optimized' || value === 'advanced';
+}
 
 export interface ThemeState {
   theme: ThemeId;
   nodePalette: NodePaletteId;
   /** Node glow and animated link particles in the graph. */
   effects: boolean;
-  /** Names painted beside the nodes in the 2D graph. */
+  /** Names painted beside the nodes in the graph. */
   labels: boolean;
+  /** How richly the memory viewport draws itself. */
+  renderQuality: RenderQuality;
   setTheme: (id: ThemeId) => void;
   setNodePalette: (id: NodePaletteId) => void;
   setEffects: (on: boolean) => void;
   setLabels: (on: boolean) => void;
+  setRenderQuality: (quality: RenderQuality) => void;
 }
 
 function readStored(key: string): string | null {
@@ -100,6 +121,19 @@ function loadLabels(): boolean {
   return true;
 }
 
+/**
+ * Render quality defaults to the optimized profile. Unlike effects there is no
+ * system preference that speaks to this -- a machine does not advertise how
+ * much GPU headroom it has -- so the cheap profile is the default and the
+ * choice to spend more is always explicit.
+ */
+function loadRenderQuality(): RenderQuality {
+  const raw = readStored(QUALITY_KEY);
+  if (isRenderQuality(raw)) return raw;
+  if (raw !== null) drop(QUALITY_KEY);
+  return DEFAULT_RENDER_QUALITY;
+}
+
 export function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -128,6 +162,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   nodePalette: loadPalette(),
   effects: loadEffects(),
   labels: loadLabels(),
+  renderQuality: loadRenderQuality(),
   setTheme: (id) => {
     applyTheme(id);
     write(THEME_KEY, id);
@@ -144,6 +179,10 @@ export const useThemeStore = create<ThemeState>((set) => ({
   setLabels: (on) => {
     write(LABELS_KEY, on ? '1' : '0');
     set({ labels: on });
+  },
+  setRenderQuality: (quality) => {
+    write(QUALITY_KEY, quality);
+    set({ renderQuality: quality });
   },
 }));
 
