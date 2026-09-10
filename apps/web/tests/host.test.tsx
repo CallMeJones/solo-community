@@ -36,6 +36,7 @@ describe('Solo Web host composition', () => {
 
   it('keeps the Community composition free of downstream modules', () => {
     expect(communityWebHost.routes).toEqual([]);
+    expect(communityWebHost.projectTabs).toEqual([]);
     expect(communityWebHost.settingsModules).toEqual([]);
     expect(communityWebHost.statusModules).toEqual([]);
   });
@@ -92,6 +93,64 @@ describe('Solo Web host composition', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Example route' }));
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByText('Example settings module')).toBeInTheDocument();
+  });
+
+  it('shows no tab strip in Projects until a host adds a tab', async () => {
+    renderHostedApp(communityWebHost);
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+
+    // One tab is not a choice. Drawing a strip anyway would put furniture in
+    // front of the reader in place of a feature they do not have.
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Project' })).toBeInTheDocument();
+  });
+
+  it('adds a host tab beside the project, without displacing it', async () => {
+    const host = defineSoloWebHost({
+      id: 'tabbed-host',
+      productName: 'Example Solo',
+      tagline: 'composed from public Core',
+      projectTabs: [
+        { id: 'shared-brains', label: 'Shared brains', render: () => <p>Example tab body</p> },
+      ],
+    });
+    renderHostedApp(host);
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
+
+    // The project stays the tab you land on: a composition adds to the view,
+    // it does not take it over.
+    const project = screen.getByRole('tab', { name: 'Project' });
+    expect(project).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('heading', { name: 'Project' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Shared brains' }));
+    expect(screen.getByText('Example tab body')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Project' })).not.toBeInTheDocument();
+
+    // And it is a tab, not a route: nothing new appears in the sidebar.
+    expect(screen.queryByRole('button', { name: 'Shared brains' })).not.toBeInTheDocument();
+  });
+
+  it('rejects duplicate or Core project tab ids', () => {
+    expect(() =>
+      defineSoloWebHost({
+        id: 'bad-host',
+        productName: 'Bad',
+        tagline: 'Bad',
+        projectTabs: [{ id: 'project', label: 'Replace the project', render: () => null }],
+      }),
+    ).toThrow(/cannot replace the project itself/);
+    expect(() =>
+      defineSoloWebHost({
+        id: 'bad-host',
+        productName: 'Bad',
+        tagline: 'Bad',
+        projectTabs: [
+          { id: 'same', label: 'One', render: () => null },
+          { id: 'same', label: 'Two', render: () => null },
+        ],
+      }),
+    ).toThrow(/duplicate project tab module id/);
   });
 
   it('rejects duplicate or Core route ids', () => {
