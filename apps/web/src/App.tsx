@@ -65,6 +65,8 @@ import {
   type SoloWebHost,
   type SoloWebModuleContext,
   type SoloWebSlotModule,
+  type SoloWebTabModule,
+  PROJECT_OVERVIEW_TAB_ID,
 } from './host';
 
 type AppMode = AppRouteId;
@@ -221,7 +223,7 @@ function ModeView({
     case 'projects':
       return (
         <PageChrome title="Projects" eyebrow="Project Memory">
-          <ProjectsView />
+          <ProjectPanels tabs={host.projectTabs} context={moduleContext} />
         </PageChrome>
       );
     case 'logs':
@@ -249,6 +251,59 @@ function ModeView({
       return module ? module.render(moduleContext) : <HomeView onModeChange={onModeChange} />;
     }
   }
+}
+
+/**
+ * The Projects view, plus whatever tabs the host composition added beside it.
+ *
+ * An undecorated composition adds none, and then there is no tab strip at
+ * all -- one tab is not a choice, and drawing it as one would be furniture
+ * standing in for a feature the reader does not have.
+ */
+function ProjectPanels({
+  tabs,
+  context,
+}: {
+  tabs: readonly SoloWebTabModule[];
+  context: SoloWebModuleContext;
+}) {
+  const [active, setActive] = useState<string>(PROJECT_OVERVIEW_TAB_ID);
+
+  if (tabs.length === 0) return <ProjectsView />;
+
+  const selected = tabs.find((tab) => tab.id === active);
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div role="tablist" aria-label="Projects" className="flex flex-wrap gap-2">
+        {[{ id: PROJECT_OVERVIEW_TAB_ID, label: 'Project' }, ...tabs].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`project-tab-${tab.id}`}
+            aria-selected={active === tab.id}
+            aria-controls="project-tab-panel"
+            onClick={() => setActive(tab.id)}
+            className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+              active === tab.id
+                ? 'border-sky-600 bg-sky-950/50 text-slate-100'
+                : 'border-slate-700 bg-slate-900/40 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="project-tab-panel"
+        aria-labelledby={`project-tab-${active}`}
+        className="min-h-0 flex-1"
+      >
+        {selected ? selected.render(context) : <ProjectsView />}
+      </div>
+    </div>
+  );
 }
 
 function HostSlotModules({

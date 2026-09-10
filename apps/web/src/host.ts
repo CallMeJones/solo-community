@@ -36,6 +36,23 @@ export interface SoloWebSlotModule {
   render: (context: SoloWebModuleContext) => ReactNode;
 }
 
+/**
+ * A panel a host composition adds inside an existing Core view, as a tab
+ * beside what is already there.
+ *
+ * This is deliberately not a route. A route is its own place in the sidebar,
+ * for a subject of its own; a tab is more of the same subject. Sharing a
+ * project's memory with other people belongs beside the project it is about,
+ * not in a separate corner of the app that the reader has to connect back up
+ * themselves.
+ */
+export interface SoloWebTabModule {
+  id: string;
+  label: string;
+  order?: number;
+  render: (context: SoloWebModuleContext) => ReactNode;
+}
+
 export interface SoloWebHostDefinition {
   id: string;
   productName: string;
@@ -51,6 +68,8 @@ export interface SoloWebHostDefinition {
   editionLabel?: string;
   capabilities?: readonly string[];
   routes?: readonly SoloWebRouteModule[];
+  /** Extra tabs inside the Projects view, beside the project itself. */
+  projectTabs?: readonly SoloWebTabModule[];
   settingsModules?: readonly SoloWebSlotModule[];
   statusModules?: readonly SoloWebSlotModule[];
 }
@@ -62,12 +81,19 @@ export interface SoloWebHost {
   readonly editionLabel: string;
   readonly capabilities: readonly string[];
   readonly routes: readonly SoloWebRouteModule[];
+  readonly projectTabs: readonly SoloWebTabModule[];
   readonly settingsModules: readonly SoloWebSlotModule[];
   readonly statusModules: readonly SoloWebSlotModule[];
 }
 
 /** What an undecorated Solo composition is. */
 export const DEFAULT_EDITION_LABEL = 'Community';
+
+/**
+ * The Projects view's own tab. Reserved so a host cannot quietly take the
+ * place of the project itself the way it cannot replace a Core route.
+ */
+export const PROJECT_OVERVIEW_TAB_ID = 'project';
 
 const MODULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const CORE_ROUTE_ID_SET = new Set<string>(CORE_ROUTE_IDS);
@@ -101,14 +127,21 @@ export function defineSoloWebHost(definition: SoloWebHostDefinition): SoloWebHos
     throw new Error(`host id must use lowercase kebab-case: ${definition.id}`);
   }
   const routes = definition.routes ?? [];
+  const projectTabs = definition.projectTabs ?? [];
   const settingsModules = definition.settingsModules ?? [];
   const statusModules = definition.statusModules ?? [];
   validateModuleIds('route', routes);
+  validateModuleIds('project tab', projectTabs);
   validateModuleIds('settings', settingsModules);
   validateModuleIds('status', statusModules);
   for (const route of routes) {
     if (CORE_ROUTE_ID_SET.has(route.id)) {
       throw new Error(`host route cannot replace a Core route: ${route.id}`);
+    }
+  }
+  for (const tab of projectTabs) {
+    if (tab.id === PROJECT_OVERVIEW_TAB_ID) {
+      throw new Error(`host project tab cannot replace the project itself: ${tab.id}`);
     }
   }
 
@@ -119,6 +152,7 @@ export function defineSoloWebHost(definition: SoloWebHostDefinition): SoloWebHos
     editionLabel: definition.editionLabel ?? DEFAULT_EDITION_LABEL,
     capabilities: Object.freeze([...(definition.capabilities ?? [])]),
     routes: ordered(routes),
+    projectTabs: ordered(projectTabs),
     settingsModules: ordered(settingsModules),
     statusModules: ordered(statusModules),
   });
