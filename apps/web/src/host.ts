@@ -40,6 +40,15 @@ export interface SoloWebHostDefinition {
   id: string;
   productName: string;
   tagline: string;
+  /**
+   * What this composition calls its edition, shown beside the library status.
+   *
+   * Defaults to Community because that is what an undecorated composition is:
+   * the whole free product, with nothing added. A downstream host that
+   * composes paid modules on top says so here, so the one place the app names
+   * an edition cannot contradict the modules it actually loaded.
+   */
+  editionLabel?: string;
   capabilities?: readonly string[];
   routes?: readonly SoloWebRouteModule[];
   settingsModules?: readonly SoloWebSlotModule[];
@@ -50,11 +59,15 @@ export interface SoloWebHost {
   readonly id: string;
   readonly productName: string;
   readonly tagline: string;
+  readonly editionLabel: string;
   readonly capabilities: readonly string[];
   readonly routes: readonly SoloWebRouteModule[];
   readonly settingsModules: readonly SoloWebSlotModule[];
   readonly statusModules: readonly SoloWebSlotModule[];
 }
+
+/** What an undecorated Solo composition is. */
+export const DEFAULT_EDITION_LABEL = 'Community';
 
 const MODULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const CORE_ROUTE_ID_SET = new Set<string>(CORE_ROUTE_IDS);
@@ -103,6 +116,7 @@ export function defineSoloWebHost(definition: SoloWebHostDefinition): SoloWebHos
     id: definition.id,
     productName: definition.productName,
     tagline: definition.tagline,
+    editionLabel: definition.editionLabel ?? DEFAULT_EDITION_LABEL,
     capabilities: Object.freeze([...(definition.capabilities ?? [])]),
     routes: ordered(routes),
     settingsModules: ordered(settingsModules),

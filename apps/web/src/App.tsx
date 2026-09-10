@@ -153,7 +153,10 @@ export default function App({ host = communityWebHost }: { host?: SoloWebHost })
           </button>
           <div className="local-status">
             <ShieldCheck size={18} />
-            <span>Local Community library</span>
+            {/* The edition comes from the host rather than a fixed string, so
+                a composition that loaded paid modules cannot sit under a line
+                claiming to be Community. */}
+            <span>Local {host.editionLabel} library</span>
           </div>
         </div>
       </aside>

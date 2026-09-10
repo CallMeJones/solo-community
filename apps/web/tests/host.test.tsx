@@ -40,6 +40,24 @@ describe('Solo Web host composition', () => {
     expect(communityWebHost.statusModules).toEqual([]);
   });
 
+  it('calls an undecorated composition Community, and takes a host at its word', () => {
+    // The sidebar prints this. A composition that loaded paid modules while
+    // the app still said Community was the bug this replaced.
+    expect(communityWebHost.editionLabel).toBe('Community');
+    expect(
+      defineSoloWebHost({ id: 'paid-host', productName: 'Solo Pro', tagline: 'more' })
+        .editionLabel,
+    ).toBe('Community');
+    expect(
+      defineSoloWebHost({
+        id: 'paid-host',
+        productName: 'Solo Pro',
+        tagline: 'more',
+        editionLabel: 'Pro',
+      }).editionLabel,
+    ).toBe('Pro');
+  });
+
   it('registers typed navigation, route, settings, and status modules', () => {
     const host = defineSoloWebHost({
       id: 'example-host',
