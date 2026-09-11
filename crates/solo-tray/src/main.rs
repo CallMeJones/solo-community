@@ -14,6 +14,7 @@
 mod autostart;
 mod daemon;
 mod desktop_window;
+mod host_account;
 mod logs;
 mod notify;
 mod secret_store;

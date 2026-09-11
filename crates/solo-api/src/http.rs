@@ -11036,8 +11036,33 @@ async fn switch_steward_cadence_handler(
     }))
 }
 
-async fn update_check_handler() -> Result<Json<crate::update::UpdateCheckResponse>, ApiError> {
-    crate::update::check()
+/// `?channel=community|pro` — the edition Solo Controls is set to follow.
+/// Absent means the line of builds this binary came from.
+#[derive(Debug, Default, Deserialize)]
+struct UpdateChannelQuery {
+    #[serde(default)]
+    channel: Option<String>,
+}
+
+impl UpdateChannelQuery {
+    fn channel(&self) -> Result<Option<crate::update::UpdateChannel>, ApiError> {
+        match self.channel.as_deref() {
+            None | Some("") => Ok(None),
+            Some(value) => crate::update::UpdateChannel::parse(value)
+                .map(Some)
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "unknown update channel {value:?}; expected community or pro"
+                    ))
+                }),
+        }
+    }
+}
+
+async fn update_check_handler(
+    Query(query): Query<UpdateChannelQuery>,
+) -> Result<Json<crate::update::UpdateCheckResponse>, ApiError> {
+    crate::update::check(query.channel()?)
         .await
         .map(Json)
         .map_err(ApiError::bad_gateway)
@@ -11052,9 +11077,10 @@ async fn update_status_handler() -> Json<crate::update::UpdateStatus> {
 /// has to replace binaries this process is executing, so it cannot run here.
 async fn update_download_handler(
     State(state): State<SoloHttpState>,
+    Query(query): Query<UpdateChannelQuery>,
 ) -> Result<Json<crate::update::UpdateDownloadResponse>, ApiError> {
     let data_dir = state.registry.data_dir().to_path_buf();
-    crate::update::start_download(&data_dir)
+    crate::update::start_download(&data_dir, query.channel()?)
         .await
         .map(Json)
         .map_err(ApiError::bad_gateway)

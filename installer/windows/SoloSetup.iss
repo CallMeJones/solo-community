@@ -8,6 +8,12 @@
 #ifndef OutputDir
 #define OutputDir "."
 #endif
+; A host built on Community packages its own build through this same script,
+; keeping the AppId so it installs over Community in place. It names its own
+; installer and may show its own licence terms.
+#ifndef OutputBaseName
+#define OutputBaseName "SoloSetup-" + AppVersion + "-x86_64"
+#endif
 
 ; v0.11.7: detect whether solo-tray.exe was built into SourceDir at
 ; installer-compile time. Inno preprocessor's FileExists is a
@@ -37,7 +43,10 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
-OutputBaseFilename=SoloSetup-{#AppVersion}-x86_64
+OutputBaseFilename={#OutputBaseName}
+#ifdef LicenseFilePath
+LicenseFile={#LicenseFilePath}
+#endif
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

@@ -61,6 +61,42 @@ pub struct Settings {
     /// This is UI workflow state only; the memory database remains the
     /// source of truth for memory content and lifecycle.
     pub memory_reviews: BTreeMap<String, MemoryReviewStatus>,
+    /// Which edition's builds Check for updates offers. Unset follows the
+    /// edition of the Solo that is running. Choosing one only changes which
+    /// package is downloaded; a Pro build still needs a licence to unlock Pro.
+    pub edition: Option<Edition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Edition {
+    Community,
+    Pro,
+}
+
+impl Edition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Community => "community",
+            Self::Pro => "pro",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Community => "Community",
+            Self::Pro => "Pro",
+        }
+    }
+
+    /// Read the edition a daemon reports for itself.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "community" => Some(Self::Community),
+            "pro" => Some(Self::Pro),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +176,7 @@ impl Default for Settings {
             workspace_access_scope: WorkspaceAccessScope::GlobalAndProject,
             connected_tools: BTreeMap::new(),
             memory_reviews: BTreeMap::new(),
+            edition: None,
         }
     }
 }

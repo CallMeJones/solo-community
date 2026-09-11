@@ -27,6 +27,15 @@
 //! takes the first entry that actually carries an asset this platform can
 //! install. Ordering comes from GitHub rather than from parsing versions, which
 //! keeps the two tag schemes from having to agree on a comparison rule.
+//!
+//! ## Editions
+//!
+//! Solo Controls can follow either line of builds: Community releases, or the
+//! public Solo Pro release repository. The choice arrives as a channel on each
+//! request; without one, a binary stays on its own line (see
+//! [`set_native_channel`]). Switching only changes which package is fetched —
+//! a Pro build still verifies its own licence, and without one it runs as
+//! Community.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -37,19 +46,101 @@ use sha2::{Digest, Sha256};
 
 /// Release listing for the Solo Community repository.
 ///
-/// Pinned rather than derived from Cargo's `repository` field for two reasons:
-/// this decides what code gets executed on the user's machine, so it must not
-/// follow a fork's metadata; and Community must only ever offer Community
-/// builds, never a release from another edition's repository.
-const RELEASES_URL: &str = "https://api.github.com/repos/CallMeJones/solo-community/releases";
+/// Both listings are pinned rather than derived from Cargo's `repository`
+/// field: this decides what code gets executed on the user's machine, so it
+/// must not follow a fork's metadata.
+const COMMUNITY_RELEASES_URL: &str =
+    "https://api.github.com/repos/CallMeJones/solo-community/releases";
+
+/// Release listing for Solo Pro builds. Public: a Pro build without a licence
+/// runs exactly as Community does, so the packages themselves grant nothing.
+/// If the repository ever moves, GitHub redirects this address, which the
+/// HTTP client follows.
+const PRO_RELEASES_URL: &str = "https://api.github.com/repos/Nathvandyk/solo-pro-releases/releases";
 
 /// Asset-name fragments that mark a package as belonging to another edition.
 ///
-/// Community releases currently publish only Community packages, so this is a
-/// guard rather than a filter that fires today: if an edition-specific asset is
-/// ever attached to a release in this repository, Community must not install
-/// it just because the extension matched.
+/// Community releases publish only Community packages, so this is a guard
+/// rather than a filter that fires today: if an edition-specific asset is ever
+/// attached to a Community release, the Community channel must not install it
+/// just because the extension matched.
 const NON_COMMUNITY_MARKERS: &[&str] = &["-pro-", "-team-", "-enterprise-", "-business-"];
+
+/// The marker every Pro package carries, and the only packages the Pro channel
+/// will install.
+const PRO_MARKER: &str = "-pro-";
+
+/// Which line of builds the updater follows.
+///
+/// The operator picks it in Solo Controls. Switching is only ever a choice of
+/// which package to download: nothing here checks a licence, and a Pro build
+/// without one behaves as Community.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    Community,
+    Pro,
+}
+
+impl UpdateChannel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "community" => Some(Self::Community),
+            "pro" => Some(Self::Pro),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Community => "community",
+            Self::Pro => "pro",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Community => "Solo Community",
+            Self::Pro => "Solo Pro",
+        }
+    }
+
+    const fn releases_url(self) -> &'static str {
+        match self {
+            Self::Community => COMMUNITY_RELEASES_URL,
+            Self::Pro => PRO_RELEASES_URL,
+        }
+    }
+
+    fn accepts_asset(self, name: &str) -> bool {
+        match self {
+            Self::Community => is_community_asset(name),
+            Self::Pro => name.to_ascii_lowercase().contains(PRO_MARKER),
+        }
+    }
+}
+
+/// The line of builds this binary came from. Community unless the host that
+/// embeds this API says otherwise at startup.
+fn native_channel_cell() -> &'static OnceLock<UpdateChannel> {
+    static CELL: OnceLock<UpdateChannel> = OnceLock::new();
+    &CELL
+}
+
+/// Declare which line of builds this binary belongs to. A host built on this
+/// API (Solo Pro) calls it once before serving, so an update check with no
+/// channel stays on that host's own line instead of offering Community. The
+/// first call wins.
+pub fn set_native_channel(channel: UpdateChannel) {
+    let _ = native_channel_cell().set(channel);
+}
+
+pub fn native_channel() -> UpdateChannel {
+    native_channel_cell()
+        .get()
+        .copied()
+        .unwrap_or(UpdateChannel::Community)
+}
 
 /// A release whose title marks it withdrawn. The repository has several
 /// ("Superseded: use Solo 0.12.0 Test 13", "[Superseded] ..."), and on Linux
@@ -85,6 +176,10 @@ const RELEASE_PAGE_SIZE: u32 = 30;
 pub struct UpdateCheckResponse {
     pub current_version: String,
     pub current_ref: Option<String>,
+    /// The line of builds this check looked at.
+    pub channel: UpdateChannel,
+    /// The line of builds the running binary came from.
+    pub native_channel: UpdateChannel,
     pub platform: String,
     pub update_available: bool,
     pub latest: Option<AvailableRelease>,
@@ -183,21 +278,21 @@ struct GhAsset {
 
 /// The installable package for this build's platform, if one is supported.
 #[cfg(target_os = "windows")]
-fn platform_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
+fn platform_asset(assets: &[GhAsset], channel: UpdateChannel) -> Option<&GhAsset> {
     assets.iter().find(|a| {
-        a.name.ends_with(".exe") && a.name.contains("x86_64") && is_community_asset(&a.name)
+        a.name.ends_with(".exe") && a.name.contains("x86_64") && channel.accepts_asset(&a.name)
     })
 }
 
 #[cfg(target_os = "linux")]
-fn platform_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
+fn platform_asset(assets: &[GhAsset], channel: UpdateChannel) -> Option<&GhAsset> {
     assets.iter().find(|a| {
-        a.name.ends_with(".deb") && a.name.contains("amd64") && is_community_asset(&a.name)
+        a.name.ends_with(".deb") && a.name.contains("amd64") && channel.accepts_asset(&a.name)
     })
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-fn platform_asset(_assets: &[GhAsset]) -> Option<&GhAsset> {
+fn platform_asset(_assets: &[GhAsset], _channel: UpdateChannel) -> Option<&GhAsset> {
     None
 }
 
@@ -260,10 +355,10 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Could not build an HTTP client: {e}"))
 }
 
-async fn fetch_releases() -> Result<Vec<GhRelease>, String> {
+async fn fetch_releases(channel: UpdateChannel) -> Result<Vec<GhRelease>, String> {
     let client = http_client()?;
     let response = client
-        .get(RELEASES_URL)
+        .get(channel.releases_url())
         .query(&[("per_page", RELEASE_PAGE_SIZE.to_string())])
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -292,12 +387,19 @@ async fn fetch_releases() -> Result<Vec<GhRelease>, String> {
 
 /// Pick the newest release carrying an asset for this platform, and decide
 /// whether it is actually ahead of what is running.
-fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) {
+///
+/// On a channel other than the one this binary came from, the newest release
+/// is always offered: the running build is not on that list at all, so there
+/// is nothing to compare against, and the operator asked to switch.
+fn evaluate(
+    releases: &[GhRelease],
+    channel: UpdateChannel,
+) -> (Option<AvailableRelease>, bool, String) {
     let usable: Vec<(usize, &GhRelease, &GhAsset)> = releases
         .iter()
         .enumerate()
         .filter(|(_, r)| !r.draft && !is_superseded(r))
-        .filter_map(|(i, r)| platform_asset(&r.assets).map(|a| (i, r, a)))
+        .filter_map(|(i, r)| platform_asset(&r.assets, channel).map(|a| (i, r, a)))
         .collect();
 
     let Some(&(candidate_idx, release, asset)) = usable.first() else {
@@ -325,6 +427,15 @@ fn evaluate(releases: &[GhRelease]) -> (Option<AvailableRelease>, bool, String) 
         asset_size: asset.size,
         can_auto_install: can_auto_install(),
     };
+
+    if channel != native_channel() {
+        let note = format!(
+            "{} switches this install to {}.",
+            release.tag_name,
+            channel.label()
+        );
+        return (Some(available), true, note);
+    }
 
     // Position the running build within the same list. Comparing list indices
     // rather than parsing versions sidesteps the two tag schemes: whatever
@@ -405,15 +516,25 @@ fn asset_version(asset_name: &str) -> Option<String> {
                 .strip_prefix("solo-")
                 .and_then(|rest| rest.strip_suffix("-ubuntu24.04-amd64.deb"))
         })?;
+    // Pro packages put the edition first: SoloSetup-pro-<version>-x86_64.exe.
+    let stem = stem.strip_prefix("pro-").unwrap_or(stem);
     (!stem.is_empty()).then(|| stem.to_string())
 }
 
-pub async fn check() -> Result<UpdateCheckResponse, String> {
-    tracing::info!(target: "solo::update", platform = platform_label(), "update check requested");
-    let releases = fetch_releases().await.inspect_err(|err| {
+/// `channel` is what the operator chose in Solo Controls; `None` stays on the
+/// line of builds this binary came from.
+pub async fn check(channel: Option<UpdateChannel>) -> Result<UpdateCheckResponse, String> {
+    let channel = channel.unwrap_or_else(native_channel);
+    tracing::info!(
+        target: "solo::update",
+        platform = platform_label(),
+        channel = channel.as_str(),
+        "update check requested"
+    );
+    let releases = fetch_releases(channel).await.inspect_err(|err| {
         tracing::warn!(target: "solo::update", error = %err, "release listing failed");
     })?;
-    let (latest, update_available, note) = evaluate(&releases);
+    let (latest, update_available, note) = evaluate(&releases, channel);
     tracing::info!(
         target: "solo::update",
         releases = releases.len(),
@@ -426,6 +547,8 @@ pub async fn check() -> Result<UpdateCheckResponse, String> {
     Ok(UpdateCheckResponse {
         current_version: solo_core::build_info::version_with_build_metadata(),
         current_ref: solo_core::build_info::build_ref().map(str::to_string),
+        channel,
+        native_channel: native_channel(),
         platform: platform_label().to_string(),
         update_available,
         latest,
@@ -439,13 +562,17 @@ pub async fn check() -> Result<UpdateCheckResponse, String> {
 /// published beside it. Returns as soon as the work is accepted; progress is
 /// reported through [`current_status`], ending at [`UpdateStage::Ready`] with
 /// the verified path.
-pub async fn start_download(data_dir: &Path) -> Result<UpdateDownloadResponse, String> {
+pub async fn start_download(
+    data_dir: &Path,
+    channel: Option<UpdateChannel>,
+) -> Result<UpdateDownloadResponse, String> {
     if download_in_flight() {
         return Err("An update is already in progress.".to_string());
     }
 
-    let releases = fetch_releases().await?;
-    let (latest, update_available, note) = evaluate(&releases);
+    let channel = channel.unwrap_or_else(native_channel);
+    let releases = fetch_releases(channel).await?;
+    let (latest, update_available, note) = evaluate(&releases, channel);
     let Some(latest) = latest else {
         return Err(note);
     };
@@ -459,7 +586,7 @@ pub async fn start_download(data_dir: &Path) -> Result<UpdateDownloadResponse, S
         .iter()
         .find(|r| r.tag_name == latest.tag)
         .ok_or_else(|| "The chosen release disappeared from the listing.".to_string())?;
-    let asset = platform_asset(&release.assets)
+    let asset = platform_asset(&release.assets, channel)
         .ok_or_else(|| "The chosen release has no package for this platform.".to_string())?;
     let checksum_url = release
         .assets
@@ -685,7 +812,7 @@ mod tests {
         } else {
             vec![win("v0.12.0-test.14"), linux("v0.12.0-linux-test.13")]
         };
-        let (latest, _, _) = evaluate(&releases);
+        let (latest, _, _) = evaluate(&releases, UpdateChannel::Community);
 
         if cfg!(any(target_os = "windows", target_os = "linux")) {
             let latest = latest.expect("a platform release should be selected");
@@ -714,7 +841,7 @@ mod tests {
             win("v0.12.0-test.13")
         };
         let releases = vec![retracted, good];
-        let (latest, _, _) = evaluate(&releases);
+        let (latest, _, _) = evaluate(&releases, UpdateChannel::Community);
 
         if cfg!(any(target_os = "windows", target_os = "linux")) {
             let latest = latest.expect("a release should be selected");
@@ -745,7 +872,7 @@ mod tests {
         let mut draft = win("v9.9.9-draft");
         draft.draft = true;
         let releases = vec![draft, win("v0.12.0-test.13")];
-        let (latest, _, _) = evaluate(&releases);
+        let (latest, _, _) = evaluate(&releases, UpdateChannel::Community);
 
         if cfg!(target_os = "windows") {
             assert_eq!(
@@ -788,7 +915,7 @@ mod tests {
             "v0.12.0-community.1",
             &[(asset.as_str(), 42), (&format!("{asset}.sha256"), 1)],
         )];
-        let (latest, available, note) = evaluate(&releases);
+        let (latest, available, note) = evaluate(&releases, UpdateChannel::Community);
 
         if cfg!(any(target_os = "windows", target_os = "linux")) {
             assert!(latest.is_some());
@@ -804,7 +931,7 @@ mod tests {
     fn no_platform_asset_means_no_update() {
         // A listing of releases that carry nothing installable here.
         let releases = vec![release("v0.0.1", &[("solo-macos.tar.gz", 1)])];
-        let (latest, available, note) = evaluate(&releases);
+        let (latest, available, note) = evaluate(&releases, UpdateChannel::Community);
         assert!(latest.is_none());
         assert!(!available);
         assert!(note.contains("carries a package"), "note was: {note}");
@@ -812,7 +939,7 @@ mod tests {
 
     #[test]
     fn empty_listing_is_not_an_update() {
-        let (latest, available, _) = evaluate(&[]);
+        let (latest, available, _) = evaluate(&[], UpdateChannel::Community);
         assert!(latest.is_none());
         assert!(!available);
     }
@@ -827,6 +954,72 @@ mod tests {
             .next()
             .filter(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(parsed, Some(digest.as_str()));
+    }
+
+    #[test]
+    fn channels_parse_and_round_trip() {
+        assert_eq!(UpdateChannel::parse("pro"), Some(UpdateChannel::Pro));
+        assert_eq!(
+            UpdateChannel::parse(" Community "),
+            Some(UpdateChannel::Community)
+        );
+        assert_eq!(UpdateChannel::parse("enterprise"), None);
+        for channel in [UpdateChannel::Community, UpdateChannel::Pro] {
+            assert_eq!(UpdateChannel::parse(channel.as_str()), Some(channel));
+        }
+    }
+
+    #[test]
+    fn each_channel_installs_only_its_own_packages() {
+        let community = "SoloSetup-0.12.4-x86_64.exe";
+        let pro = "SoloSetup-pro-0.13.0-pro.1-x86_64.exe";
+        assert!(UpdateChannel::Community.accepts_asset(community));
+        assert!(!UpdateChannel::Community.accepts_asset(pro));
+        assert!(UpdateChannel::Pro.accepts_asset(pro));
+        assert!(!UpdateChannel::Pro.accepts_asset(community));
+    }
+
+    #[test]
+    fn asset_version_reads_pro_package_names() {
+        assert_eq!(
+            asset_version("SoloSetup-pro-0.13.0-pro.1-x86_64.exe").as_deref(),
+            Some("0.13.0-pro.1")
+        );
+    }
+
+    #[test]
+    fn switching_channel_always_offers_the_newest_build_of_that_channel() {
+        // A test binary is native Community, so the Pro channel is a switch:
+        // the running build is on no Pro list, and the newest Pro package is
+        // offered even though its version cannot be compared.
+        let releases = vec![
+            release(
+                "v0.13.0-pro.2",
+                &[
+                    ("SoloSetup-pro-0.13.0-pro.2-x86_64.exe", 42),
+                    ("SoloSetup-pro-0.13.0-pro.2-x86_64.exe.sha256", 1),
+                ],
+            ),
+            release(
+                "v0.13.0-pro.1",
+                &[("SoloSetup-pro-0.13.0-pro.1-x86_64.exe", 42)],
+            ),
+        ];
+        let (latest, available, note) = evaluate(&releases, UpdateChannel::Pro);
+        if cfg!(target_os = "windows") {
+            let latest = latest.expect("the newest Pro build should be offered");
+            assert_eq!(latest.tag, "v0.13.0-pro.2");
+            assert!(available, "a switch must always be offered: {note}");
+            assert!(note.contains("Solo Pro"), "note was: {note}");
+        }
+    }
+
+    #[test]
+    fn the_pro_channel_ignores_community_packages() {
+        let releases = vec![win("v0.12.4-community.1")];
+        let (latest, available, _) = evaluate(&releases, UpdateChannel::Pro);
+        assert!(latest.is_none());
+        assert!(!available);
     }
 
     #[test]

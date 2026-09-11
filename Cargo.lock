@@ -6091,7 +6091,7 @@ dependencies = [
 
 [[package]]
 name = "solo-api"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6133,7 +6133,7 @@ dependencies = [
 
 [[package]]
 name = "solo-bench"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6150,7 +6150,7 @@ dependencies = [
 
 [[package]]
 name = "solo-cli"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6183,7 +6183,7 @@ dependencies = [
 
 [[package]]
 name = "solo-core"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "async-trait",
  "bytemuck",
@@ -6196,7 +6196,7 @@ dependencies = [
 
 [[package]]
 name = "solo-index"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6212,7 +6212,7 @@ dependencies = [
 
 [[package]]
 name = "solo-query"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6234,7 +6234,7 @@ dependencies = [
 
 [[package]]
 name = "solo-steward"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6254,7 +6254,7 @@ dependencies = [
 
 [[package]]
 name = "solo-storage"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6304,7 +6304,7 @@ dependencies = [
 
 [[package]]
 name = "solo-tray"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "eframe",

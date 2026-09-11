@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::settings::Edition;
+
 /// Mirrors `solo_api::update::AvailableRelease`. Duplicated rather than shared:
 /// solo-tray does not depend on solo-api (that would pull axum and the whole MCP
 /// stack into the tray), and this is a stable wire shape between two binaries
@@ -45,6 +47,10 @@ pub struct UpdateCheck {
     pub current_version: String,
     #[serde(default)]
     pub current_ref: Option<String>,
+    /// The edition the running Solo was built as. Absent from daemons older
+    /// than the edition switch, which were all Community.
+    #[serde(default)]
+    pub native_channel: Option<String>,
     #[serde(default)]
     pub update_available: bool,
     #[serde(default)]
@@ -82,7 +88,7 @@ pub struct UpdateStatus {
     pub note: String,
 }
 
-fn base_url(status_url: &str) -> String {
+pub(crate) fn base_url(status_url: &str) -> String {
     status_url
         .strip_suffix("/v1/status")
         .map(str::to_string)
@@ -119,8 +125,18 @@ async fn read_error(response: reqwest::Response) -> String {
     }
 }
 
-pub async fn check(status_url: String) -> Result<UpdateCheck, String> {
-    let url = format!("{}/v1/update/check", base_url(&status_url));
+/// The update endpoint, following the edition chosen in Settings. No edition
+/// means the running Solo's own, so nothing is sent.
+fn update_url(status_url: &str, path: &str, edition: Option<Edition>) -> String {
+    let base = format!("{}/v1/update/{path}", base_url(status_url));
+    match edition {
+        Some(edition) => format!("{base}?channel={}", edition.as_str()),
+        None => base,
+    }
+}
+
+pub async fn check(status_url: String, edition: Option<Edition>) -> Result<UpdateCheck, String> {
+    let url = update_url(&status_url, "check", edition);
     let response = client()
         .await?
         .get(&url)
@@ -138,8 +154,8 @@ pub async fn check(status_url: String) -> Result<UpdateCheck, String> {
 
 /// Asks the daemon to fetch and verify the package. Returns as soon as the work
 /// is accepted; progress arrives through [`poll_status`].
-pub async fn start_download(status_url: String) -> Result<(), String> {
-    let url = format!("{}/v1/update/download", base_url(&status_url));
+pub async fn start_download(status_url: String, edition: Option<Edition>) -> Result<(), String> {
+    let url = update_url(&status_url, "download", edition);
     let response = client()
         .await?
         .post(&url)
@@ -317,6 +333,23 @@ mod tests {
         assert_eq!(
             base_url("http://example.invalid/health"),
             "http://127.0.0.1:17821"
+        );
+    }
+
+    #[test]
+    fn update_url_sends_the_edition_only_when_one_is_chosen() {
+        let status = "http://127.0.0.1:17821/v1/status";
+        assert_eq!(
+            update_url(status, "check", None),
+            "http://127.0.0.1:17821/v1/update/check"
+        );
+        assert_eq!(
+            update_url(status, "download", Some(Edition::Pro)),
+            "http://127.0.0.1:17821/v1/update/download?channel=pro"
+        );
+        assert_eq!(
+            update_url(status, "check", Some(Edition::Community)),
+            "http://127.0.0.1:17821/v1/update/check?channel=community"
         );
     }
 

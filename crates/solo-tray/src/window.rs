@@ -91,6 +91,11 @@ pub struct SoloTrayApp {
     /// When the current download was requested, used to tell "the daemon has
     /// not picked the job up yet" from "the daemon lost it".
     update_download_started: Option<std::time::Instant>,
+    /// The edition the running Solo reported on its last update check. Unknown
+    /// until a check has run.
+    running_edition: Option<crate::settings::Edition>,
+    /// Solo account sign-in, offered only by a host that serves one.
+    host_account: crate::host_account::AccountPanel,
     tool_install_probes: Vec<(SetupTarget, ToolInstallDetection)>,
     nav_history: NavHistory,
     update_flow: UpdateFlow,
@@ -2121,6 +2126,8 @@ impl SoloTrayApp {
             mcp_probe: McpProbeState::Idle,
             mcp_probe_rx: None,
             update_download_started: None,
+            running_edition: None,
+            host_account: crate::host_account::AccountPanel::default(),
             tool_install_probes: Vec::new(),
             nav_history: NavHistory::default(),
             update_flow: UpdateFlow::Idle,
@@ -4328,12 +4335,17 @@ impl SoloTrayApp {
             return;
         }
         let status_url = self.state.settings.status_url.clone();
+        let edition = self.state.settings.edition;
         let (tx, rx) = std::sync::mpsc::channel();
         self.update_check_rx = Some(rx);
         self.update_flow = UpdateFlow::Checking;
-        tracing::info!(target: "solo::update", "operator requested an update check");
+        tracing::info!(
+            target: "solo::update",
+            edition = edition.map_or("running", crate::settings::Edition::as_str),
+            "operator requested an update check"
+        );
         self.state.runtime_handle.spawn(async move {
-            let result = crate::update::check(status_url).await;
+            let result = crate::update::check(status_url, edition).await;
             if let Err(err) = &result {
                 tracing::warn!(target: "solo::update", error = %err, "update check failed");
             }
@@ -4346,6 +4358,7 @@ impl SoloTrayApp {
             return;
         }
         let status_url = self.state.settings.status_url.clone();
+        let edition = self.state.settings.edition;
         let tag = release.tag.clone();
         let total = release.asset_size;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4363,12 +4376,13 @@ impl SoloTrayApp {
         // failure has to land somewhere the UI already reads.
         tracing::info!(target: "solo::update", tag = %tag, bytes = total, "operator requested a download");
         self.state.runtime_handle.spawn(async move {
-            let result = crate::update::start_download(status_url).await.inspect_err(|err| {
+            let result = crate::update::start_download(status_url, edition).await.inspect_err(|err| {
                 tracing::warn!(target: "solo::update", error = %err, "download request rejected");
             }).map(|()| {
                 crate::update::UpdateCheck {
                     current_version: String::new(),
                     current_ref: None,
+                    native_channel: None,
                     update_available: true,
                     latest: None,
                     note: String::new(),
@@ -4420,6 +4434,14 @@ impl SoloTrayApp {
                             let _ = check;
                         }
                         Ok(check) => {
+                            // A daemon too old to report its edition was Community.
+                            self.running_edition = Some(
+                                check
+                                    .native_channel
+                                    .as_deref()
+                                    .and_then(crate::settings::Edition::parse)
+                                    .unwrap_or(crate::settings::Edition::Community),
+                            );
                             let installed = installed_label(&check);
                             self.update_flow = match (check.update_available, check.latest) {
                                 (true, Some(release)) => UpdateFlow::Available {
@@ -5830,6 +5852,8 @@ impl SoloTrayApp {
         let mut apply_request: Option<std::path::PathBuf> = None;
         let mut reveal_request: Option<std::path::PathBuf> = None;
 
+        self.draw_edition_choice(ui, daemon_ready, busy);
+
         ui.horizontal(|ui| {
             let check = ui.add_enabled(
                 daemon_ready && !busy,
@@ -5965,6 +5989,121 @@ impl SoloTrayApp {
         }
         if let Some(installer) = reveal_request {
             crate::update::reveal_in_file_manager(&installer);
+        }
+
+        self.draw_host_account(ui, daemon_ready);
+    }
+
+    /// Which edition's builds Check for updates offers.
+    ///
+    /// Choosing Pro on a Community install makes the next check offer the
+    /// newest Solo Pro build, which installs over this one and keeps the
+    /// Memory Library. Nothing is unlocked by the choice itself: a Pro build
+    /// still needs a licence, and without one it behaves as Community.
+    fn draw_edition_choice(&mut self, ui: &mut egui::Ui, daemon_ready: bool, busy: bool) {
+        use crate::settings::Edition;
+
+        let dark_mode = ui.visuals().dark_mode;
+        let running = self.running_edition;
+        let chosen = self
+            .state
+            .settings
+            .edition
+            .or(running)
+            .unwrap_or(Edition::Community);
+        let mut selected = chosen;
+        ui.horizontal(|ui| {
+            ui.label("Edition");
+            ui.add_enabled_ui(!busy, |ui| {
+                for edition in [Edition::Community, Edition::Pro] {
+                    ui.selectable_value(&mut selected, edition, edition.label());
+                }
+            });
+        });
+        if selected != chosen {
+            self.state.settings.edition = Some(selected);
+            self.state.settings.save(&self.state.settings_path);
+            self.update_flow = UpdateFlow::Idle;
+            tracing::info!(target: "solo::update", edition = selected.as_str(), "update edition changed");
+            if daemon_ready {
+                self.start_update_check();
+            }
+        }
+        if let Some(running) = running {
+            if running != selected {
+                let hint = match selected {
+                    Edition::Pro => {
+                        "Updates now offer Solo Pro. It installs over this Solo and keeps \
+                         your memories; sign in afterwards to unlock Pro."
+                    }
+                    Edition::Community => {
+                        "Updates now offer Solo Community. It installs over this Solo and \
+                         keeps your memories; Pro features stop."
+                    }
+                };
+                ui.label(RichText::new(hint).color(muted_text_color(dark_mode)));
+            }
+        }
+    }
+
+    /// The Solo account row, shown only when the running host has one.
+    fn draw_host_account(&mut self, ui: &mut egui::Ui, daemon_ready: bool) {
+        let dark_mode = ui.visuals().dark_mode;
+        let status_url = self.state.settings.status_url.clone();
+        self.host_account
+            .tick(&self.state.runtime_handle, &status_url, daemon_ready);
+        let Some(status) = self.host_account.status.clone() else {
+            return;
+        };
+
+        ui.add_space(6.0);
+        let mut sign_in = false;
+        ui.horizontal(|ui| {
+            ui.label("Solo account");
+            if status.linked {
+                let who = status.email.as_deref().unwrap_or("signed in");
+                let plan = status
+                    .plan
+                    .as_deref()
+                    .map(|plan| format!(" · {plan}"))
+                    .unwrap_or_default();
+                ui.label(RichText::new(format!("{who}{plan}")).strong());
+            }
+            let label = if status.linked {
+                "Sign in again"
+            } else {
+                "Sign in to your Solo account"
+            };
+            let enabled = daemon_ready && !status.waiting() && !self.host_account.starting();
+            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                sign_in = true;
+            }
+        });
+        if status.waiting() {
+            ui.label(
+                RichText::new("Finish signing in in your browser. Solo restarts once you approve.")
+                    .color(muted_text_color(dark_mode)),
+            );
+            if let Some(url) = status.sign_in.authorize_url.as_deref() {
+                ui.hyperlink_to("Open the sign-in page", url);
+            }
+        } else if status.linked && status.licensed_edition.is_none() {
+            ui.label(
+                RichText::new("This account has no Pro licence, so Solo runs as Community.")
+                    .color(muted_text_color(dark_mode)),
+            );
+        }
+        let error = self.host_account.message.clone().or_else(|| {
+            (status.sign_in.state == "failed")
+                .then(|| status.sign_in.error.clone())
+                .flatten()
+        });
+        if let Some(error) = error {
+            ui.label(RichText::new(error).color(egui::Color32::from_rgb(220, 90, 90)));
+        }
+        if sign_in {
+            self.host_account
+                .start_sign_in(&self.state.runtime_handle, &status_url);
         }
     }
 
