@@ -791,7 +791,7 @@ function SettingsView({
       {(window as Window & { __SOLO_DESKTOP__?: boolean }).__SOLO_DESKTOP__ && (
         <div className="settings-shortcuts">
           <a className="workspace-button" href="solo://app/index.html#settings">
-            Device unlock & startup
+            Updates, unlock & startup
           </a>
         </div>
       )}
