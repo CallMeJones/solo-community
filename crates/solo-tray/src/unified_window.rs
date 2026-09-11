@@ -61,6 +61,13 @@ enum Command {
         enabled: bool,
     },
     Quit {},
+    CheckUpdate {},
+    DownloadUpdate {},
+    ApplyUpdate {},
+    SetEdition {
+        edition: String,
+    },
+    SignIn {},
 }
 
 fn trusted_start_url(url: &str) -> bool {
@@ -150,7 +157,7 @@ pub fn run(mut state: AppState) -> Result<()> {
         (tray::MENU_OPEN_CONNECTIONS, "Connected apps"),
         (tray::MENU_OPEN_HEALTH, "Diagnostics"),
         (tray::MENU_SHOW_LOGS, "Logs"),
-        ("solo.device_settings", "Device unlock & startup"),
+        ("solo.device_settings", "Updates & device settings"),
         (tray::MENU_QUIT, "Quit Solo"),
     ] {
         menu.append(&tray_icon::menu::MenuItem::with_id(id, label, true, None))?;
@@ -169,6 +176,7 @@ pub fn run(mut state: AppState) -> Result<()> {
     let mut last_tray_health = crate::status::DaemonHealth::Starting;
     let mut ready_after = SystemTime::now();
     let mut last_tick = Instant::now();
+    let mut updates = crate::unified_updates::Updates::default();
     if let Some(secret) = state.initial_passphrase.take() {
         start(&state, secret);
         busy = true;
@@ -198,6 +206,30 @@ pub fn run(mut state: AppState) -> Result<()> {
                 Command::Forget {} => { match secret_store::forget_daemon_passphrase(){Ok(())=>{state.settings.remember_passphrase_in_keychain=false;state.settings.save(&state.settings_path);message="Saved unlock removed from this device.".into();},Err(e)=>message=e} },
                 Command::Autostart{enabled}=>match crate::autostart::set_enabled(enabled){Ok(())=>{state.settings.autostart_on_login=enabled;state.settings.save(&state.settings_path);},Err(e)=>message=e.to_string()},
                 Command::Quit {}=>{quitting=true;state.daemon_handle.blocking_lock().request_quit();},
+                Command::CheckUpdate {} => { if ready { updates.check(&state.runtime_handle, &state.settings.status_url, state.settings.edition); } },
+                Command::DownloadUpdate {} => { if ready { updates.download(&state.runtime_handle, &state.settings.status_url, state.settings.edition); } },
+                Command::ApplyUpdate {} => {
+                    // Setup waits a few seconds before it starts, so launching
+                    // it first and then stopping the daemon leaves Solo running
+                    // if the handoff itself fails.
+                    if let Some(installer) = updates.ready_installer() {
+                        tracing::info!(target: "solo::update", installer = %installer.display(), "handing off to the installer");
+                        match crate::update::launch_installer(&installer) {
+                            Ok(()) => { quitting=true; state.daemon_handle.blocking_lock().request_quit(); },
+                            Err(error) => updates.fail(error),
+                        }
+                    }
+                },
+                Command::SetEdition { edition } => {
+                    if let Some(edition) = crate::settings::Edition::parse(&edition) && state.settings.edition != Some(edition) {
+                        state.settings.edition = Some(edition);
+                        state.settings.save(&state.settings_path);
+                        tracing::info!(target: "solo::update", edition = edition.as_str(), "update edition changed");
+                        updates.reset();
+                        if ready { updates.check(&state.runtime_handle, &state.settings.status_url, state.settings.edition); }
+                    }
+                },
+                Command::SignIn {} => { if ready { updates.sign_in(&state.runtime_handle, &state.settings.status_url); } },
             },
             Event::UserEvent(Message::Initialized(result))=>{ initializing=false; if quitting {busy=false;pending_secret=None;} else {match result {Ok(secret)=>start(&state,secret),Err(error)=>{message=error;busy=false;pending_secret=None;}}} },
             Event::WindowEvent{event:WindowEvent::CloseRequested,..}=>{if tray_icon.is_some(){window.set_visible(false);}else{quitting=true;state.daemon_handle.blocking_lock().request_quit();}},
@@ -258,7 +290,8 @@ pub fn run(mut state: AppState) -> Result<()> {
             }
             if message.is_empty() {let _=webview.load_url(&desktop_url);entered_workspace=true;}
         }
-        let payload=serde_json::json!({"ready":ready,"busy":busy,"create":!data_dir.join("solo.config.toml").is_file(),"message":message,"remember":state.settings.remember_passphrase_in_keychain,"autostart":state.settings.autostart_on_login});
+        updates.tick(&state.runtime_handle, &state.settings.status_url, ready);
+        let payload=serde_json::json!({"ready":ready,"busy":busy,"create":!data_dir.join("solo.config.toml").is_file(),"message":message,"remember":state.settings.remember_passphrase_in_keychain,"autostart":state.settings.autostart_on_login,"updates":updates.payload(state.settings.edition)});
         // Only the bundled page implements this callback. No secret is emitted.
         let _=webview.evaluate_script(&format!("window.soloState?.({payload});"));
     });
@@ -319,6 +352,25 @@ mod tests {
         ] {
             assert!(!trusted_start_url(url), "{url}");
         }
+    }
+    #[test]
+    fn ipc_accepts_the_update_and_account_actions() {
+        for body in [
+            r#"{"action":"check_update"}"#,
+            r#"{"action":"download_update"}"#,
+            r#"{"action":"apply_update"}"#,
+            r#"{"action":"set_edition","edition":"pro"}"#,
+            r#"{"action":"sign_in"}"#,
+        ] {
+            assert!(serde_json::from_str::<Command>(body).is_ok(), "{body}");
+        }
+        // The installer path is never taken from the page: the daemon's own
+        // verified status names it.
+        assert!(
+            serde_json::from_str::<Command>(r#"{"action":"apply_update","path":"C:\\x.exe"}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<Command>(r#"{"action":"set_edition"}"#).is_err());
     }
     #[test]
     fn ipc_rejects_unknown_actions_and_fields() {

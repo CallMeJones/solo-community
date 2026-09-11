@@ -22,6 +22,7 @@ mod settings;
 mod single_instance;
 mod status;
 mod tray;
+mod unified_updates;
 mod unified_window;
 mod update;
 mod window;
