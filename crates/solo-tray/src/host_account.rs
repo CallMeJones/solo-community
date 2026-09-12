@@ -53,6 +53,13 @@ impl AccountStatus {
     pub fn waiting(&self) -> bool {
         self.sign_in.state == "waiting"
     }
+
+    /// Signed in, and the host is restarting to apply what it was given. Until
+    /// that restart lands this status still describes the host as it started,
+    /// so it must not be read as "this account has no licence".
+    pub fn finishing(&self) -> bool {
+        self.sign_in.state == "done"
+    }
 }
 
 #[derive(Debug, Default)]

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
     borrow::Cow,
+    sync::{Arc, RwLock},
     time::{Duration, Instant, SystemTime},
 };
 use tao::{
@@ -40,6 +41,8 @@ const DESKTOP_INIT: &str = "window.__SOLO_DESKTOP__=true;";
 enum Message {
     Command(Command),
     Initialized(Result<Zeroizing<String>, String>),
+    /// Which app the host serves, or `None` for the Community workspace.
+    AppPath(Option<String>),
 }
 
 #[derive(Deserialize)]
@@ -109,6 +112,12 @@ pub fn run(mut state: AppState) -> Result<()> {
         );
     }
     let desktop_url = desktop_url.to_string();
+    // A host may serve its own app in place of the Community workspace (Solo
+    // Pro does, once it is licensed). It is asked as the daemon becomes ready;
+    // no answer means Community, which is also what a lapsed licence gives.
+    let app_origin = origin.ascii_serialization();
+    let app_prefix: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+    let nav_prefix = Arc::clone(&app_prefix);
     let event_loop = EventLoopBuilder::<Message>::with_user_event().build();
     let icon = crate::window_icon();
     let window = WindowBuilder::new()
@@ -129,7 +138,7 @@ pub fn run(mut state: AppState) -> Result<()> {
                 .header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'none'; frame-src 'none'; base-uri 'none'")
                 .body(Cow::Borrowed(if valid {START_HTML.as_bytes()} else {b"Not found"})).expect("static response")
         })
-        .with_navigation_handler(move |url| trusted_start_url(&url) || reqwest::Url::parse(&url).is_ok_and(|u|u.origin()==origin && u.path().starts_with("/desktop/") && u.username().is_empty() && u.password().is_none()))
+        .with_navigation_handler(move |url| trusted_start_url(&url) || reqwest::Url::parse(&url).is_ok_and(|u|u.origin()==origin && u.username().is_empty() && u.password().is_none() && (u.path().starts_with("/desktop/") || nav_prefix.read().is_ok_and(|prefix|prefix.as_deref().is_some_and(|prefix|u.path().starts_with(prefix))))))
         .with_new_window_req_handler(|_,_|wry::NewWindowResponse::Deny)
         .with_initialization_script(DESKTOP_INIT)
         .with_ipc_handler(move |request| {
@@ -169,6 +178,8 @@ pub fn run(mut state: AppState) -> Result<()> {
     let mut pending_secret: Option<Zeroizing<String>> = None;
     let mut message = String::new();
     let mut entered_workspace = false;
+    let mut workspace_url: Option<String> = None;
+    let mut asking_app = false;
     let mut quitting = false;
     let mut initializing = false;
     let mut ready = false;
@@ -201,7 +212,7 @@ pub fn run(mut state: AppState) -> Result<()> {
                         });
                     } else { start(&state,secret); }
                 },
-                Command::Open {} => { if ready { let _=webview.load_url(&desktop_url);entered_workspace=true; } },
+                Command::Open {} => { if ready { let _=webview.load_url(workspace_url.as_deref().unwrap_or(&desktop_url));entered_workspace=true; } },
                 Command::Restart {} => {if ready {state.daemon_handle.blocking_lock().request_restart(); ready=false; entered_workspace=false;busy=true;message.clear();}},
                 Command::Forget {} => { match secret_store::forget_daemon_passphrase(){Ok(())=>{state.settings.remember_passphrase_in_keychain=false;state.settings.save(&state.settings_path);message="Saved unlock removed from this device.".into();},Err(e)=>message=e} },
                 Command::Autostart{enabled}=>match crate::autostart::set_enabled(enabled){Ok(())=>{state.settings.autostart_on_login=enabled;state.settings.save(&state.settings_path);},Err(e)=>message=e.to_string()},
@@ -231,6 +242,14 @@ pub fn run(mut state: AppState) -> Result<()> {
                 },
                 Command::SignIn {} => { if ready { updates.sign_in(&state.runtime_handle, &state.settings.status_url); } },
             },
+            Event::UserEvent(Message::AppPath(path))=>{
+                asking_app=false;
+                let url=path.and_then(|path|host_app_url(&app_origin,&path)).unwrap_or_else(||desktop_url.clone());
+                if let Ok(mut slot)=app_prefix.write() { *slot=reqwest::Url::parse(&url).ok().map(|u|u.path().to_owned()); }
+                tracing::info!(app=%url,"host workspace resolved");
+                workspace_url=Some(url.clone());
+                if ready && !entered_workspace && message.is_empty() { let _=webview.load_url(&url); entered_workspace=true; }
+            },
             Event::UserEvent(Message::Initialized(result))=>{ initializing=false; if quitting {busy=false;pending_secret=None;} else {match result {Ok(secret)=>start(&state,secret),Err(error)=>{message=error;busy=false;pending_secret=None;}}} },
             Event::WindowEvent{event:WindowEvent::CloseRequested,..}=>{if tray_icon.is_some(){window.set_visible(false);}else{quitting=true;state.daemon_handle.blocking_lock().request_quit();}},
             _=>{},
@@ -244,7 +263,7 @@ pub fn run(mut state: AppState) -> Result<()> {
             if id=="solo.device_settings" {let _=webview.load_url("solo://app/index.html#settings");continue;}
             let route=match id {tray::MENU_OPEN_DESKTOP|tray::MENU_OPEN_MEMORIES=>"memories",tray::MENU_OPEN_INBOX=>"inbox",tray::MENU_OPEN_CONNECTIONS=>"connections",tray::MENU_OPEN_IMPORT=>"import",tray::MENU_OPEN_HEALTH=>"health",tray::MENU_SHOW_LOGS=>"logs",_=>"settings"};
             if id==tray::MENU_RESTART_DAEMON {if let Ok(mut h)=state.daemon_handle.try_lock(){h.request_restart();}}
-            if entered_workspace {let base=desktop_url.split('#').next().unwrap_or(&desktop_url);let _=webview.load_url(&format!("{base}#{route}"));}
+            if entered_workspace {let app=workspace_url.as_deref().unwrap_or(&desktop_url);let base=app.split('#').next().unwrap_or(app);let _=webview.load_url(&format!("{base}#{route}"));}
         }
         if quitting {
             if !initializing && state.daemon_handle.try_lock().is_ok_and(|h|h.supervisor_exited) {*control_flow=ControlFlow::Exit;}
@@ -288,7 +307,14 @@ pub fn run(mut state: AppState) -> Result<()> {
             if remember_after_unlock && let Some(secret)=pending_secret.take() {
                 match secret_store::store_daemon_passphrase(&secret) {Ok(())=>{state.settings.remember_passphrase_in_keychain=true;state.settings.save(&state.settings_path);},Err(error)=>message=error}
             }
-            if message.is_empty() {let _=webview.load_url(&desktop_url);entered_workspace=true;}
+            if message.is_empty() {
+                match workspace_url.clone() {
+                    Some(url)=>{let _=webview.load_url(&url);entered_workspace=true;},
+                    // Ask the host what to open, then load it when the answer
+                    // arrives. Asked once per run of the window.
+                    None=>if !asking_app {asking_app=true;let sender=proxy.clone();let base=app_origin.clone();state.runtime_handle.spawn(async move {let _=sender.send_event(Message::AppPath(discover_app_path(base).await));});},
+                }
+            }
         }
         updates.tick(&state.runtime_handle, &state.settings.status_url, ready);
         let payload=serde_json::json!({"ready":ready,"busy":busy,"create":!data_dir.join("solo.config.toml").is_file(),"message":message,"remember":state.settings.remember_passphrase_in_keychain,"autostart":state.settings.autostart_on_login,"updates":updates.payload(state.settings.edition)});
@@ -297,6 +323,43 @@ pub fn run(mut state: AppState) -> Result<()> {
     });
     #[allow(unreachable_code)]
     Ok(())
+}
+
+/// The app a host says it serves, as an absolute URL on the daemon's own
+/// origin. Anything else -- another origin, a traversal, something that is not
+/// a directory -- is refused, and the Community workspace is used instead.
+fn host_app_url(origin: &str, path: &str) -> Option<String> {
+    if !path.starts_with('/')
+        || !path.ends_with('/')
+        || path.contains("..")
+        || path.contains("//")
+        || !path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/-_.".contains(&byte))
+    {
+        return None;
+    }
+    let url = reqwest::Url::parse(&format!("{origin}{path}")).ok()?;
+    (url.origin().ascii_serialization() == origin && url.path() == path).then(|| url.to_string())
+}
+
+/// Ask the host which app to open. No answer, or anything unexpected, means
+/// the Community workspace.
+async fn discover_app_path(origin: String) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let response = client
+        .get(format!("{origin}/host/v1/app"))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = response.json().await.ok()?;
+    body.get("path")?.as_str().map(str::to_owned)
 }
 
 fn start(state: &AppState, secret: Zeroizing<String>) {
@@ -353,6 +416,26 @@ mod tests {
             assert!(!trusted_start_url(url), "{url}");
         }
     }
+    #[test]
+    fn a_host_app_is_accepted_only_on_the_daemons_own_origin() {
+        let origin = "http://127.0.0.1:17821";
+        assert_eq!(
+            host_app_url(origin, "/pro-app/").as_deref(),
+            Some("http://127.0.0.1:17821/pro-app/")
+        );
+        for path in [
+            "pro-app/",
+            "/pro-app",
+            "/../etc/",
+            "//evil.example/",
+            "/pro-app/?x=1",
+            "/pro app/",
+            "/pro-app/#x",
+        ] {
+            assert!(host_app_url(origin, path).is_none(), "{path}");
+        }
+    }
+
     #[test]
     fn ipc_accepts_the_update_and_account_actions() {
         for body in [

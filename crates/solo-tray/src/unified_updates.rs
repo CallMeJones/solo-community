@@ -379,6 +379,7 @@ impl Updates {
             "plan": status.plan,
             "licensed": status.licensed_edition.is_some(),
             "waiting": status.waiting(),
+            "finishing": status.finishing(),
             "starting": self.account.starting(),
             "error": error,
         })
