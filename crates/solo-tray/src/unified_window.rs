@@ -317,6 +317,14 @@ pub fn run(mut state: AppState) -> Result<()> {
             }
         }
         updates.tick(&state.runtime_handle, &state.settings.status_url, ready);
+        // An account with no Pro plan must not sit on the Pro edition: say so
+        // and put the choice back, rather than offering builds it cannot use.
+        if !updates.pro_allowed() && state.settings.edition == Some(crate::settings::Edition::Pro) {
+            state.settings.edition = Some(crate::settings::Edition::Community);
+            state.settings.save(&state.settings_path);
+            updates.reset();
+            tracing::info!(target: "solo::update", "account holds no Pro plan; edition set back to Community");
+        }
         let payload=serde_json::json!({"ready":ready,"busy":busy,"create":!data_dir.join("solo.config.toml").is_file(),"message":message,"remember":state.settings.remember_passphrase_in_keychain,"autostart":state.settings.autostart_on_login,"updates":updates.payload(state.settings.edition)});
         // Only the bundled page implements this callback. No secret is emitted.
         let _=webview.evaluate_script(&format!("window.soloState?.({payload});"));

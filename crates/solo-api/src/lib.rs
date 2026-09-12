@@ -46,6 +46,7 @@ pub mod mcp_progress;
 // same channel powering `/v1/graph/stream`) and maps `InvalidateEvent`
 // kinds into spec-compliant MCP message envelopes. See
 // `docs/dev-log/0136-v0.11.0-p4-impl.md`.
+pub mod account;
 pub mod mcp_notify;
 pub mod mcp_task;
 pub mod update;

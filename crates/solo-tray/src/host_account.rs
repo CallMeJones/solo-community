@@ -2,16 +2,16 @@
 
 //! Solo account sign-in, for a host that offers one.
 //!
-//! Community has no account and serves no account endpoint, so for it this
-//! panel never appears. A host built on Community that links to a Solo account
-//! (Solo Pro) answers `GET /host/v1/account`; when it does, Controls shows who
-//! the machine is signed in as and offers to sign in. The path is a neutral
-//! host-extension one on purpose: Community names no edition's private API.
+//! Any host that answers `GET /host/v1/account` gets this panel: Community's
+//! own daemon, which links an account to learn whether it holds a paid plan,
+//! and a paid host, which answers with more -- the edition its licence
+//! actually grants. A host that answers nothing shows no panel at all.
 //!
 //! The host runs the whole sign-in itself: it opens the browser, receives the
-//! code on its own loopback port, stores what the account service issues and
-//! restarts to apply it. Controls only starts it and reports progress, so no
-//! token ever passes through this process.
+//! code on its own loopback port, and stores what the account service issues
+//! (a paid host also restarts, to apply the licence it was given). Controls
+//! only starts it and reports progress, so no token passes through this
+//! process.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -34,6 +34,11 @@ pub struct AccountStatus {
     /// The edition the licence on this machine grants, if it holds one.
     #[serde(default)]
     pub licensed_edition: Option<String>,
+    /// Whether the account service says this account holds a paid plan.
+    /// Community reports it without verifying anything, because all it decides
+    /// is whether to offer an edition the person already pays for.
+    #[serde(default)]
+    pub paid: bool,
     #[serde(default)]
     pub sign_in: SignIn,
 }
@@ -52,6 +57,15 @@ pub struct SignIn {
 impl AccountStatus {
     pub fn waiting(&self) -> bool {
         self.sign_in.state == "waiting"
+    }
+
+    /// May this machine follow Solo Pro builds?
+    ///
+    /// Either the account service says the plan is paid, or a licence on this
+    /// machine already grants an edition -- which is the answer a paid host
+    /// gives, and what a Pro install that predates the `paid` field reports.
+    pub fn may_run_pro(&self) -> bool {
+        self.paid || self.licensed_edition.is_some()
     }
 
     /// Signed in, and the host is restarting to apply what it was given. Until

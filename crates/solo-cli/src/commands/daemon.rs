@@ -527,8 +527,14 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
             let shutdown = async move {
                 let _ = rx.await;
             };
-            if let Err(e) =
-                solo_api::http::serve_http_with_auth_config(addr, state, auth, shutdown).await
+            if let Err(e) = solo_api::http::serve_http_with_host_routes(
+                addr,
+                state,
+                auth,
+                solo_api::account::routes(),
+                shutdown,
+            )
+            .await
             {
                 tracing::error!(error = %e, "http server exited with error");
             }

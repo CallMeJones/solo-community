@@ -768,6 +768,31 @@ pub async fn serve_http(
 /// Bind + serve with a config-driven auth block (v0.8.0 P3+).
 /// `auth = None` runs unauthenticated. See [`router_with_auth_config`]
 /// for the auth-mode semantics.
+/// Serve with extra authenticated routes of the daemon's own.
+///
+/// Kept separate from [`serve_http_with_auth_config`] because a host that
+/// composes its own router (a paid edition) must not inherit routes the
+/// Community daemon adds for itself, or the two would collide on one path.
+pub async fn serve_http_with_host_routes(
+    addr: SocketAddr,
+    state: SoloHttpState,
+    auth: Option<AuthConfig>,
+    additional_authenticated_routes: Router<SoloHttpState>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    let app = router_with_host_routes(
+        state,
+        auth,
+        Router::<SoloHttpState>::new(),
+        additional_authenticated_routes,
+    );
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "solo http: listening");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
 pub async fn serve_http_with_auth_config(
     addr: SocketAddr,
     state: SoloHttpState,

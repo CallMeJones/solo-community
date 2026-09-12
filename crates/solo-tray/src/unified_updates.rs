@@ -159,6 +159,18 @@ impl Updates {
         self.phase = Phase::Failed { message };
     }
 
+    /// Whether the Pro edition may be offered at all.
+    ///
+    /// A host that serves no account cannot say -- an older daemon, or one
+    /// built before accounts existed -- so the choice stays open rather than
+    /// disappearing on somebody who was using it.
+    pub fn pro_allowed(&self) -> bool {
+        self.account
+            .status
+            .as_ref()
+            .is_none_or(AccountStatus::may_run_pro)
+    }
+
     pub fn sign_in(&mut self, runtime: &tokio::runtime::Handle, status_url: &str) {
         self.account.start_sign_in(runtime, status_url);
     }
@@ -354,6 +366,7 @@ impl Updates {
         };
         json!({
             "edition": edition.as_str(),
+            "pro_allowed": self.pro_allowed(),
             "hint": hint,
             "installed": self.installed,
             "busy": self.busy(),
