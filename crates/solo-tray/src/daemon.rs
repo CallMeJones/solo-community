@@ -254,7 +254,15 @@ pub async fn supervise(
 
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let msg = format!("daemon child exited unexpectedly: {status:?}");
+                    // An exit status tells nobody anything. The daemon has
+                    // just said why on its stderr -- a passphrase that does
+                    // not open the library, an embedder that does not match
+                    // it -- and that sentence is what the window should show.
+                    let reason = log_buffer.lock().await.last_failure();
+                    let msg = reason.map_or_else(
+                        || format!("daemon child exited unexpectedly: {status:?}"),
+                        |reason| format!("Solo could not start. {reason}"),
+                    );
                     tracing::warn!(?status, "daemon child exited unexpectedly");
                     unexpected_exit_success = status.success();
                     unexpected_exit = Some(msg);

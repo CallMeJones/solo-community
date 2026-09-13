@@ -97,6 +97,14 @@ export default function App({ host = communityWebHost }: { host?: SoloWebHost })
   const [mode, setModeState] = useState<AppMode>(() => modeFromHash(window.location.hash, host));
   const setSelectedNodeId = useGraphStore((s) => s.setSelectedNodeId);
   const apiUrl = useSettingsStore((s) => s.apiUrl);
+  // Which build this is, under the edition it runs as. Cheap, and the answer
+  // to the first question anybody asks when something behaves unexpectedly.
+  const runningVersion = useQuery({
+    queryKey: ['desktop-shell', 'solo-status', apiUrl],
+    queryFn: ({ signal }) => fetchSoloStatus({ signal }),
+    retry: false,
+    staleTime: 60_000,
+  });
 
   const setMode = (next: AppMode) => {
     setModeState(next);
@@ -158,7 +166,12 @@ export default function App({ host = communityWebHost }: { host?: SoloWebHost })
             {/* The edition comes from the host rather than a fixed string, so
                 a composition that loaded paid modules cannot sit under a line
                 claiming to be Community. */}
-            <span>Local {host.editionLabel} library</span>
+            <span>
+              Local {host.editionLabel} library
+              {runningVersion.data?.version && (
+                <span className="local-status-version">{runningVersion.data.version}</span>
+              )}
+            </span>
           </div>
         </div>
       </aside>

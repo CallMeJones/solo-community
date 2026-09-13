@@ -1217,3 +1217,11 @@ body {
     color: #047857;
   }
 }
+
+.local-status-version {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  opacity: 0.65;
+  overflow-wrap: anywhere;
+}

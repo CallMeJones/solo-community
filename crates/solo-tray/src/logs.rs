@@ -133,6 +133,25 @@ impl RingBuffer {
             .filter(move |l| l.level.severity() >= min_level.severity())
     }
 
+    /// The line that explains why the daemon stopped, for telling somebody
+    /// who is looking at a window that will not open.
+    ///
+    /// Only the tail is searched: a startup failure is the last thing the
+    /// daemon says. Both shapes count -- a `tracing` line at ERROR, and the
+    /// bare `Error: ...` an exiting process prints straight to stderr.
+    pub fn last_failure(&self) -> Option<String> {
+        self.lines
+            .iter()
+            .rev()
+            .take(40)
+            .find(|line| {
+                line.level.severity() >= Level::Error.severity()
+                    || line.text.trim_start().starts_with("Error:")
+                    || line.text.contains("Error:")
+            })
+            .map(|line| line.text.trim().to_string())
+    }
+
     pub fn clear(&mut self) {
         self.lines.clear();
         // Don't reset `seen` / `dropped` — those are lifetime totals.
