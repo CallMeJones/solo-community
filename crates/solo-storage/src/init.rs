@@ -226,11 +226,39 @@ pub fn init(params: InitParams) -> Result<InitOutcome> {
     })
 }
 
+/// Turn SQLCipher's way of saying "wrong key" into words a person can act on.
+///
+/// A key that does not open the file is never reported as a key problem.
+/// SQLCipher decrypts page 1 with the wrong key, gets noise, and SQLite then
+/// reports that the noise is not a database -- or the page HMAC fails
+/// outright. Both read like a corrupt file, which sends people hunting for
+/// damage when the answer is that they typed the wrong passphrase. The
+/// original text is kept in parentheses so support can still see it.
+fn describe_open_failure(context: &str, error: &rusqlite::Error) -> Error {
+    const WRONG_KEY_SIGNATURES: [&str; 4] = [
+        "file is not a database",
+        "hmac check failed",
+        "error decrypting page",
+        "encrypted or is not a database",
+    ];
+    let text = error.to_string();
+    let lowered = text.to_lowercase();
+    if WRONG_KEY_SIGNATURES
+        .iter()
+        .any(|signature| lowered.contains(signature))
+    {
+        return Error::storage(format!(
+            "that passphrase does not open this library ({context}: {text})"
+        ));
+    }
+    Error::storage(format!("{context}: {text}"))
+}
+
 /// Open a SQLCipher database, bind the raw key, and set the journal-mode +
 /// foreign-keys pragmas. Used by `init` and exposed for tests.
 pub fn open_sqlcipher(db_path: &Path, key: &KeyMaterial) -> Result<Connection> {
     let conn = Connection::open(db_path)
-        .map_err(|e| Error::storage(format!("open {}: {e}", db_path.display())))?;
+        .map_err(|e| describe_open_failure(&format!("open {}", db_path.display()), &e))?;
     // PRAGMA key MUST be the first statement on a fresh connection.
     // `as_hex()` returns Zeroizing<String>; wrap the formatted PRAGMA in
     // Zeroizing<String> so the raw key bytes are wiped on drop rather
@@ -240,12 +268,12 @@ pub fn open_sqlcipher(db_path: &Path, key: &KeyMaterial) -> Result<Connection> {
         zeroize::Zeroizing::new(format!("PRAGMA key = \"x'{}'\"", *hex))
     };
     conn.execute_batch(&key_pragma)
-        .map_err(|e| Error::storage(format!("PRAGMA key: {e}")))?;
+        .map_err(|e| describe_open_failure("PRAGMA key", &e))?;
     // Standard pragmas. journal_mode=wal returns the new mode as a row, so we
     // use query_row; the others execute fine via execute_batch.
     let mode: String = conn
         .query_row("PRAGMA journal_mode = wal", [], |row| row.get(0))
-        .map_err(|e| Error::storage(format!("set journal_mode=wal: {e}")))?;
+        .map_err(|e| describe_open_failure("set journal_mode=wal", &e))?;
     if mode.to_lowercase() != "wal" {
         return Err(Error::storage(format!(
             "expected WAL journal mode, got {mode}"
@@ -256,7 +284,7 @@ pub fn open_sqlcipher(db_path: &Path, key: &KeyMaterial) -> Result<Connection> {
          PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;",
     )
-    .map_err(|e| Error::storage(format!("set startup pragmas: {e}")))?;
+    .map_err(|e| describe_open_failure("set startup pragmas", &e))?;
     Ok(conn)
 }
 
@@ -351,5 +379,49 @@ mod community_tests {
         assert_ne!(first_salt, second_salt);
         assert!(second.db_path.is_file());
         assert!(!temp.path().join(TENANTS_INDEX_FILENAME).exists());
+    }
+}
+
+#[cfg(test)]
+mod open_failure_tests {
+    use super::describe_open_failure;
+
+    fn message(sqlite_says: &str) -> String {
+        describe_open_failure(
+            "set journal_mode=wal",
+            &rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(26),
+                Some(sqlite_says.to_owned()),
+            ),
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn every_way_sqlcipher_reports_a_wrong_key_reads_as_a_wrong_passphrase() {
+        for sqlite_says in [
+            "file is not a database",
+            "hmac check failed for pgno=1",
+            "error decrypting page 1",
+            "file is encrypted or is not a database",
+        ] {
+            let message = message(sqlite_says);
+            assert!(
+                message.contains("that passphrase does not open this library"),
+                "{sqlite_says:?} should read as a wrong passphrase, got {message}"
+            );
+            // The original text stays available for support.
+            assert!(message.contains(sqlite_says), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_real_fault_is_not_dressed_up_as_a_wrong_passphrase() {
+        let message = message("disk I/O error");
+        assert!(
+            !message.contains("that passphrase"),
+            "an I/O error is not a passphrase problem: {message}"
+        );
+        assert!(message.contains("disk I/O error"), "{message}");
     }
 }

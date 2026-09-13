@@ -2,14 +2,21 @@
 
 //! Safe embedder migrations.
 //!
-//! `solo migrate-embedder ollama` owns the full offline sequence that
-//! used to be documented as a manual checklist: validate Ollama, back up
-//! config/snapshots, switch the persisted embedder identity, re-embed the
-//! Community Memory Library, garbage-collect stale embedding rows, and delete HNSW
-//! snapshots so the next daemon start rebuilds from SQL.
+//! `solo migrate-embedder <target>` owns the full offline sequence that used
+//! to be documented as a manual checklist: validate the destination embedder,
+//! back up config and snapshots, clear the live snapshots, switch the
+//! persisted embedder identity, re-embed the Community Memory Library,
+//! garbage-collect stale embedding rows, and leave startup to rebuild HNSW
+//! from SQL.
+//!
+//! Both targets run the identical sequence in [`apply_migration`]. `ollama`
+//! moves a library onto an Ollama model; `bundled` re-embeds it with the
+//! model packaged in this build, which is the way out for a library written
+//! by an older Solo whose packaged model has since changed identity.
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
+use solo_core::Embedder;
 use solo_storage::{
     EmbedderConfig, HnswParams, KeyMaterial, Lockfile, MemoryLibrary, MemoryLibraryParams,
     OllamaEmbedder, ReembedReport, ReembedScope, SoloConfig, default_data_dir,
@@ -26,6 +33,12 @@ const DEFAULT_OLLAMA_MODEL: &str = "nomic-embed-text";
 pub enum MigrateEmbedderCommand {
     /// Switch Solo to an Ollama embedding model and re-embed the Memory Library.
     Ollama(OllamaEmbedderMigrationArgs),
+    /// Re-embed the Memory Library with the model packaged in this Solo.
+    ///
+    /// The way to open a library written by an older Solo: the packaged model
+    /// keeps its name and its 384 dimensions across versions but changes
+    /// identity, and a library remembers the identity it was written with.
+    Bundled(BundledEmbedderMigrationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -51,6 +64,17 @@ pub struct OllamaEmbedderMigrationArgs {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct BundledEmbedderMigrationArgs {
+    /// Data directory (defaults to `$SOLO_DATA_DIR` or `~/.solo`).
+    #[arg(long, env = "SOLO_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Validate and print the migration plan without changing files or databases.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone)]
 struct LibraryMigrationReport {
     prepare: ReembedReport,
@@ -60,6 +84,7 @@ struct LibraryMigrationReport {
 pub async fn run(cmd: MigrateEmbedderCommand) -> Result<()> {
     match cmd {
         MigrateEmbedderCommand::Ollama(args) => run_ollama(args).await,
+        MigrateEmbedderCommand::Bundled(args) => run_bundled(args).await,
     }
 }
 
@@ -76,7 +101,7 @@ async fn run_ollama(args: OllamaEmbedderMigrationArgs) -> Result<()> {
         );
     }
 
-    let mut config = SoloConfig::read(&config_path).context("read solo.config.toml")?;
+    let config = SoloConfig::read(&config_path).context("read solo.config.toml")?;
     let previous = config.embedder.clone();
     let next = EmbedderConfig {
         name: format!("ollama:{model}"),
@@ -84,7 +109,6 @@ async fn run_ollama(args: OllamaEmbedderMigrationArgs) -> Result<()> {
         dim,
         dtype: "f32".to_string(),
     };
-    let changed = previous != next;
 
     println!("Ollama embedder migration plan");
     println!("  data dir : {}", data_dir.display());
@@ -104,6 +128,83 @@ async fn run_ollama(args: OllamaEmbedderMigrationArgs) -> Result<()> {
         return Ok(());
     }
 
+    let embedder: Arc<dyn Embedder> = Arc::new(
+        OllamaEmbedder::new(&base_url, &model, dim as usize).context("build Ollama embedder")?,
+    );
+    apply_migration(&data_dir, config, next, embedder).await
+}
+
+/// Re-embed the library with the model packaged in this build.
+#[cfg(feature = "bundled-embedder")]
+async fn run_bundled(args: BundledEmbedderMigrationArgs) -> Result<()> {
+    let data_dir = resolve_data_dir(args.data_dir)?;
+    let config_path = data_dir.join("solo.config.toml");
+    if !config_path.is_file() {
+        bail!(
+            "solo.config.toml not found at {}. Run `solo init` first.",
+            config_path.display()
+        );
+    }
+    let config = SoloConfig::read(&config_path).context("read solo.config.toml")?;
+    let previous = config.embedder.clone();
+    let packaged = solo_storage::BundledEmbedder::new();
+    let next = EmbedderConfig {
+        name: packaged.name().to_string(),
+        version: packaged.version().to_string(),
+        dim: packaged.dim() as u32,
+        dtype: "f32".to_string(),
+    };
+
+    println!("Packaged embedder migration plan");
+    println!("  data dir : {}", data_dir.display());
+    println!(
+        "  previous : {}@{} {}d {}",
+        previous.name, previous.version, previous.dim, previous.dtype
+    );
+    println!(
+        "  next     : {}@{} {}d {}",
+        next.name, next.version, next.dim, next.dtype
+    );
+    println!("  library  : Community Memory Library");
+    if previous == next {
+        println!(
+            "  note     : the library already names this exact model; re-embedding it is harmless \
+             but will not change anything."
+        );
+    }
+
+    if args.dry_run {
+        println!("dry-run: no config, database, or snapshot files were changed");
+        return Ok(());
+    }
+
+    apply_migration(&data_dir, config, next, Arc::new(packaged)).await
+}
+
+/// Without the packaged model there is nothing to migrate to, and saying so
+/// beats failing later inside the library open.
+#[cfg(not(feature = "bundled-embedder"))]
+async fn run_bundled(_args: BundledEmbedderMigrationArgs) -> Result<()> {
+    bail!(
+        "this Solo was built without the packaged embedder, so it cannot re-embed a library with \
+         one. Use `solo migrate-embedder ollama` instead, or install a build that packages the \
+         model."
+    )
+}
+
+/// Everything a migration does once the destination embedder is settled.
+///
+/// One sequence for every target, so a target added later cannot quietly get
+/// a different -- and less safe -- order of operations.
+async fn apply_migration(
+    data_dir: &Path,
+    mut config: SoloConfig,
+    next: EmbedderConfig,
+    embedder: Arc<dyn Embedder>,
+) -> Result<()> {
+    let config_path = data_dir.join("solo.config.toml");
+    let changed = config.embedder != next;
+
     let lock_path = data_dir.join("solo.lock");
     let lock = Lockfile::acquire(&lock_path)
         .context("acquire solo.lock - stop Solo before migrating the embedder")?;
@@ -114,7 +215,7 @@ async fn run_ollama(args: OllamaEmbedderMigrationArgs) -> Result<()> {
     drop(passphrase);
 
     let stamp = unix_millis();
-    let snapshot_backup = backup_hnsw_snapshots(&data_dir, stamp)
+    let snapshot_backup = backup_hnsw_snapshots(data_dir, stamp)
         .with_context(|| format!("backup HNSW snapshots under {}", data_dir.display()))?;
     if let Some(path) = snapshot_backup.as_ref() {
         println!("  HNSW backup: {}", path.display());
@@ -122,26 +223,34 @@ async fn run_ollama(args: OllamaEmbedderMigrationArgs) -> Result<()> {
         println!("  HNSW backup: no existing snapshot files");
     }
 
+    // Clear the live snapshots now that copies of them are safe.
+    //
+    // They were built by the OLD embedder, and the next thing this migration
+    // does is open the library under the NEW one -- which refuses a snapshot
+    // whose dimension disagrees with the config. Deleting them only after the
+    // re-embed, as this used to, put the deletion behind the open it was
+    // needed for: the migration failed with "HNSW snapshot dim (384) does not
+    // match solo.config.toml embedder.dim (768)" and left the operator to
+    // remove the files by hand. Rebuilding them from the re-embedded rows is
+    // the whole point, and the backup remains for rollback.
+    if snapshot_backup.is_some() {
+        delete_hnsw_snapshots(data_dir).context("clear HNSW snapshots after backing them up")?;
+        println!("  HNSW snapshots cleared; startup rebuilds them from SQL");
+    }
+
     let config_backup = if changed {
-        config.embedder = next.clone();
+        config.embedder = next;
         let backup = replace_config_with_backup(&config_path, &config, stamp)
             .with_context(|| format!("replace {}", config_path.display()))?;
         println!("  config backup: {}", backup.display());
         Some(backup)
     } else {
-        println!("  config: already set to requested Ollama embedder");
+        println!("  config: already set to the requested embedder");
         None
     };
 
-    let migration_result = run_reembed_phases(
-        &data_dir,
-        key,
-        config_backup.as_deref(),
-        &base_url,
-        &model,
-        dim,
-    )
-    .await;
+    let migration_result =
+        run_reembed_phases(data_dir, key, config_backup.as_deref(), embedder).await;
     drop(lock);
     migration_result
 }
@@ -150,14 +259,9 @@ async fn run_reembed_phases(
     data_dir: &Path,
     key: KeyMaterial,
     config_backup: Option<&Path>,
-    base_url: &str,
-    model: &str,
-    dim: u32,
+    embedder: Arc<dyn Embedder>,
 ) -> Result<()> {
     let config_path = data_dir.join("solo.config.toml");
-    let embedder = Arc::new(
-        OllamaEmbedder::new(base_url, model, dim as usize).context("build Ollama embedder")?,
-    );
     let runtime_handle = tokio::runtime::Handle::current();
     let library = Arc::new(
         MemoryLibrary::open(MemoryLibraryParams {
@@ -226,6 +330,8 @@ async fn run_reembed_phases(
         gc: Some(gc),
     };
 
+    // Belt and braces: the live pair was already cleared before the open, so
+    // this only catches a snapshot written during the run itself.
     delete_hnsw_snapshots(data_dir).context("delete stale HNSW snapshots")?;
     drop(handle);
     library.shutdown_with_snapshot(false).await;
@@ -458,6 +564,51 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("http:// or https://"), "{err}");
+    }
+
+    #[test]
+    fn backing_up_snapshots_then_clearing_them_leaves_only_the_copies() {
+        // The migration opens the library under the NEW embedder immediately
+        // after this pair of steps, and that open refuses a snapshot whose
+        // dimension disagrees with the config. Deleting only after the
+        // re-embed -- as this once did -- put the deletion behind the very
+        // open it was needed for, so the migration died with "HNSW snapshot
+        // dim (384) does not match solo.config.toml embedder.dim (768)" and
+        // left the operator to remove the files by hand.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = dir.path().join("hnsw_episodes.hnsw.data");
+        let graph = dir.path().join("hnsw_episodes.hnsw.graph");
+        std::fs::write(&data, b"old-vectors").expect("write data");
+        std::fs::write(&graph, b"old-graph").expect("write graph");
+
+        let backup = backup_hnsw_snapshots(dir.path(), 1234).expect("backup");
+        let backup = backup.expect("a backup directory for existing snapshots");
+        delete_hnsw_snapshots(dir.path()).expect("clear the live snapshots");
+
+        assert!(
+            !data.exists() && !graph.exists(),
+            "the live snapshots must be gone before the library is reopened"
+        );
+        assert_eq!(
+            std::fs::read(backup.join("hnsw_episodes.hnsw.data")).expect("backed-up data"),
+            b"old-vectors",
+            "the backup is the rollback path and must survive untouched"
+        );
+        assert!(
+            backup.join("hnsw_episodes.hnsw.graph").is_file(),
+            "both halves of the pair belong in the backup"
+        );
+    }
+
+    #[test]
+    fn a_library_with_no_snapshots_reports_nothing_to_back_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            backup_hnsw_snapshots(dir.path(), 1234)
+                .expect("backup")
+                .is_none(),
+            "there is nothing to copy, and nothing to delete afterwards"
+        );
     }
 
     #[test]

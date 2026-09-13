@@ -196,8 +196,11 @@ pub fn run(params: StartupParams) -> Result<StartupOutcome> {
     // Step 5 — dim consistency check (only if we loaded a non-empty snapshot).
     if !started_fresh && hnsw_index.dim() != dim {
         return Err(solo_core::Error::storage(format!(
-            "HNSW snapshot dim ({}) does not match solo.config.toml embedder.dim ({}). \
-             Embedder identity has shifted under the daemon. Run `solo reembed` to rebuild.",
+            "the search index was built for {}-dimension vectors but solo.config.toml now \
+             says {}. The embedder changed under the library. Run \
+             `solo migrate-embedder bundled` (or `solo migrate-embedder ollama --model \
+             <model>`) to re-embed and rebuild the index; it backs up the old index \
+             first.",
             hnsw_index.dim(),
             dim
         )));
@@ -569,7 +572,17 @@ mod tests {
             snapshot::save(&idx, &snapshot_dir(tmp.path())).unwrap();
         }
         let err = run(StartupParams::new(tmp.path(), key)).unwrap_err();
-        assert!(err.to_string().contains("does not match"), "got: {err}");
+        // The wording is the point: it has to name the command that gets the
+        // operator out of this, not just state the mismatch.
+        let message = err.to_string();
+        assert!(
+            message.contains("the search index was built for"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("migrate-embedder"),
+            "the refusal must name a command that can fix it: {message}"
+        );
     }
 
     /// Helper: seed `episodes` + `embeddings` rows under the persisted

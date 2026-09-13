@@ -107,10 +107,12 @@ pub fn build_embedder(config: &SoloConfig) -> Result<Arc<dyn Embedder>> {
                 || embedder.dim() != config.embedder.dim as usize
             {
                 anyhow::bail!(
-                    "packaged embedder identity {}@{} ({}d) does not match \
-                     persisted config identity {}@{} ({}d). Run \
-                     `solo migrate-embedder` or, before first use, \
-                     `solo init --force` to regenerate the library.",
+                    "this library was made with {3}@{4} ({5}d) but this Solo packages \
+                     {0}@{1} ({2}d). Your memories are intact -- they were written \
+                     against a different model. Run `solo migrate-embedder bundled` to \
+                     re-embed them with the packaged model, which keeps everything. \
+                     (`solo init --force` also clears this, but by starting an empty \
+                     library: only do that before you have stored anything.)",
                     embedder.name(),
                     embedder.version(),
                     embedder.dim(),

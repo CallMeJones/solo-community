@@ -1049,9 +1049,14 @@ mod tests {
         // SQLCipher refuses to decrypt the header).
         let bad_key = KeyMaterial::derive("WRONG PASSPHRASE", &salt).unwrap();
         let bad_open = open_sqlcipher(&dest_path, &bad_key);
+        let error = bad_open
+            .expect_err("opening backup with wrong key should fail")
+            .to_string();
+        // What the person reads matters as much as the failure: SQLCipher's
+        // own wording describes a broken file, not a wrong passphrase.
         assert!(
-            bad_open.is_err(),
-            "opening backup with wrong key should fail"
+            error.contains("that passphrase does not open this library"),
+            "a wrong key should say so in words: {error}"
         );
     }
 
