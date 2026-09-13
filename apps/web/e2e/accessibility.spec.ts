@@ -21,7 +21,10 @@ for (const routeCase of ROUTES) {
     await page.goto(`/#${routeCase.hash}`);
 
     for (const text of routeCase.texts) {
-      await expect(page.getByText(text).first()).toBeVisible();
+      // Wait for what the route put on screen, not for the first match in the
+      // document: the sidebar carries the running version too, and it is
+      // hidden below 760px.
+      await expect(page.getByText(text).filter({ visible: true }).first()).toBeVisible();
     }
 
     const results = await new AxeBuilder({ page }).analyze();

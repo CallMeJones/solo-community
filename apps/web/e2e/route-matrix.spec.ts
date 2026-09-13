@@ -20,7 +20,10 @@ for (const routeCase of ROUTES) {
     await page.goto(`/#${routeCase.hash}`);
 
     for (const text of routeCase.texts) {
-      await expect(page.getByText(text).first()).toBeVisible();
+      // The first match in the document is not always the one the route put on
+      // screen: the sidebar carries the running version too, and it is hidden
+      // below 760px. Assert that the route shows the text somewhere visible.
+      await expect(page.getByText(text).filter({ visible: true }).first()).toBeVisible();
     }
   });
 }

@@ -1218,10 +1218,12 @@ body {
   }
 }
 
+/* The version keeps the muted colour of the line above it rather than being
+   dimmed further: at this size a lower opacity falls under the 4.5:1 contrast
+   the accessibility suite holds every route to. */
 .local-status-version {
   display: block;
   margin-top: 2px;
   font-size: 0.72rem;
-  opacity: 0.65;
   overflow-wrap: anywhere;
 }
