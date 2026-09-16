@@ -163,7 +163,7 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "validate-request", "auth"] }
-rmcp = { version = "1.7", features = ["server", "transport-io"] }
+rmcp = { version = "2.0", features = ["server", "transport-io"] }
 # `reqwest` for the Anthropic LLM HTTP backend (Y.3.b). rustls-tls
 # rather than native-tls so we don't pull in OpenSSL twice (rusqlite
 # already bundles it). `json` enables `.json()` serializers/parsers.
