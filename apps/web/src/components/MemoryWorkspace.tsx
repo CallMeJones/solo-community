@@ -1,4 +1,13 @@
-import { lazy, Suspense, useDeferredValue, useMemo, useRef, useState, useEffect } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useDeferredValue,
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+} from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   List,
@@ -31,6 +40,29 @@ const InspectorPanel = lazy(() =>
   import('./InspectorPanel').then((m) => ({ default: m.InspectorPanel })),
 );
 const EMPTY: GraphResponse = { nodes: [], edges: [] };
+
+/**
+ * How wide the memory details panel may be dragged.
+ *
+ * The floor keeps the panel readable rather than letting it be dragged into a
+ * sliver that then has to be dragged back out. The ceiling is a share of the
+ * workspace rather than a fixed number, so widening the panel on a small
+ * screen cannot leave the graph with nothing to draw in.
+ */
+const INSPECTOR_DEFAULT_WIDTH = 365;
+const INSPECTOR_MIN_WIDTH = 300;
+const INSPECTOR_MAX_FRACTION = 0.75;
+const INSPECTOR_WIDTH_KEY = 'solo.memory.inspectorWidth';
+
+function storedInspectorWidth(): number | null {
+  try {
+    const raw = Number(localStorage.getItem(INSPECTOR_WIDTH_KEY));
+    return Number.isFinite(raw) && raw >= INSPECTOR_MIN_WIDTH ? raw : null;
+  } catch {
+    // Storage can be unavailable; the panel just opens at its default width.
+    return null;
+  }
+}
 const ALL_KINDS: NodeKind[] = ['episode', 'document', 'cluster', 'entity', 'chunk'];
 const KIND_LABELS = {
   episode: 'Memories',
@@ -66,6 +98,8 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
+  const [inspectorWidth, setInspectorWidth] = useState<number | null>(storedInspectorWidth);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [filters, setFilters] = useState(false);
   const [adding, setAdding] = useState(false);
   const [showMatches, setShowMatches] = useState(false);
@@ -126,6 +160,53 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
     state.setSelectedNodeId(null);
     state.clearExpansions();
   }, [connection]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Clamp to the floor, and to a share of the workspace actually on screen. */
+  const clampInspector = useCallback((width: number) => {
+    const stage = stageRef.current?.getBoundingClientRect().width ?? 0;
+    const ceiling = stage > 0 ? stage * INSPECTOR_MAX_FRACTION : width;
+    return Math.round(
+      Math.min(Math.max(width, INSPECTOR_MIN_WIDTH), Math.max(ceiling, INSPECTOR_MIN_WIDTH)),
+    );
+  }, []);
+
+  const applyInspectorWidth = useCallback(
+    (width: number) => {
+      const next = clampInspector(width);
+      setInspectorWidth(next);
+      try {
+        localStorage.setItem(INSPECTOR_WIDTH_KEY, String(next));
+      } catch {
+        // The drag still works for this session.
+      }
+    },
+    [clampInspector],
+  );
+
+  /**
+   * Drag the divider.
+   *
+   * Pointer capture matters here: without it the drag dies the moment the
+   * pointer crosses the graph canvas, which handles its own pointer events.
+   */
+  const startInspectorDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const move = (moved: PointerEvent) => {
+      const right = stageRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+      applyInspectorWidth(right - moved.clientX);
+    };
+    const stop = () => {
+      handle.releasePointerCapture?.(event.pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', stop);
+      handle.removeEventListener('pointercancel', stop);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
+  };
+
   const openGroup = (id: string) => {
     setGroupId(id);
     setFocusId(null);
@@ -321,7 +402,7 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
           </button>
         </div>
       ) : (
-        <div className="memory-body">
+        <div className="memory-body" ref={stageRef}>
           <div className="memory-content">
             {view === 'list' ? (
               <div className="memory-list" aria-label="Memory list">
@@ -433,7 +514,37 @@ export function MemoryWorkspace({ onImport }: { onImport: () => void }) {
             )}
           </div>
           {selected && (
-            <aside className="memory-inspector" aria-label="Memory details">
+            <div
+              className="inspector-resize"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize memory details"
+              tabIndex={0}
+              onPointerDown={startInspectorDrag}
+              onDoubleClick={() => applyInspectorWidth(INSPECTOR_DEFAULT_WIDTH)}
+              onKeyDown={(event) => {
+                // Arrow keys move it too: dragging is not available to
+                // everyone, and this is a control rather than decoration.
+                const step = event.shiftKey ? 64 : 16;
+                const current = inspectorWidth ?? INSPECTOR_DEFAULT_WIDTH;
+                if (event.key === 'ArrowLeft') {
+                  event.preventDefault();
+                  applyInspectorWidth(current + step);
+                } else if (event.key === 'ArrowRight') {
+                  event.preventDefault();
+                  applyInspectorWidth(current - step);
+                }
+              }}
+            />
+          )}
+          {selected && (
+            <aside
+              className="memory-inspector"
+              aria-label="Memory details"
+              style={
+                inspectorWidth ? { flexBasis: inspectorWidth, width: inspectorWidth } : undefined
+              }
+            >
               <div className="inspector-actions">
                 <button
                   className="workspace-button"

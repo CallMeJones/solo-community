@@ -401,6 +401,31 @@
 .group-browser > .workspace-button {
   margin-top: 10px;
 }
+/*
+ * The divider between the memory list or graph and the details panel.
+ *
+ * Six pixels wide but with a wider invisible grab area, because a hairline is
+ * a hard thing to catch with a mouse. It only shows its colour on hover, drag
+ * or focus so the resting layout still reads as one quiet border.
+ */
+.inspector-resize {
+  flex: 0 0 6px;
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+.inspector-resize::after {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.inspector-resize:hover,
+.inspector-resize:active,
+.inspector-resize:focus-visible {
+  background: var(--solo-accent, #d28a3a);
+  outline: none;
+}
 .memory-inspector {
   flex: 0 0 365px;
   width: 365px;
@@ -628,6 +653,9 @@
   }
   .context-count {
     font-size: 11px;
+  }
+  .inspector-resize {
+    display: none;
   }
   .memory-inspector {
     position: absolute;
