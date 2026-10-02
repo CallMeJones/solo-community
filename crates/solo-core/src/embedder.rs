@@ -10,6 +10,11 @@ use async_trait::async_trait;
 
 /// Pluggable embedder. Production impls live in `solo-storage` (or a future
 /// `solo-embed` crate); this trait is the contract.
+// `async_trait` puts `#[must_use]` on the methods it desugars, and from Rust
+// 1.99 clippy calls that redundant because the boxed future it returns is
+// already `#[must_use]`. The attribute is the macro's, not ours, so there is
+// nothing here to rewrite -- the lint is answered rather than obeyed.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Embedder: Send + Sync {
     /// Embedder identity. The migration tool `solo reembed` keys on

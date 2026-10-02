@@ -47,6 +47,11 @@ impl Message {
     }
 }
 
+// `async_trait` puts `#[must_use]` on the methods it desugars, and from Rust
+// 1.99 clippy calls that redundant because the boxed future it returns is
+// already `#[must_use]`. The attribute is the macro's, not ours, so there is
+// nothing here to rewrite -- the lint is answered rather than obeyed.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     /// Backend identifier — "qwen3-coder-30b-local", "claude-sonnet-4-6",
