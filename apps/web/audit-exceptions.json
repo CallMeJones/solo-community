@@ -1,0 +1,24 @@
+{
+  "$comment": [
+    "Advisories this build has looked at and accepted, with the reason and what",
+    "would end the exception. Anything not listed here fails the audit.",
+    "Keep this short. An entry that is no longer reported is reported as stale,",
+    "so the list cannot quietly outlive the problem it describes."
+  ],
+  "accepted": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "accepted_on": "2026-10-14",
+      "reason": "Stack exhaustion on deeply nested brace patterns. Every published version of braces is affected, so there is nothing to upgrade to. It reaches this repository only through tailwindcss (chokidar, micromatch) at build time: `npm audit --omit=dev` reports nothing, and braces is not in any shipped artifact. The patterns it expands are the ones in this repository's own config, not anything a user supplies.",
+      "ends_when": "braces publishes a fixed version, or tailwindcss stops depending on it."
+    },
+    {
+      "id": "GHSA-rj75-hqrm-r3gf",
+      "package": "postcss-selector-parser",
+      "accepted_on": "2026-10-14",
+      "reason": "Quadratic complexity parsing flat selectors. No 6.x release fixes it; npm's only offered fix is tailwindcss 4.x, a semver-major upgrade of the whole design system, which is not something to take inside a patch release. Reaches this repository only through tailwindcss at build time: `npm audit --omit=dev` reports nothing, and it is not in any shipped artifact. The selectors it parses are this repository's own stylesheets.",
+      "ends_when": "postcss-selector-parser ships a 6.x fix, or Solo moves to tailwindcss 4 deliberately."
+    }
+  ]
+}

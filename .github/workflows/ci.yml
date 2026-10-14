@@ -116,7 +116,9 @@ jobs:
 
       - name: Audit web dependencies
         working-directory: apps/web
-        run: npm audit --audit-level=low
+        # Fails on anything not written down in audit-exceptions.json, and on
+        # an exception that is no longer reported.
+        run: npm run audit:reviewed
 
       - name: Typecheck Web
         working-directory: apps/web

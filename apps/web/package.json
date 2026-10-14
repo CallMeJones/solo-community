@@ -21,7 +21,8 @@
     "test": "vitest run",
     "verify:pilot-artifact": "node scripts/assert-pilot-artifact.mjs",
     "verify:embedded": "node ../../scripts/verify_embedded_web.mjs",
-    "test:live": "vitest run tests/live-contract.test.ts"
+    "test:live": "vitest run tests/live-contract.test.ts",
+    "audit:reviewed": "node scripts/audit-with-exceptions.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "2.1.10",
