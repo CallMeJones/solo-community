@@ -33,6 +33,8 @@ pub enum SetupClientCommand {
     Cursor(SetupArgs),
     /// Preview or write Codex config for Solo MCP.
     Codex(CodexSetupArgs),
+    /// Preview or write GitHub Copilot config for Solo MCP.
+    Copilot(SetupArgs),
 }
 
 #[derive(Debug, Args)]
@@ -161,6 +163,7 @@ pub(crate) enum Client {
     ClaudeDesktop,
     Cursor,
     Codex,
+    Copilot,
 }
 
 impl Client {
@@ -169,6 +172,7 @@ impl Client {
             Client::ClaudeDesktop => "Claude Desktop",
             Client::Cursor => "Cursor",
             Client::Codex => "Codex",
+            Client::Copilot => "GitHub Copilot",
         }
     }
 
@@ -177,6 +181,38 @@ impl Client {
             Client::ClaudeDesktop => "claude-desktop",
             Client::Cursor => "cursor",
             Client::Codex => "codex",
+            Client::Copilot => "copilot",
+        }
+    }
+
+    /// How this client's config file is shaped.
+    fn config_style(self) -> ConfigStyle {
+        match self {
+            // Codex is TOML and never goes through the JSON path; the style is
+            // only consulted for clients that do.
+            Client::ClaudeDesktop | Client::Cursor | Client::Codex => ConfigStyle::McpServers,
+            Client::Copilot => ConfigStyle::VsCode,
+        }
+    }
+}
+
+/// The two JSON shapes an MCP client config comes in.
+///
+/// `mcpServers` entries name a command to run, so an HTTP server reaches them
+/// through the `mcp-remote` bridge. VS Code -- which is what Copilot reads --
+/// keys on `servers` and speaks HTTP itself, so Solo's address goes in as it
+/// is, with nothing to install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigStyle {
+    McpServers,
+    VsCode,
+}
+
+impl ConfigStyle {
+    fn root_key(self) -> &'static str {
+        match self {
+            ConfigStyle::McpServers => "mcpServers",
+            ConfigStyle::VsCode => "servers",
         }
     }
 }
@@ -206,8 +242,13 @@ impl OperatingSystem {
     }
 }
 
-fn supported_clients() -> [Client; 3] {
-    [Client::ClaudeDesktop, Client::Cursor, Client::Codex]
+fn supported_clients() -> [Client; 4] {
+    [
+        Client::ClaudeDesktop,
+        Client::Cursor,
+        Client::Codex,
+        Client::Copilot,
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +320,7 @@ pub async fn run(cmd: SetupClientCommand) -> Result<()> {
         SetupClientCommand::Verify(args) => run_verify(args),
         SetupClientCommand::Doctor(args) => run_doctor(args),
         SetupClientCommand::ClaudeDesktop(args) => run_setup(Client::ClaudeDesktop, args),
+        SetupClientCommand::Copilot(args) => run_setup(Client::Copilot, args),
         SetupClientCommand::Cursor(args) => run_setup(Client::Cursor, args),
         SetupClientCommand::Codex(args) => run_codex_setup(args),
     }
@@ -541,7 +583,8 @@ fn run_setup(client: Client, args: SetupArgs) -> Result<()> {
     }
     println!();
 
-    let server_entry = server_entry(args.transport, &args.url, args.data_dir.as_deref());
+    let style = client.config_style();
+    let server_entry = server_entry(style, args.transport, &args.url, args.data_dir.as_deref());
     if apply {
         let path = detection.path.as_deref().with_context(|| {
             detection
@@ -549,9 +592,15 @@ fn run_setup(client: Client, args: SetupArgs) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| "could not detect config path".to_string())
         })?;
-        let outcome = apply_config(path, args.transport, &args.url, args.data_dir.as_deref())?;
+        let outcome = apply_config(
+            path,
+            style,
+            args.transport,
+            &args.url,
+            args.data_dir.as_deref(),
+        )?;
 
-        println!("Ensured this `mcpServers.solo` entry:");
+        println!("Ensured this `{}.solo` entry:", style.root_key());
         println!(
             "{}",
             serde_json::to_string_pretty(&server_entry)
@@ -567,11 +616,12 @@ fn run_setup(client: Client, args: SetupArgs) -> Result<()> {
         let existing_json = inspection.as_ref().and_then(|i| i.json.clone());
         let preview = preview_config(
             existing_json,
+            style,
             args.transport,
             &args.url,
             args.data_dir.as_deref(),
         );
-        println!("Would ensure this `mcpServers.solo` entry:");
+        println!("Would ensure this `{}.solo` entry:", style.root_key());
         println!(
             "{}",
             serde_json::to_string_pretty(&server_entry)
@@ -757,9 +807,9 @@ where
         };
     };
 
-    match read_existing_config_for_apply(&path) {
+    match read_existing_config_for_apply(&path, client.config_style()) {
         Ok(Some(json)) => {
-            let (status, detail) = verify_config_json(&json);
+            let (status, detail) = verify_config_json(&json, client.config_style());
             VerifyRow {
                 client,
                 path: Some(path),
@@ -828,69 +878,84 @@ where
     }
 }
 
-fn verify_config_json(json: &Value) -> (VerifyStatus, String) {
+fn verify_config_json(json: &Value, style: ConfigStyle) -> (VerifyStatus, String) {
+    let root_key = style.root_key();
     let Some(root) = json.as_object() else {
         return (
             VerifyStatus::Invalid,
             "config root is not a JSON object".to_string(),
         );
     };
-    let Some(mcp_servers) = root.get("mcpServers") else {
+    let Some(mcp_servers) = root.get(root_key) else {
         return (
             VerifyStatus::Missing,
-            "`mcpServers.solo` is not configured".to_string(),
+            format!("`{root_key}.solo` is not configured"),
         );
     };
     let Some(mcp_servers) = mcp_servers.as_object() else {
         return (
             VerifyStatus::Invalid,
-            "`mcpServers` is not a JSON object".to_string(),
+            format!("`{root_key}` is not a JSON object"),
         );
     };
     let Some(solo) = mcp_servers.get("solo") else {
         return (
             VerifyStatus::Missing,
-            "`mcpServers.solo` is not configured".to_string(),
+            format!("`{root_key}.solo` is not configured"),
         );
     };
     let Some(solo_server) = solo.as_object() else {
         return (
             VerifyStatus::Invalid,
-            "`mcpServers.solo` is not a JSON object".to_string(),
+            format!("`{root_key}.solo` is not a JSON object"),
         );
     };
 
     if contains_passphrase_reference(solo) {
         return (
             VerifyStatus::Invalid,
-            "`mcpServers.solo` contains SOLO_PASSPHRASE; remove passphrases from client config"
-                .to_string(),
+            format!(
+                "`{root_key}.solo` contains SOLO_PASSPHRASE; remove passphrases from client config"
+            )
+            .to_string(),
         );
     }
     if contains_bearer_authorization_reference(solo) {
         return (
             VerifyStatus::Invalid,
-            "`mcpServers.solo` contains an Authorization bearer token; store tokens outside client config"
+            format!("`{root_key}.solo` contains an Authorization bearer token; store tokens outside client config")
                 .to_string(),
         );
     }
-    if !matches!(solo_server.get("command"), Some(Value::String(command)) if !command.is_empty()) {
-        return (
-            VerifyStatus::Invalid,
-            "`mcpServers.solo.command` must be a non-empty string".to_string(),
-        );
-    }
-    if !matches!(solo_server.get("args"), Some(Value::Array(_))) {
-        return (
-            VerifyStatus::Invalid,
-            "`mcpServers.solo.args` must be an array".to_string(),
-        );
+    // An entry either names a command to run or an address to reach. VS Code
+    // writes the second kind for an HTTP server, and asking it for a command
+    // would call a perfectly good config broken.
+    let reaches_over_http = solo_server.get("type").and_then(Value::as_str) == Some("http")
+        || (solo_server.contains_key("url") && !solo_server.contains_key("command"));
+    if reaches_over_http {
+        if !matches!(solo_server.get("url"), Some(Value::String(url)) if !url.is_empty()) {
+            return (
+                VerifyStatus::Invalid,
+                format!("`{root_key}.solo.url` must be a non-empty string"),
+            );
+        }
+    } else {
+        if !matches!(solo_server.get("command"), Some(Value::String(command)) if !command.is_empty())
+        {
+            return (
+                VerifyStatus::Invalid,
+                format!("`{root_key}.solo.command` must be a non-empty string"),
+            );
+        }
+        if !matches!(solo_server.get("args"), Some(Value::Array(_))) {
+            return (
+                VerifyStatus::Invalid,
+                format!("`{root_key}.solo.args` must be an array"),
+            );
+        }
     }
 
-    (
-        VerifyStatus::Ok,
-        "`mcpServers.solo` is configured".to_string(),
-    )
+    (VerifyStatus::Ok, format!("`{root_key}.solo` is configured"))
 }
 
 fn verify_config_toml(doc: &DocumentMut) -> (VerifyStatus, String) {
@@ -1408,6 +1473,7 @@ fn starts_with_bearer_scheme(text: &str) -> bool {
 
 fn apply_config(
     path: &Path,
+    style: ConfigStyle,
     transport: Transport,
     url: &str,
     data_dir: Option<&Path>,
@@ -1416,8 +1482,8 @@ fn apply_config(
     fs::create_dir_all(parent)
         .with_context(|| format!("create config parent {}", display_path(parent)))?;
 
-    let existing = read_existing_config_for_apply(path)?;
-    let updated = preview_config(existing, transport, url, data_dir);
+    let existing = read_existing_config_for_apply(path, style)?;
+    let updated = preview_config(existing, style, transport, url, data_dir);
     let backup_path = if path.exists() {
         Some(create_backup(path)?)
     } else {
@@ -1452,7 +1518,7 @@ fn apply_codex_config(
     Ok(ApplyOutcome { backup_path })
 }
 
-fn read_existing_config_for_apply(path: &Path) -> Result<Option<Value>> {
+fn read_existing_config_for_apply(path: &Path, style: ConfigStyle) -> Result<Option<Value>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -1465,7 +1531,7 @@ fn read_existing_config_for_apply(path: &Path) -> Result<Option<Value>> {
             display_path(path)
         )
     })?;
-    ensure_mergeable_config(&json)?;
+    ensure_mergeable_config(&json, style)?;
     Ok(Some(json))
 }
 
@@ -1486,13 +1552,16 @@ fn read_existing_codex_config_for_apply(path: &Path) -> Result<Option<DocumentMu
     Ok(Some(doc))
 }
 
-fn ensure_mergeable_config(json: &Value) -> Result<()> {
+fn ensure_mergeable_config(json: &Value, style: ConfigStyle) -> Result<()> {
     if !json.is_object() {
         bail!("existing config root is not a JSON object; refusing to apply");
     }
-    if let Some(mcp_servers) = json.get("mcpServers") {
+    if let Some(mcp_servers) = json.get(style.root_key()) {
         if !mcp_servers.is_object() {
-            bail!("existing config `mcpServers` is not a JSON object; refusing to apply");
+            bail!(
+                "existing config `{}` is not a JSON object; refusing to apply",
+                style.root_key()
+            );
         }
     }
     Ok(())
@@ -1642,6 +1711,7 @@ fn current_env_var(key: &str) -> Option<OsString> {
 
 fn preview_config(
     existing: Option<Value>,
+    style: ConfigStyle,
     transport: Transport,
     url: &str,
     data_dir: Option<&Path>,
@@ -1654,14 +1724,17 @@ fn preview_config(
     let object = root
         .as_object_mut()
         .expect("root is always an object after normalization");
-    let mcp_servers = object.entry("mcpServers").or_insert_with(|| json!({}));
-    if !mcp_servers.is_object() {
-        *mcp_servers = json!({});
+    let servers = object.entry(style.root_key()).or_insert_with(|| json!({}));
+    if !servers.is_object() {
+        *servers = json!({});
     }
-    mcp_servers
+    servers
         .as_object_mut()
-        .expect("mcpServers normalized to object")
-        .insert("solo".to_string(), server_entry(transport, url, data_dir));
+        .expect("the server map normalized to an object")
+        .insert(
+            "solo".to_string(),
+            server_entry(style, transport, url, data_dir),
+        );
 
     root
 }
@@ -1697,7 +1770,27 @@ fn new_implicit_table_item() -> Item {
     Item::Table(table)
 }
 
-fn server_entry(transport: Transport, url: &str, data_dir: Option<&Path>) -> Value {
+fn server_entry(
+    style: ConfigStyle,
+    transport: Transport,
+    url: &str,
+    data_dir: Option<&Path>,
+) -> Value {
+    if style == ConfigStyle::VsCode {
+        // VS Code reaches an HTTP server itself, and names its stdio servers
+        // by type rather than by inference.
+        return match transport {
+            Transport::Http => json!({ "type": "http", "url": url }),
+            Transport::Stdio => {
+                let mut args = vec!["mcp-stdio".to_string()];
+                if let Some(data_dir) = data_dir {
+                    args.push("--data-dir".to_string());
+                    args.push(display_path(data_dir));
+                }
+                json!({ "type": "stdio", "command": "solo", "args": args })
+            }
+        };
+    }
     match transport {
         Transport::Http => {
             let args = vec![
@@ -1786,6 +1879,26 @@ where
                     missing_env("HOME")
                 }
             }),
+        // VS Code's user-level MCP config, which is where Copilot looks.
+        (Client::Copilot, OperatingSystem::Windows) => env_var("APPDATA")
+            .map(PathBuf::from)
+            .map(|p| p.join("Code").join("User").join("mcp.json"))
+            .map(found_path)
+            .unwrap_or_else(|| missing_env("APPDATA")),
+        (Client::Copilot, OperatingSystem::Macos) => home_dir(os, &env_var)
+            .map(|p| {
+                p.join("Library")
+                    .join("Application Support")
+                    .join("Code")
+                    .join("User")
+                    .join("mcp.json")
+            })
+            .map(found_path)
+            .unwrap_or_else(|| missing_env("HOME")),
+        (Client::Copilot, OperatingSystem::Linux) => home_dir(os, &env_var)
+            .map(|p| p.join(".config").join("Code").join("User").join("mcp.json"))
+            .map(found_path)
+            .unwrap_or_else(|| missing_env("HOME")),
         (Client::Codex, _) => home_dir(os, &env_var)
             .map(|p| p.join(".codex").join("config.toml"))
             .map(found_path)
@@ -2080,7 +2193,13 @@ mod tests {
             }
         });
 
-        let preview = preview_config(Some(existing), Transport::Http, DEFAULT_MCP_URL, None);
+        let preview = preview_config(
+            Some(existing),
+            ConfigStyle::McpServers,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        );
 
         assert_eq!(
             preview["mcpServers"]["other"]["command"],
@@ -2093,9 +2212,121 @@ mod tests {
     }
 
     #[test]
+    fn copilot_gets_vs_codes_shape_not_the_claude_one() {
+        let preview = preview_config(
+            None,
+            ConfigStyle::VsCode,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        );
+
+        // VS Code keys on `servers`, and reaches an HTTP server itself: no
+        // `mcpServers`, and no npx bridge to install.
+        assert!(preview.get("mcpServers").is_none(), "{preview}");
+        assert_eq!(preview["servers"]["solo"]["type"], "http");
+        assert_eq!(preview["servers"]["solo"]["url"], DEFAULT_MCP_URL);
+        assert!(preview["servers"]["solo"].get("command").is_none());
+    }
+
+    #[test]
+    fn copilot_over_stdio_names_its_type_and_keeps_the_data_dir() {
+        let preview = preview_config(
+            None,
+            ConfigStyle::VsCode,
+            Transport::Stdio,
+            DEFAULT_MCP_URL,
+            Some(Path::new("/tmp/solo-data")),
+        );
+
+        assert_eq!(preview["servers"]["solo"]["type"], "stdio");
+        assert_eq!(preview["servers"]["solo"]["command"], "solo");
+        assert_eq!(preview["servers"]["solo"]["args"][0], "mcp-stdio");
+        assert_eq!(preview["servers"]["solo"]["args"][2], "/tmp/solo-data");
+        // Still no passphrase anywhere near a client config.
+        assert!(preview["servers"]["solo"].get("env").is_none());
+    }
+
+    #[test]
+    fn an_existing_vs_code_config_keeps_its_other_servers() {
+        let existing = json!({
+            "servers": {
+                "something-else": { "type": "http", "url": "http://127.0.0.1:9/mcp" }
+            }
+        });
+        let preview = preview_config(
+            Some(existing),
+            ConfigStyle::VsCode,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        );
+
+        assert_eq!(
+            preview["servers"]["something-else"]["url"],
+            "http://127.0.0.1:9/mcp"
+        );
+        assert_eq!(preview["servers"]["solo"]["url"], DEFAULT_MCP_URL);
+    }
+
+    #[test]
+    fn verifying_copilot_reads_the_key_vs_code_actually_uses() {
+        let configured = json!({
+            "servers": { "solo": { "type": "http", "url": DEFAULT_MCP_URL } }
+        });
+        let (status, detail) = verify_config_json(&configured, ConfigStyle::VsCode);
+        assert_eq!(status, VerifyStatus::Ok, "{detail}");
+        assert!(detail.contains("servers.solo"), "{detail}");
+
+        // The same file judged by the other shape finds nothing, which is why
+        // the style has to follow the client rather than be assumed.
+        let (status, _) = verify_config_json(&configured, ConfigStyle::McpServers);
+        assert_ne!(status, VerifyStatus::Ok);
+    }
+
+    #[test]
+    fn copilot_config_lands_where_vs_code_keeps_it() {
+        let detection = detect_config_path(
+            Client::Copilot,
+            OperatingSystem::Windows,
+            env_lookup(&[("APPDATA", "C:\\Users\\nathv\\AppData\\Roaming")]),
+        );
+        let path = detection.path.expect("a Windows path");
+        assert!(
+            path.ends_with(Path::new("Code").join("User").join("mcp.json")),
+            "{}",
+            path.display()
+        );
+
+        let linux = detect_config_path(
+            Client::Copilot,
+            OperatingSystem::Linux,
+            env_lookup(&[("HOME", "/home/nate")]),
+        );
+        assert!(
+            linux.path.expect("a Linux path").ends_with(
+                Path::new(".config")
+                    .join("Code")
+                    .join("User")
+                    .join("mcp.json")
+            )
+        );
+    }
+
+    #[test]
+    fn copilot_is_offered_alongside_the_others() {
+        let names: Vec<&str> = supported_clients()
+            .iter()
+            .map(|client| client.cli_name())
+            .collect();
+        assert!(names.contains(&"copilot"), "{names:?}");
+    }
+
+    #[test]
     fn stdio_preview_includes_data_dir_without_env_secret() {
         let preview = preview_config(
             None,
+            ConfigStyle::McpServers,
             Transport::Stdio,
             DEFAULT_MCP_URL,
             Some(Path::new("/tmp/solo-data")),
@@ -2116,11 +2347,18 @@ mod tests {
     fn generated_client_config_has_no_library_selector() {
         let stdio = preview_config(
             None,
+            ConfigStyle::McpServers,
             Transport::Stdio,
             DEFAULT_MCP_URL,
             Some(Path::new("/tmp/solo-data")),
         );
-        let http = preview_config(None, Transport::Http, DEFAULT_MCP_URL, None);
+        let http = preview_config(
+            None,
+            ConfigStyle::McpServers,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        );
 
         assert!(!stdio.to_string().contains("--tenant"));
         assert!(!http.to_string().contains("X-Solo-Tenant"));
@@ -2401,7 +2639,13 @@ url = "https://example.test/mcp"
             .join("Claude")
             .join("claude_desktop_config.json");
 
-        let outcome = apply_config(&path, Transport::Http, DEFAULT_MCP_URL, None)?;
+        let outcome = apply_config(
+            &path,
+            ConfigStyle::McpServers,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        )?;
 
         assert!(outcome.backup_path.is_none());
         let written = serde_json::from_str::<Value>(&fs::read_to_string(path)?)?;
@@ -2435,7 +2679,13 @@ url = "https://example.test/mcp"
         });
         fs::write(&path, serde_json::to_string_pretty(&existing)?)?;
 
-        let outcome = apply_config(&path, Transport::Http, DEFAULT_MCP_URL, None)?;
+        let outcome = apply_config(
+            &path,
+            ConfigStyle::McpServers,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        )?;
 
         let backup_path = outcome.backup_path.expect("backup");
         assert!(backup_path.exists());
@@ -2507,8 +2757,14 @@ url = "http://old.example/mcp"
         let path = temp.path().join("mcp.json");
         fs::write(&path, "[]")?;
 
-        let err = apply_config(&path, Transport::Http, DEFAULT_MCP_URL, None)
-            .expect_err("non-object config should be refused");
+        let err = apply_config(
+            &path,
+            ConfigStyle::McpServers,
+            Transport::Http,
+            DEFAULT_MCP_URL,
+            None,
+        )
+        .expect_err("non-object config should be refused");
 
         assert!(
             err.to_string().contains("root is not a JSON object"),
@@ -2546,7 +2802,7 @@ url = "http://old.example/mcp"
             }
         });
 
-        let (status, detail) = verify_config_json(&config);
+        let (status, detail) = verify_config_json(&config, ConfigStyle::McpServers);
 
         assert_eq!(status, VerifyStatus::Invalid);
         assert!(detail.contains("SOLO_PASSPHRASE"));
@@ -2568,7 +2824,7 @@ url = "http://old.example/mcp"
             }
         });
 
-        let (status, detail) = verify_config_json(&config);
+        let (status, detail) = verify_config_json(&config, ConfigStyle::McpServers);
 
         assert_eq!(status, VerifyStatus::Invalid);
         assert!(detail.contains("Authorization bearer token"));

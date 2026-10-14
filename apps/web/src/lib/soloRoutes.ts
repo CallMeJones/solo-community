@@ -6,7 +6,7 @@ export function mcpEndpoint(apiUrl: string): string {
   }
 }
 
-export type SetupClientTarget = 'codex' | 'claude-desktop' | 'cursor';
+export type SetupClientTarget = 'codex' | 'claude-desktop' | 'cursor' | 'copilot';
 
 export function setupClientHttpCommand(
   target: SetupClientTarget,

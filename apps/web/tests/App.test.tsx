@@ -282,9 +282,15 @@ describe('App desktop shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'Connected apps' })).toBeInTheDocument();
     expect(screen.getAllByText('http://127.0.0.1:17821/mcp').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Copy dry-run')).toHaveLength(3);
-    expect(screen.getAllByText('Copy install')).toHaveLength(3);
-    expect(screen.getAllByText('Copy Doctor')).toHaveLength(4);
+    // One row per client Solo can configure, plus the page's own Doctor button.
+    expect(screen.getAllByText('Copy dry-run')).toHaveLength(4);
+    expect(screen.getAllByText('Copy install')).toHaveLength(4);
+    expect(screen.getAllByText('Copy Doctor')).toHaveLength(5);
+    // `Codex` also appears in the memory-policy copy, so only that each client
+    // is named somewhere is asserted here.
+    for (const client of ['Codex', 'Claude Desktop', 'Cursor', 'GitHub Copilot']) {
+      expect(screen.getAllByText(client).length).toBeGreaterThan(0);
+    }
     expect(
       screen.getByText('solo setup-client doctor --url http://127.0.0.1:17821/mcp'),
     ).toBeInTheDocument();

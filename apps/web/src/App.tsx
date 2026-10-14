@@ -651,6 +651,7 @@ function ConnectionsView() {
     { target: 'codex', label: 'Codex' },
     { target: 'claude-desktop', label: 'Claude Desktop' },
     { target: 'cursor', label: 'Cursor' },
+    { target: 'copilot', label: 'GitHub Copilot' },
   ];
 
   return (
@@ -729,7 +730,9 @@ function ConnectionsView() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-slate-100">{label}</div>
                     <div className="truncate font-mono text-xs text-slate-400">
-                      {target === 'codex' ? 'native HTTP MCP' : 'HTTP MCP config'}
+                      {target === 'codex' || target === 'copilot'
+                        ? 'native HTTP MCP'
+                        : 'HTTP MCP config'}
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-2">
