@@ -6,6 +6,7 @@
 
 - [Getting Started](./getting-started.md)
 - [Automatic Memory Recall](./automatic-memory-recall.md)
+- [Assistant Plugins](./agent-plugins.md)
 - [Model Selection](./model-selection.md)
 - [Steward Setup & Capability States](./steward-setup.md)
 - [Consolidation Cycle](./consolidation-cycle.md)

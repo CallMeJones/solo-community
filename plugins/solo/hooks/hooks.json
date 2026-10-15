@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "solo agent-hook --managed-by solo-plugin-v1 --client claude-code --event session-start --url http://127.0.0.1:17821/mcp",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "solo agent-hook --managed-by solo-plugin-v1 --client claude-code --event prompt --url http://127.0.0.1:17821/mcp",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

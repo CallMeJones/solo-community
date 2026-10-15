@@ -61,6 +61,30 @@ permissions:
   contents: read
 
 jobs:
+  agent-plugins:
+    name: Agent plugins (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Use Python 3.13
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Validate and package Solo agent plugins
+        run: python scripts/package_agent_plugin.py
+      - name: Retain installable plugin marketplace
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: solo-agent-plugin-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 30
+          path: target/agent-plugins/*
+
   security-audit:
     name: Rust dependency audit
     runs-on: ubuntu-latest

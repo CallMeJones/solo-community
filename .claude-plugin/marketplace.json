@@ -1,0 +1,16 @@
+{
+  "name": "solo-community",
+  "metadata": {
+    "description": "Solo memory integration for coding assistants."
+  },
+  "owner": {
+    "name": "Solo"
+  },
+  "plugins": [
+    {
+      "name": "solo",
+      "source": "./plugins/solo",
+      "description": "Persistent Solo memory with MCP, automatic recall hooks, and skills."
+    }
+  ]
+}

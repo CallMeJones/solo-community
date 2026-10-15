@@ -212,6 +212,10 @@ PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH" cargo build --release -p
 
 ## Connect your assistants
 
+Codex and Claude Code can install the MCP connection, recall hooks, and memory
+skills together through the [Solo plugin](docs/agent-plugins.md). Keep Solo
+running and unlocked, and complete the assistant's normal trust review.
+
 With Solo **0.12.11 or newer** running and unlocked, use the native
 **Connected Tools → Setup / repair** action for each assistant. The browser's
 **Connected Clients** screen provides the commands to run locally.
