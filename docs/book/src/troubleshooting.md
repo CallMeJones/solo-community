@@ -173,6 +173,16 @@ network path with an appropriate firewall or reverse proxy.
 
 ## MCP
 
+### Solo connects, but the assistant does not recall automatically
+
+Use Solo 0.12.11 or newer, rerun `solo setup-client <client> --apply` after
+updating, and restart the assistant. In Codex, review and trust Solo's
+definitions in `/hooks`. Check for client settings or workspace policies that
+disable hooks. `verify` reports installed configuration; only the assistant's
+hook log proves automatic delivery. See
+[Automatic Memory Recall](./automatic-memory-recall.md#troubleshooting) for
+client-specific checks, authentication, and coverage limits.
+
 ### Client shows Solo as disconnected
 
 Run `solo mcp-stdio` manually to expose startup errors, confirm the configured

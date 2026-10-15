@@ -5,6 +5,7 @@
 # User Guide
 
 - [Getting Started](./getting-started.md)
+- [Automatic Memory Recall](./automatic-memory-recall.md)
 - [Model Selection](./model-selection.md)
 - [Steward Setup & Capability States](./steward-setup.md)
 - [Consolidation Cycle](./consolidation-cycle.md)
