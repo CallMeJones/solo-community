@@ -12,15 +12,16 @@ user-owned memory.
 
 ## Status
 
-**v0.12.2 Community** - Solo is a full local memory stack:
+**v0.12.11 Community** - Solo is a full local memory stack:
 an encrypted local Memory Library, a single-writer actor for durable
 writes, HNSW/vector recall, document/RAG memory, the embedded Solo Web UI,
 and MCP over stdio plus Streamable HTTP on `/mcp`.
 Community includes resumable document uploads, retained source assets,
 native document extraction, temporal relationship paths, provenance
 explanations, and stricter memory-claim quality review. The Community product
-ships Core + Solo Desktop. See the
-[v0.12.2 release notes](docs/releases/v0.12.2.md).
+ships Core + Solo Desktop. Client setup now installs automatic memory recall
+for supported coding assistants. See [connect your assistants](#connect-your-assistants)
+and the [v0.12.11 release notes](docs/releases/v0.12.11.md).
 
 ```
 remember/update -> embedding row + pending_index -> writer commit
@@ -77,7 +78,8 @@ The installer:
   Redistributable install because the release bundles the needed
   app-local MSVC runtime DLLs.
 
-Open a new PowerShell after install and run:
+Open Solo Controls from the Start menu to create or unlock your Memory Library.
+For a first-time command-line setup, open a new PowerShell and run:
 
 ```powershell
 solo --help
@@ -85,6 +87,10 @@ solo init
 solo doctor
 solo daemon --http-port 17821
 ```
+
+Existing users can install the update over Solo, unlock their existing library,
+and [rerun client setup](docs/client-memory-hooks.md#upgrade-an-existing-connection)
+to add the recall hooks. Keep Solo running while using connected assistants.
 
 The installed `solo.exe` can be used directly as the MCP memory server:
 
@@ -104,18 +110,21 @@ solo daemon --http-port 17821 --consolidate-interval-secs 3600 --ollama-model qw
 
 ### Ubuntu 24.04 installer (recommended for Linux Desktop)
 
-Download `solo-<version>-ubuntu24.04-amd64.deb` from the
-[latest GitHub release](https://github.com/CallMeJones/solo-community/releases/latest),
+The latest published Ubuntu package is **0.12.3**. Download
+`solo-0.12.3-ubuntu24.04-amd64.deb` from the
+[0.12.3 release](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.3-community.1),
 then install it with:
 
 ```bash
-sudo apt install ./solo-<version>-ubuntu24.04-amd64.deb
+sudo apt install ./solo-0.12.3-ubuntu24.04-amd64.deb
 ```
 
 The package includes `solo`, `solo-tray`, the pinned offline semantic model,
 an application-menu entry, the embedded Solo Desktop, XDG login autostart
 support, and Secret Service keyring integration. It targets Ubuntu 24.04 on
 x86-64 and is the certified Linux installation path.
+The 0.12.11 automatic recall setup requires a current source build on Linux;
+the 0.12.11 packaged release is Windows-only.
 
 ### Pre-built binary via Cargo
 
@@ -123,8 +132,10 @@ x86-64 and is the certified Linux installation path.
 cargo binstall solo-cli
 ```
 
-Pre-built ZIP/TGZ binaries are attached to every GitHub release from
-v0.3.5 onward for terminal-first users and `cargo binstall`:
+Binary availability varies by release. Version 0.12.11 provides a Windows
+installer and CLI ZIP; earlier releases also provide Linux archives for
+terminal-first users and `cargo binstall`. Check the selected release's assets
+for the target you need:
 
   - `x86_64-unknown-linux-gnu`
   - `aarch64-unknown-linux-gnu`
@@ -199,6 +210,36 @@ PATH="/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$PATH" cargo build --release -p
 ./target/release/solo.exe --help
 ```
 
+## Connect your assistants
+
+With Solo **0.12.11 or newer** running and unlocked, use the native
+**Connected Tools → Setup / repair** action for each assistant. The browser's
+**Connected Clients** screen provides the commands to run locally.
+
+For Claude Code, Codex, and VS Code Copilot, the equivalent commands are:
+
+```sh
+solo setup-client claude-code --apply
+solo setup-client codex --apply
+solo setup-client copilot --apply
+```
+
+Setup installs both the MCP connection and supported recall hooks, preserving
+your other settings and backing up changed existing files. Restart each
+assistant afterward. In Codex, open `/hooks`, review Solo's definitions, and
+trust them. Existing connections need setup run again after updating Solo.
+
+Hooks retrieve relevant memory automatically at supported session or prompt
+events. They provide a policy that prefers Solo for prior preferences and
+decisions, with the current conversation taking precedence. Saving new memories
+still uses Solo's tools or app. Claude Desktop/web chat has MCP/connector access
+without lifecycle hooks.
+
+See the [automatic recall guide](docs/client-memory-hooks.md) for Gemini and
+Cursor setup, the upgrade checklist, trust prompts, verification, privacy,
+troubleshooting, and removal. Older installed packages do not gain these hooks
+until Solo itself is updated to a build that includes them.
+
 ## Usage
 
 Solo is a command-line app. Double-clicking `solo.exe` may look like
@@ -259,22 +300,19 @@ solo daemon --consolidate-interval-secs 3600
 ANTHROPIC_API_KEY=sk-... solo daemon --consolidate-interval-secs 3600
 ```
 
-### MCP (Claude Desktop, Cursor, …)
+### MCP memory tools
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`
-(macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Use [client setup](#connect-your-assistants) to connect a coding assistant.
+For ordinary Claude Desktop chat, use:
 
-```json
-{
-  "mcpServers": {
-    "solo": {
-      "command": "solo",
-      "args": ["mcp-stdio"],
-      "env": { "SOLO_PASSPHRASE": "..." }
-    }
-  }
-}
+```sh
+solo setup-client claude-desktop --apply
 ```
+
+Restart Claude Desktop after setup. It can call Solo's tools through the
+running daemon; automatic session/prompt hooks are available in Claude Code.
+See [MCP Integration](docs/book/src/mcp-integration.md) for transport details
+and advanced manual configuration.
 
 Solo exposes the memory surface under the `memory_*` namespace:
 
@@ -307,17 +345,14 @@ tables stay empty and the derived tools return empty arrays. See
 the [Derived Layer chapter](docs/book/src/derived-layer.md) for
 detail.
 
-#### Tested MCP clients
+#### Automatic recall coverage
 
-Solo's MCP tools are tested against the following clients:
-
-- **Claude Desktop** (Anthropic) — full support
-- **Cursor** — full support
-Client setup installs supported automatic recall hooks alongside MCP. See
-[automatic memory setup](docs/client-memory-hooks.md) for client coverage,
-installation, trust prompts, and removal.
-
-- **Claude Code** (Anthropic CLI) — full support
+For the 0.12.11 release, automatic recall passed live checks in **Claude Code**,
+**Codex**, and **VS Code Copilot Agent Host**. Gemini CLI, Cursor, and Copilot
+Local have automated adapter coverage. Claude Desktop/web chat uses Solo's
+MCP tools or connector without lifecycle hooks. See
+[client coverage](docs/client-memory-hooks.md#supported-coverage) for the exact
+events and configuration paths.
 
 Tool names are validated against the function-calling name regex
 of all three major LLM providers (Anthropic, OpenAI, Gemini) so

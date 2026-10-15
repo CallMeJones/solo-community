@@ -1,8 +1,7 @@
 # Command-Line Reference
 
-Every flag accepted by every `solo` subcommand. Sourced from
-the v0.3.1 binary; new flags will land in this page as they
-ship.
+Reference for Solo's command-line workflows. Use `solo <command> --help`
+for the complete flags accepted by your installed build.
 
 Common flags repeated across commands:
 
@@ -197,6 +196,58 @@ Returns a JSON dump with timestamps, source, status,
 scoring values, and content. Soft-deleted memories
 (`status = forgotten`) are still returned.
 
+## `solo setup-client`
+
+Preview, install, verify, or diagnose assistant connections. In Solo 0.12.11
+and newer, HTTP setup also installs supported automatic recall hooks.
+
+```text
+solo setup-client list [--format table|json]
+solo setup-client <client> [--apply | --dry-run]
+                          [--transport http|stdio] [--url <mcp-url>]
+                          [--no-hooks] [--hook-token-env <NAME>]
+solo setup-client codex [--scope user|project] [--project-dir <directory>]
+                        [the setup options above]
+solo setup-client verify [<client>] [--format table|json]
+solo setup-client doctor [<client>] [--url <mcp-url>] [--format table|json]
+```
+
+Clients are `claude-code`, `codex`, `copilot`, `gemini`, `cursor`, and
+`claude-desktop`. Hook coverage varies by client; ordinary Claude Desktop
+chat has MCP tools without automatic lifecycle hooks.
+
+- Setup defaults to a dry run; `--apply` writes changes and backs up changed
+  existing files. Other client settings and servers are preserved.
+- HTTP is the default transport, using `http://127.0.0.1:17821/mcp`.
+  Keep Solo running and unlocked. `--url` selects another HTTP(S) endpoint.
+- `--no-hooks --apply` removes only Solo's managed hooks and keeps the MCP
+  connection. `--transport stdio` also removes Solo's HTTP recall hooks.
+- `--hook-token-env NAME` selects the environment variable used for hook
+  authentication; the default is `SOLO_BEARER_TOKEN`. Setup saves the name,
+  never the token value. This does not configure the assistant's own OAuth.
+- Codex defaults to user scope. `--scope project` writes project configuration;
+  `--project-dir` requires that scope. `verify` and `doctor` accept the same
+  Codex scope options. Choose one scope to avoid duplicate hooks.
+- `verify` reports configuration and hook installation. `doctor` adds an MCP
+  endpoint and required-tool check. Neither proves that the host ran a hook.
+
+After setup, restart the assistant and complete its normal trust review.
+Codex exposes this in `/hooks`. For an upgrade, rerun the same setup command
+after installing Solo. See [Automatic Memory Recall](./automatic-memory-recall.md)
+for the complete setup, activation, verification, and removal guide.
+
+## `solo agent-hook`
+
+The managed recall runner used by client setup. Clients provide event JSON on
+stdin; Solo retrieves bounded context through MCP and emits the client's
+context JSON. It is read-only and continues with empty JSON if retrieval
+fails or the seven-second default deadline expires.
+
+Users normally configure this through `setup-client`; scripts do not need to
+be written by hand. See `solo agent-hook --help` for its diagnostic flags and
+[the recall guide](./automatic-memory-recall.md#what-the-hook-does) for bounds
+and data handling.
+
 ## `solo mcp-stdio`
 
 Run the MCP server over stdin/stdout. Spawned by an MCP
@@ -215,7 +266,7 @@ solo mcp-stdio [--data-dir <path>]
     multiple ephemeral `mcp-stdio` subprocesses against one shared
     data dir. **Dangerous**: breaks the writer-actor
     single-process invariant. See
-    [MCP Integration § Gateway / proxy mode](./mcp-integration.md#gateway--proxy-mode-no-lockfile)
+    [MCP Integration § Gateway / proxy mode](./mcp-integration.md#gateway--proxy-mode---no-lockfile)
     for safety guidance. v0.11.5+.
 
 ## `solo http-serve`

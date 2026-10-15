@@ -55,8 +55,8 @@ sessions see consistent reads on their next call.
 ## Quick start — recommended setup
 
 ```bash
-# 1. Start the daemon once (auto-start on login recommended)
-SOLO_PASSPHRASE=your-passphrase solo daemon
+# Start Solo Controls and unlock, or keep this terminal running:
+solo daemon --http-port 17821
 
 # Output:
 # INFO  solo daemon: HTTP server listening on http://127.0.0.1:17821
@@ -64,7 +64,17 @@ SOLO_PASSPHRASE=your-passphrase solo daemon
 # INFO  consolidate timer enabled (interval 3600s)
 ```
 
-Then configure each MCP client to talk to `http://127.0.0.1:17821/mcp`.
+With Solo 0.12.11 or newer, install the connections for the assistants you use:
+
+```sh
+solo setup-client claude-code --apply
+solo setup-client codex --apply
+solo setup-client copilot --apply
+```
+
+These commands configure `http://127.0.0.1:17821/mcp` and install the supported
+recall hooks. Restart the assistants; review and trust Solo's Codex hooks in
+`/hooks`. Existing users must rerun setup after updating Solo to add the hooks.
 
 The daemon owns the data dir for as long as it runs. Stop it with
 `Ctrl+C`; the snapshot saves and the lock releases automatically.
@@ -72,7 +82,8 @@ The daemon owns the data dir for as long as it runs. Stop it with
 Solo can also detect the local config path and manage client config for
 Claude Code, Codex, Gemini CLI, Cursor, VS Code Copilot, and Claude Desktop.
 Supported recall hooks are installed with the connection; see
-[automatic memory hooks](../../client-memory-hooks.md) for coverage and trust
+[Automatic Memory Recall](./automatic-memory-recall.md) for the setup and
+upgrade checklist, coverage, verification, and trust
 requirements. Dry-run is the default. `--apply`
 creates parent directories, preserves existing top-level keys and other
 MCP server entries, makes a timestamped backup when the config file
@@ -150,7 +161,7 @@ solo setup-client verify claude-code
 Setup creates the user MCP connection and automatic session-start and prompt
 recall hooks. Restart Claude Code after installation and review any trust request.
 Use `--url` for a different daemon endpoint. For authenticated endpoints, see
-[hook authentication and transport](../../client-memory-hooks.md#authentication-and-transport).
+[hook authentication and transport](./automatic-memory-recall.md#authentication-and-transport).
 The hook does not inherit the assistant's separate OAuth session.
 
 

@@ -3,6 +3,11 @@
 This path gets a new Windows or Ubuntu user from installation to verified
 semantic recall without requiring Ollama or an API key.
 
+**Already using Solo?** Follow the
+[upgrade and client setup checklist](./automatic-memory-recall.md#upgrade-an-existing-connection).
+Upgrading keeps your existing library; rerunning client setup adds the new
+recall hooks to an existing connection.
+
 ## Install
 
 ### Windows
@@ -23,10 +28,12 @@ solo doctor --round-trip
 
 ### Ubuntu 24.04
 
-Download `solo-<version>-ubuntu24.04-amd64.deb` from the latest release:
+The latest published Ubuntu package is 0.12.3. Download
+`solo-0.12.3-ubuntu24.04-amd64.deb` from the
+[0.12.3 release](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.3-community.1):
 
 ```bash
-sudo apt install ./solo-<version>-ubuntu24.04-amd64.deb
+sudo apt install ./solo-0.12.3-ubuntu24.04-amd64.deb
 solo --version
 solo init
 solo doctor --round-trip
@@ -35,6 +42,8 @@ solo doctor --round-trip
 The package includes the command-line tools, Solo Controls/Desktop, bundled
 MiniLM assets, desktop integration, autostart support, and Secret Service
 keyring integration. Ubuntu 24.04 x86-64 is the certified Linux target.
+The 0.12.11 recall hooks require a current source build on Linux; the 0.12.11
+packaged release is Windows-only.
 
 ### From source
 
@@ -114,17 +123,33 @@ Recall works immediately with bundled MiniLM. The returned `cos_distance` is
 smaller for more similar vectors. Solo's hybrid retrieval also uses lexical
 signals when the embedding model misses an abstract phrasing.
 
-## Connect an MCP client
+## Connect your assistants
 
-Point Claude Desktop, Cursor, Codex, or another MCP host at:
+With Solo 0.12.11 or newer running and unlocked, open the native
+**Connected Tools** panel and choose **Setup / repair** for the assistants you
+use. The same setup is available from a terminal:
 
-```text
-command: solo
-args: ["mcp-stdio"]
+```sh
+solo setup-client claude-code --apply
+solo setup-client codex --apply
+solo setup-client copilot --apply
 ```
 
-See [MCP Integration](./mcp-integration.md) for host-specific configuration and
-the local security model.
+Each command installs the MCP connection and supported automatic recall hooks.
+Restart the assistant afterward. In Codex, open `/hooks`, review Solo's entries,
+and trust them. Check the connection with, for example:
+
+```sh
+solo setup-client verify codex
+solo setup-client doctor codex
+```
+
+See [Automatic Memory Recall](./automatic-memory-recall.md) for Gemini/Cursor,
+upgrade steps, trust, and a check that proves a hook delivered memory.
+For ordinary Claude Desktop chat, run
+`solo setup-client claude-desktop --apply`; its MCP tools remain available
+without automatic lifecycle hooks. [MCP Integration](./mcp-integration.md)
+covers the transports and local security model.
 
 ## Enable advanced knowledge extraction (optional)
 

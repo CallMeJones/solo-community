@@ -23,36 +23,92 @@ copy/pasting long commands.
 
 If you prefer PowerShell:
 
+  # Initialize only when creating a new library:
   solo init
-  solo daemon
+  solo daemon --http-port 17821
 
 Solo's local HTTP/MCP endpoint defaults to:
 
   http://127.0.0.1:17821/mcp
 
-Using Solo as an MCP memory server
-----------------------------------
+Connect your assistants and enable automatic recall
+--------------------------------------------------
 
-The recommended path is the daemon HTTP endpoint above. Let Solo preview or
-repair client config safely:
+Solo 0.12.11 and newer install the MCP connection and supported recall hooks
+together. Keep Solo running and unlocked. In native Connected Tools, choose
+the assistant and use Setup / repair. The browser Connected Clients screen
+provides commands to run locally.
 
-  solo setup-client list
-  solo setup-client doctor
-  solo setup-client codex --scope user --transport http --dry-run
+For command-line setup, run only the commands for the assistants you use:
 
-Add --apply only after reviewing the dry-run output. Solo creates backups
-before writing supported client config files.
+  solo setup-client claude-code --apply
+  solo setup-client codex --apply
+  solo setup-client copilot --apply
+  solo setup-client gemini --apply
+  solo setup-client cursor --apply
+
+Omit --apply to preview the affected paths first. Setup preserves other
+settings and servers, backs up existing changed files, and updates Solo's
+hooks without duplicates.
+
+Restart the assistant after setup. For Codex, open /hooks, review the Solo
+definitions, and trust them. SessionStart and UserPromptSubmit should each
+show one active hook for a user-level installation. For VS Code Copilot,
+start a new Copilot or Local agent session in a trusted workspace with hooks
+enabled. Setup preserves native trust and disabled-hook settings.
+
+Claude Code, Codex, and Gemini CLI receive session-start and prompt recall.
+VS Code Copilot receives session-start recall. Cursor's session-start recall
+is asynchronous and may arrive after the first answer.
+
+The hook asks Solo for relevant memory and provides it to the assistant
+automatically. Current instructions take precedence over history. Saving or
+correcting memories still uses Solo's tools or app; conversations are not
+automatically saved. Retrieved memory becomes context for the connected
+assistant and is subject to its provider's normal data handling.
+
+Check the clients you connected, for example:
+
+  solo setup-client verify codex
+  solo setup-client doctor codex
+
+Verify reports installed definitions; doctor also checks the running MCP
+endpoint. Confirm execution in a new assistant session's hook log: look for
+"solo-memory-hook: context delivered". Installed configuration alone does
+not prove the assistant has trusted or run a hook.
 
 Solo Community always connects clients to its one local encrypted Memory
 Library. Projects organize context inside that library; they do not create
 additional databases.
 
-Claude Code can be added directly with its MCP CLI:
+Ordinary Claude Desktop chat can use "solo setup-client claude-desktop --apply"
+for MCP tools. Claude Desktop and web chat have no supported automatic
+lifecycle hook; Claude Code is the Claude client with this recall integration.
 
-  claude mcp add --transport http --scope user solo http://127.0.0.1:17821/mcp
+Upgrading an existing installation
+---------------------------------
 
-Claude Desktop and Cursor are configured through Solo's setup-client helper.
-Restart the MCP host after changing its config.
+1. Choose Quit Solo from its system-tray menu. Closing the window can leave
+   Solo running in the background.
+2. Run the latest official Windows installer. It updates the program in
+   place and preserves your existing Memory Library.
+3. Open Solo again and unlock that library.
+4. Rerun client setup for each assistant, even if its MCP connection already
+   worked. This installs the new hooks on older connections.
+5. Restart the assistants and review any new or changed hook trust requests.
+
+Use "solo --version" and "solo setup-client --help" to check the installed
+build. Help must list claude-code and gemini. If it does not, install the
+released build and open a new terminal; some earlier development builds also
+reported 0.12.11. "Get-Command solo" in PowerShell shows the selected binary.
+
+To remove only Solo's automatic hooks while keeping MCP tools, use the
+matching client name, for example:
+
+  solo setup-client codex --apply --no-hooks
+
+Full setup, coverage, authentication, and troubleshooting guide:
+  https://github.com/CallMeJones/solo-community/blob/main/docs/client-memory-hooks.md
 
 Advanced stdio mode
 -------------------
@@ -64,17 +120,17 @@ Solo still supports stdio for hosts that cannot use HTTP:
 Prefer the daemon HTTP endpoint when multiple agents or Solo need to
 share one running memory backend.
 
-Claude Agent Skills
--------------------
+Optional memory instructions and skills
+--------------------------------------
 
-The installer includes Agent Skills for Claude that automate memory operations
-and enforce Solo as the memory backend. Skills are installed to:
+The installer includes Claude skills at:
 
   %LOCALAPPDATA%\Programs\Solo\skills
 
-These skills are pre-configured to use Solo's MCP memory tools. You can add
-them to Claude Desktop's Capabilities > Skills menu for one-click activation
-in conversations.
+Skills and initial instructions can help an assistant choose when to save,
+correct, or recall memory. Supported coding assistants receive automatic
+recall through the hooks installed by client setup. Ordinary chat apps use
+their MCP/connector tools and memory instructions or skills.
 
 Using Ollama for steward work
 -----------------------------
@@ -97,28 +153,11 @@ link.exe, Visual Studio, or Visual Studio Build Tools.
 Those tools are only needed if you choose to compile Solo, cargo-binstall,
 or another Rust crate from source.
 
-Release verification
---------------------
+More help
+---------
 
-Before shipping a Windows build, verify the installed app rather than only the
-build output. Run these from the repository root:
+User guide:
+  https://github.com/CallMeJones/solo-community/tree/main/docs/book/src
 
-  Push-Location .\apps\web
-  npm.cmd run build
-  Pop-Location
-  .\scripts\sync_solo_web_assets.ps1
-  cargo build --locked -p solo-cli -p solo-tray --release
-  $sourceDir = "D:\solo-target\release"
-  & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=0.12.0 /DSourceDir="$sourceDir" /DOutputDir="." installer\windows\SoloSetup.iss
-  & .\installer\windows\SoloSetup-0.12.0-x86_64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-  .\scripts\windows_installed_smoke.ps1 -DesktopClickSmoke -TimeoutSeconds 60 -DesktopClickSmokeTimeoutSeconds 30
-
-Use a `SourceDir` that matches your Cargo target directory. On this
-workstation, release binaries land in `D:\solo-target\release`; a default
-checkout may use `target\release` instead.
-
-If Inno Setup (`ISCC.exe`) is unavailable on a development machine, you can
-refresh `%LOCALAPPDATA%\Programs\Solo\solo.exe` and `solo-tray.exe` from the
-release directory as a local fallback, then run the same installed smoke. That
-fallback verifies the installed binaries and embedded Desktop assets, but it
-does not produce a distributable setup EXE.
+Releases and downloads:
+  https://github.com/CallMeJones/solo-community/releases/latest
