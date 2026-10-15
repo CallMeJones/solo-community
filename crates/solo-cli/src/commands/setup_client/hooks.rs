@@ -520,20 +520,33 @@ fn apply_changes_with_writer(
         }
     }
     for (written, change) in changed.iter().enumerate() {
-        if let Err(error) = write(&change.path, &change.after) {
+        let result = (|| {
+            // Another client may save settings while backups are being made.
+            if read_optional(&change.path)? != change.before {
+                bail!("config changed during setup: {}", change.path.display());
+            }
+            write(&change.path, &change.after)
+        })();
+        if let Err(error) = result {
             let mut restore_errors = Vec::new();
             for prior in changed[..written].iter().rev() {
-                let result = match &prior.before {
-                    Some(bytes) => write(&prior.path, bytes),
-                    None => fs::remove_file(&prior.path).map_err(anyhow::Error::from),
-                };
+                let result = (|| {
+                    // Do not roll back a newer edit made after our replacement.
+                    if read_optional(&prior.path)?.as_deref() != Some(prior.after.as_slice()) {
+                        bail!("config changed after setup wrote it");
+                    }
+                    match &prior.before {
+                        Some(bytes) => write(&prior.path, bytes),
+                        None => fs::remove_file(&prior.path).map_err(anyhow::Error::from),
+                    }
+                })();
                 if result.is_err() {
                     restore_errors.push(prior.path.display().to_string());
                 }
             }
             if !restore_errors.is_empty() {
                 bail!(
-                    "setup failed: {error}; restore these files from backups: {}",
+                    "setup failed: {error}; rollback incomplete; review current files before restoring backups: {}",
                     restore_errors.join(", ")
                 );
             }
@@ -873,6 +886,39 @@ mod tests {
         fs::write(&path, b"concurrent edit").unwrap();
         assert!(apply_changes(&changes).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"concurrent edit");
+    }
+
+    #[test]
+    fn edits_between_writes_survive_failure_and_rollback() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("mcp.json");
+        let second = temp.path().join("hooks.json");
+        for path in [&first, &second] {
+            fs::write(path, b"original").unwrap();
+        }
+        let changes: Vec<_> = [&first, &second]
+            .into_iter()
+            .map(|path| Change {
+                path: path.clone(),
+                before: Some(b"original".to_vec()),
+                after: b"setup".to_vec(),
+            })
+            .collect();
+        let result = apply_changes_with_writer(&changes, |path, bytes| {
+            write_bytes_atomic(path, bytes)?;
+            // Simulate the assistant saving both files after our first write.
+            fs::write(&first, b"new user setting")?;
+            fs::write(&second, b"new user hook")?;
+            Ok(())
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("rollback incomplete")
+        );
+        assert_eq!(fs::read(first).unwrap(), b"new user setting");
+        assert_eq!(fs::read(second).unwrap(), b"new user hook");
     }
 
     #[test]
