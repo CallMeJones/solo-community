@@ -1,0 +1,12 @@
+{
+  "name": "solo",
+  "version": "0.1.0",
+  "description": "Persistent Solo memory with automatic recall, MCP tools, and memory workflows.",
+  "author": {
+    "name": "Solo"
+  },
+  "homepage": "https://github.com/CallMeJones/solo-community",
+  "repository": "https://github.com/CallMeJones/solo-community",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "solo", "mcp", "recall"]
+}

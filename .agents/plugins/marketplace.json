@@ -1,0 +1,15 @@
+{
+  "name": "solo-community",
+  "interface": {
+    "displayName": "Solo Community"
+  },
+  "plugins": [
+    {
+      "name": "solo",
+      "source": {
+        "source": "local",
+        "path": "./plugins/solo"
+      }
+    }
+  ]
+}

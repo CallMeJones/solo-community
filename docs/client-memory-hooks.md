@@ -23,6 +23,10 @@ automatically archive conversations.
 
 ## Set up your assistants
 
+Codex and Claude Code also support the [Solo plugin](https://github.com/CallMeJones/solo-community/blob/main/docs/agent-plugins.md),
+which bundles MCP, hooks, and memory skills. Use one installation method per
+assistant; the plugin guide includes migration steps for existing direct setup.
+
 1. Install a current Solo build, then open Solo and unlock your existing
    Memory Library. For a terminal-only setup, keep
    `solo daemon --http-port 17821` running.
