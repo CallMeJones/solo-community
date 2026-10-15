@@ -46,7 +46,7 @@ to install the package; the CLI commands above are also available in
 Codex CLI 0.154.0.
 
 The package includes a setup skill for connection checks and a memory skill
-for recall, saving, correction, and forgetting.
+for recall, saving, correction, documents, and library management.
 
 Codex supports manually distributed plugins with lifecycle hooks. A package
 containing hooks is not eligible for OpenAI's public plugin directory.
@@ -125,6 +125,9 @@ the ordinary Solo client setup command.
 - `/hooks` in each CLI shows the hook definitions and their source.
 - A successful call through the plugin's `memory_context` tool proves the
   memory connection works.
+- The Solo connection's tool list includes writes such as `memory_remember`,
+  `memory_update`, and `memory_forget`, alongside document, asset, and review
+  tools. Client interfaces may add a plugin prefix to these names.
 - `solo-memory-hook: context delivered` in a new session's hook diagnostics
   proves that the recall command retrieved context.
 
@@ -138,6 +141,27 @@ and verified workspace facts take precedence. Saving still uses MCP tools;
 hooks do not save transcripts. A failed or timed-out recall continues without
 Solo. Retrieved memories are supplied to the assistant provider as context.
 See [recall behavior and privacy](https://github.com/CallMeJones/solo-community/blob/main/docs/client-memory-hooks.md#what-the-hook-does).
+
+## Use the full Solo toolset
+
+The plugin exposes every tool advertised by the connected Solo MCP server.
+It does not filter the connection to read-only tools. In addition to recall,
+the assistant can save, update, and forget memories; ingest and import documents;
+upload files; manage assets and attachments; prepare downloads; inspect entities,
+relationships, and provenance; and review or correct library knowledge.
+The exact tools depend on your Solo version.
+
+Ask for the operation in chat, for example: "Remember that this project uses
+PostgreSQL", "Import this document into Solo", or "Review the conflicting
+facts about this project". The bundled memory skill helps the assistant choose
+the appropriate tools. Your assistant's normal permission prompts and Solo's
+library and server policies still apply.
+
+Only the automatic session-start and prompt hooks are read-only: they retrieve
+relevant context without saving or deleting anything. The harmless read-only
+connection test above verifies connectivity; it does not disable write tools.
+A visible tool can still fail if the library is locked or a required backend,
+such as the embedding service used for saving memories, is unavailable.
 
 ## Update and uninstall
 
@@ -158,6 +182,9 @@ direct setup that you have not migrated.
 
 Native installation, removal, MCP tool calls, and automatic context delivery
 were checked on Windows with Claude Code 2.1.85 and Codex CLI 0.154.0.
+Both clients discovered all 39 tools advertised by Solo 0.12.11, including
+write, document, attachment, and review tools. Discovery checks did not modify
+the library; the live MCP smoke calls used read-only recall.
 Codex hooks were reviewed and trusted through its normal interface in an
 isolated test profile. No hook-trust bypass was used.
 

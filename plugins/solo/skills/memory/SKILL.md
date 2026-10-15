@@ -1,13 +1,15 @@
 ---
 name: memory
-description: Recall prior preferences, project decisions, people, or documents from Solo, and save, correct, or forget durable user information. Use when previous context matters or the user asks to remember something.
+description: Use Solo for persistent memory, documents, attachments, relationships, provenance, and memory review. Recall prior context; save, correct, or forget durable facts; and manage library content when requested.
 ---
 
 # Solo memory
 
-Use this plugin's Solo MCP tools for persistent memory. Hosts may namespace
-their tool names; identify the Solo connection and the matching `memory_*`
-tool rather than assuming a fixed tool-name prefix.
+Use this plugin's full Solo MCP toolset. The connection includes read and write
+tools; it is not restricted to recall. Hosts may namespace tool names, so
+identify the Solo connection and the matching advertised tool rather than
+assuming a fixed prefix. Follow each tool's current schema and the host's
+normal permission checks.
 
 ## Recall
 
@@ -35,5 +37,19 @@ Never save credentials, secrets, raw transcripts, temporary debugging output,
 or speculative conclusions. Do not claim a write succeeded unless Solo confirms
 it. If saving fails, report that briefly when the user asked you to remember.
 
-Hooks retrieve memory only. They do not automatically archive conversations
-or make every retrieved record applicable to the user's current request.
+## Documents and library operations
+
+Use the matching advertised tools for document search, inspection, ingestion,
+and import; staged uploads; assets and attachments; and download preparation.
+Follow the server's upload and download contracts rather than inventing file
+access or assuming a local path is accessible to the server.
+
+Use entity, relationship, graph, and provenance tools to inspect how facts
+connect. Use inbox, review, contradiction, and entity-correction tools when the
+request involves reviewing or correcting library knowledge. Inspect the target
+before changing or deleting it, and keep changes within the user's request.
+
+The full toolset remains subject to Solo's library state, server policies, and
+the assistant's normal permissions. Hooks retrieve memory only; that limitation
+does not apply to the MCP connection. Hooks do not automatically archive
+conversations or make every retrieved record applicable to the current request.

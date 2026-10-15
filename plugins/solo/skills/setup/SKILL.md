@@ -16,6 +16,10 @@ installed; its `solo` executable must be on the assistant process's PATH.
 2. Call this plugin's `memory_context` tool with a harmless setup query and
    `limit: 1`. Report success only if the tool call actually succeeds.
    A configuration file or health check alone does not prove MCP works.
+   The plugin exposes Solo's full advertised toolset, including memory writes,
+   document uploads, attachments, and review operations. Check tool discovery
+   if those are missing; do not create or delete library content merely to
+   check a connection. A read-only smoke test does not restrict the connection.
 3. Ask the user to inspect `/hooks` in their assistant. Codex requires normal
    review and trust before plugin hooks can run. Never bypass trust. Look for
    one plugin handler for each of `SessionStart` and `UserPromptSubmit`;
