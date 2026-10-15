@@ -164,7 +164,8 @@ Re-run setup if the Solo executable moves.
 
 Session start retrieves user preferences and project decisions using the workspace
 folder name. Before a prompt, recall also uses up to 2,000 characters of the
-prompt. The full path and conversation transcript are not read or uploaded.
+prompt. The query does not include the full workspace path or conversation
+transcript.
 **The recall query is sent to the configured Solo endpoint**, which can be local
 or remote. Retrieved memories become context for the connected assistant and
 are subject to that assistant provider's normal data handling. The hook does
