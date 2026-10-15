@@ -395,12 +395,26 @@ fn evaluate(
     releases: &[GhRelease],
     channel: UpdateChannel,
 ) -> (Option<AvailableRelease>, bool, String) {
-    let usable: Vec<(usize, &GhRelease, &GhAsset)> = releases
+    let mut usable: Vec<(usize, &GhRelease, &GhAsset)> = releases
         .iter()
         .enumerate()
         .filter(|(_, r)| !r.draft && !is_superseded(r))
         .filter_map(|(i, r)| platform_asset(&r.assets, channel).map(|a| (i, r, a)))
         .collect();
+    // Newest by version, not by the order GitHub returned.
+    //
+    // GitHub sorts releases by creation date, and in a repository that only
+    // carries releases every tag points at the same commit -- so they all
+    // share a creation date and the order degenerates to a lexical sort of
+    // the tag names. That puts `pro.10` below `pro.2`, and the build running
+    // `pro.9` was told it was the newest there was. Ordering here means the
+    // answer no longer depends on how a releases repository happens to be
+    // laid out.
+    usable.sort_by(|left, right| {
+        version_key(&right.1.tag_name)
+            .cmp(&version_key(&left.1.tag_name))
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     let Some(&(candidate_idx, release, asset)) = usable.first() else {
         return (
@@ -437,14 +451,18 @@ fn evaluate(
         return (Some(available), true, note);
     }
 
-    // Position the running build within the same list. Comparing list indices
-    // rather than parsing versions sidesteps the two tag schemes: whatever
-    // GitHub considers newer is newer.
+    // Where the running build sits, by version rather than by position. The
+    // two tag schemes both reduce to their numbers, and a build whose tag is
+    // not in the list at all falls through to the asset-name comparison below.
     let current_ref = solo_core::build_info::build_ref();
     let current_idx = current_ref.and_then(|r| releases.iter().position(|rel| rel.tag_name == r));
+    let newer_than_running = current_ref
+        .map(|r| version_key(&release.tag_name) > version_key(r))
+        .unwrap_or(false);
+    let _ = candidate_idx;
 
     match current_idx {
-        Some(i) if i <= candidate_idx => (
+        Some(_) if !newer_than_running => (
             Some(available),
             false,
             format!(
@@ -499,6 +517,30 @@ fn evaluate(
             ),
         },
     }
+}
+
+/// A tag reduced to the numbers in it, for ordering releases.
+///
+/// `v0.13.0-pro.9` becomes `[0, 13, 0, 9]` and `v0.13.0-pro.10` becomes
+/// `[0, 13, 0, 10]`, so the second sorts above the first -- which comparing
+/// the tags as text does not, and which is how a double-digit build came to
+/// be treated as older than a single-digit one. Both tag schemes reduce the
+/// same way, and a tag with no numbers at all sorts below everything.
+fn version_key(tag: &str) -> Vec<u64> {
+    let mut parts = Vec::new();
+    let mut digits = String::new();
+    for character in tag.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            parts.push(digits.parse().unwrap_or(0));
+            digits.clear();
+        }
+    }
+    if !digits.is_empty() {
+        parts.push(digits.parse().unwrap_or(0));
+    }
+    parts
 }
 
 /// The version a release package advertises in its own file name.
@@ -768,6 +810,46 @@ pub fn staged_installer_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_double_digit_build_sorts_above_a_single_digit_one() {
+        // The trap this guards: compared as text, "pro.9" beats "pro.10".
+        assert!(version_key("v0.13.0-pro.10") > version_key("v0.13.0-pro.9"));
+        assert!(version_key("v0.12.10-community.1") > version_key("v0.12.9-community.1"));
+        assert!(version_key("v0.13.0-pro.9") > version_key("v0.13.0-pro.2"));
+        assert!(version_key("v0.14.0-pro.1") > version_key("v0.13.0-pro.99"));
+        // A tag with nothing to compare sorts below one that has something.
+        assert!(version_key("main") < version_key("v0.0.1"));
+    }
+
+    #[test]
+    fn the_newest_release_wins_even_when_github_lists_it_last() {
+        // Exactly the shape the Pro releases repository returns: every tag
+        // points at one commit, so they share a creation date and GitHub
+        // falls back to sorting the tag names as text -- which puts pro.10
+        // below pro.2.
+        let releases = vec![
+            release(
+                "v0.13.0-pro.9",
+                &[("SoloSetup-pro-0.13.0-pro.9-x86_64.exe", 1)],
+            ),
+            release(
+                "v0.13.0-pro.2",
+                &[("SoloSetup-pro-0.13.0-pro.2-x86_64.exe", 1)],
+            ),
+            release(
+                "v0.13.0-pro.10",
+                &[("SoloSetup-pro-0.13.0-pro.10-x86_64.exe", 1)],
+            ),
+        ];
+
+        let (available, _, _) = evaluate(&releases, UpdateChannel::Pro);
+        let offered = available.expect("a release should be offered");
+        assert_eq!(
+            offered.tag, "v0.13.0-pro.10",
+            "the newest version should be offered, not the one GitHub listed first"
+        );
+    }
 
     fn release(tag: &str, assets: &[(&str, u64)]) -> GhRelease {
         GhRelease {
