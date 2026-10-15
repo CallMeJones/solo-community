@@ -28,6 +28,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Supply bounded Solo context to an installed coding-agent hook.
+    AgentHook(commands::agent_hook::AgentHookArgs),
     /// Initialize the Solo data directory (creates ~/.solo/solo.db).
     Init(commands::init::InitArgs),
     /// Run the Solo daemon (writer + reader pool; MCP/HTTP transports follow).
@@ -120,6 +122,7 @@ enum Command {
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::AgentHook(args)) => commands::agent_hook::run(args).await,
         Some(Command::Init(args)) => commands::init::run(args).await,
         Some(Command::Daemon(args)) => commands::daemon::run(args).await,
         Some(Command::Remember(args)) => commands::remember::run(args).await,

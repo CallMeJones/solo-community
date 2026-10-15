@@ -3,6 +3,7 @@
 //! Subcommand implementations. Each module corresponds to one
 //! `Cli::command` arm.
 
+pub mod agent_hook;
 pub mod audit;
 pub mod backup;
 pub mod common;

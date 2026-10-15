@@ -313,6 +313,10 @@ Solo's MCP tools are tested against the following clients:
 
 - **Claude Desktop** (Anthropic) — full support
 - **Cursor** — full support
+Client setup installs supported automatic recall hooks alongside MCP. See
+[automatic memory setup](docs/client-memory-hooks.md) for client coverage,
+installation, trust prompts, and removal.
+
 - **Claude Code** (Anthropic CLI) — full support
 
 Tool names are validated against the function-calling name regex

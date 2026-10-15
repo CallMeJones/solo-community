@@ -12,11 +12,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process;
 use std::time::Duration;
 use toml_edit::{Array, DocumentMut, Item, Table, Value as TomlValue, value as toml_value};
 
 const DEFAULT_MCP_URL: &str = "http://127.0.0.1:17821/mcp";
+mod hooks;
 const DOCTOR_REQUIRED_MCP_TOOLS: &[&str] = &["memory_context", "memory_inbox", "memory_review"];
 
 #[derive(Debug, Subcommand)]
@@ -35,6 +35,10 @@ pub enum SetupClientCommand {
     Codex(CodexSetupArgs),
     /// Preview or write GitHub Copilot config for Solo MCP.
     Copilot(SetupArgs),
+    /// Preview or write Claude Code MCP and automatic memory hooks.
+    ClaudeCode(SetupArgs),
+    /// Preview or write Gemini CLI MCP and automatic memory hooks.
+    Gemini(SetupArgs),
 }
 
 #[derive(Debug, Args)]
@@ -94,6 +98,8 @@ pub struct DoctorArgs {
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
+    #[command(flatten)]
+    pub hooks: hooks::HookSetupArgs,
     /// Transport to configure. HTTP uses `npx mcp-remote` for stdio-only clients.
     #[arg(long, value_enum, default_value_t = Transport::Http)]
     pub transport: Transport,
@@ -117,6 +123,8 @@ pub struct SetupArgs {
 
 #[derive(Debug, Args)]
 pub struct CodexSetupArgs {
+    #[command(flatten)]
+    pub hooks: hooks::HookSetupArgs,
     /// Codex config scope to write.
     #[arg(long, value_enum, default_value_t = CodexScope::User)]
     pub scope: CodexScope,
@@ -164,6 +172,8 @@ pub(crate) enum Client {
     Cursor,
     Codex,
     Copilot,
+    ClaudeCode,
+    Gemini,
 }
 
 impl Client {
@@ -173,6 +183,8 @@ impl Client {
             Client::Cursor => "Cursor",
             Client::Codex => "Codex",
             Client::Copilot => "GitHub Copilot",
+            Client::ClaudeCode => "Claude Code",
+            Client::Gemini => "Gemini CLI",
         }
     }
 
@@ -182,6 +194,8 @@ impl Client {
             Client::Cursor => "cursor",
             Client::Codex => "codex",
             Client::Copilot => "copilot",
+            Client::ClaudeCode => "claude-code",
+            Client::Gemini => "gemini",
         }
     }
 
@@ -192,6 +206,8 @@ impl Client {
             // only consulted for clients that do.
             Client::ClaudeDesktop | Client::Cursor | Client::Codex => ConfigStyle::McpServers,
             Client::Copilot => ConfigStyle::VsCode,
+            Client::ClaudeCode => ConfigStyle::NativeMcp,
+            Client::Gemini => ConfigStyle::Gemini,
         }
     }
 }
@@ -206,12 +222,14 @@ impl Client {
 pub(crate) enum ConfigStyle {
     McpServers,
     VsCode,
+    NativeMcp,
+    Gemini,
 }
 
 impl ConfigStyle {
     fn root_key(self) -> &'static str {
         match self {
-            ConfigStyle::McpServers => "mcpServers",
+            ConfigStyle::McpServers | ConfigStyle::NativeMcp | ConfigStyle::Gemini => "mcpServers",
             ConfigStyle::VsCode => "servers",
         }
     }
@@ -242,12 +260,14 @@ impl OperatingSystem {
     }
 }
 
-fn supported_clients() -> [Client; 4] {
+fn supported_clients() -> [Client; 6] {
     [
         Client::ClaudeDesktop,
         Client::Cursor,
         Client::Codex,
         Client::Copilot,
+        Client::ClaudeCode,
+        Client::Gemini,
     ]
 }
 
@@ -255,23 +275,6 @@ fn supported_clients() -> [Client; 4] {
 pub(crate) struct PathDetection {
     pub path: Option<PathBuf>,
     pub note: Option<String>,
-}
-
-#[derive(Debug)]
-struct ConfigInspection {
-    json: Option<Value>,
-    status: String,
-}
-
-#[derive(Debug)]
-struct TomlInspection {
-    raw: Option<String>,
-    status: String,
-}
-
-#[derive(Debug)]
-struct ApplyOutcome {
-    backup_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -321,6 +324,8 @@ pub async fn run(cmd: SetupClientCommand) -> Result<()> {
         SetupClientCommand::Doctor(args) => run_doctor(args),
         SetupClientCommand::ClaudeDesktop(args) => run_setup(Client::ClaudeDesktop, args),
         SetupClientCommand::Copilot(args) => run_setup(Client::Copilot, args),
+        SetupClientCommand::ClaudeCode(args) => run_setup(Client::ClaudeCode, args),
+        SetupClientCommand::Gemini(args) => run_setup(Client::Gemini, args),
         SetupClientCommand::Cursor(args) => run_setup(Client::Cursor, args),
         SetupClientCommand::Codex(args) => run_codex_setup(args),
     }
@@ -371,6 +376,7 @@ fn run_list(args: ListArgs) -> Result<()> {
                         "config_path": detection.path.as_deref().map(display_path),
                         "status": path_status(&detection),
                         "note": detection.note,
+                        "memory_hooks": hooks::status(client, detection.path.as_deref(), os, &current_env_var),
                     })
                 })
                 .collect();
@@ -430,6 +436,15 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
                         .unwrap_or_else(|| "unavailable".to_string()),
                     row.detail
                 );
+                let hook_status =
+                    hooks::status(row.client, row.path.as_deref(), os, &current_env_var);
+                println!(
+                    "  Memory hooks: {}",
+                    hook_status["status"].as_str().unwrap_or("unknown")
+                );
+                if let Some(note) = hook_status.get("activation").and_then(Value::as_str) {
+                    println!("  {note}");
+                }
             }
         }
         OutputFormat::Json => {
@@ -442,6 +457,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
                         "config_path": row.path.as_deref().map(display_path),
                         "status": row.status.label(),
                         "detail": row.detail,
+                        "memory_hooks": hooks::status(row.client, row.path.as_deref(), os, &current_env_var),
                     })
                 })
                 .collect();
@@ -519,6 +535,15 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                         .unwrap_or_else(|| "unavailable".to_string()),
                     row.detail
                 );
+                let hook_status =
+                    hooks::status(row.client, row.path.as_deref(), os, &current_env_var);
+                println!(
+                    "  Memory hooks: {}",
+                    hook_status["status"].as_str().unwrap_or("unknown")
+                );
+                if let Some(note) = hook_status.get("activation").and_then(Value::as_str) {
+                    println!("  {note}");
+                }
             }
         }
         OutputFormat::Json => {
@@ -532,6 +557,7 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
                         "config_status": row.status.label(),
                         "solo_entry": server_entry_status(row.status),
                         "detail": row.detail,
+                        "memory_hooks": hooks::status(row.client, row.path.as_deref(), os, &current_env_var),
                     })
                 })
                 .collect();
@@ -560,225 +586,45 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 }
 
 fn run_setup(client: Client, args: SetupArgs) -> Result<()> {
-    if args.transport == Transport::Stdio {
-        println!(
-            "Warning: stdio mode lets the MCP client own a Solo writer process and can conflict with a running daemon."
-        );
-        println!("No passphrase is written into the client config.");
-        println!();
-    }
-
     let os = OperatingSystem::current();
     let detection = detect_config_path(client, os, current_env_var);
-    let inspection = detection.path.as_deref().map(inspect_config).transpose()?;
-    let apply = args.apply;
-
-    println!("Client      : {}", client.display_name());
-    println!("Mode        : {}", if apply { "apply" } else { "dry-run" });
-    println!("Transport   : {}", args.transport.label());
-    println!("Library     : Community Memory Library");
-    println!("Config path : {}", describe_detection_path(&detection));
-    if let Some(inspection) = &inspection {
-        println!("Config state: {}", inspection.status);
-    }
-    println!();
-
-    let style = client.config_style();
-    let server_entry = server_entry(style, args.transport, &args.url, args.data_dir.as_deref());
-    if apply {
-        let path = detection.path.as_deref().with_context(|| {
-            detection
-                .note
-                .clone()
-                .unwrap_or_else(|| "could not detect config path".to_string())
-        })?;
-        let outcome = apply_config(
-            path,
-            style,
-            args.transport,
-            &args.url,
-            args.data_dir.as_deref(),
-        )?;
-
-        println!("Ensured this `{}.solo` entry:", style.root_key());
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&server_entry)
-                .context("serialize setup-client server entry")?
-        );
-        println!();
-        println!("Wrote config: {}", display_path(path));
-        if let Some(backup_path) = outcome.backup_path {
-            println!("Backup      : {}", display_path(&backup_path));
-        }
-        println!("No passphrase was written into the client config.");
-    } else {
-        let existing_json = inspection.as_ref().and_then(|i| i.json.clone());
-        let preview = preview_config(
-            existing_json,
-            style,
-            args.transport,
-            &args.url,
-            args.data_dir.as_deref(),
-        );
-        println!("Would ensure this `{}.solo` entry:", style.root_key());
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&server_entry)
-                .context("serialize setup-client server entry")?
-        );
-        println!();
-        println!("Resulting config preview:");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&preview).context("serialize setup-client preview")?
-        );
-        println!();
-        println!("No files were written.");
-    }
-
-    Ok(())
+    let path = detection
+        .path
+        .context("could not detect client config path")?;
+    hooks::setup(
+        client,
+        &path,
+        args.transport,
+        &args.url,
+        args.data_dir.as_deref(),
+        &args.hooks,
+        args.apply,
+        os,
+        &current_env_var,
+    )
 }
 
 fn run_codex_setup(args: CodexSetupArgs) -> Result<()> {
     if args.project_dir.is_some() && args.scope != CodexScope::Project {
         bail!("--project-dir can only be used with --scope project");
     }
-
-    if args.transport == Transport::Stdio {
-        println!(
-            "Warning: stdio mode lets the MCP client own a Solo writer process and can conflict with a running daemon."
-        );
-        println!("No passphrase is written into the client config.");
-        println!();
-    }
-
     let os = OperatingSystem::current();
     let detection =
         detect_codex_config_path(args.scope, os, current_env_var, args.project_dir.as_deref());
-    let inspection = detection
+    let path = detection
         .path
-        .as_deref()
-        .map(inspect_codex_config)
-        .transpose()?;
-    let apply = args.apply;
-
-    println!("Client      : {}", Client::Codex.display_name());
-    println!("Scope       : {}", args.scope.label());
-    println!("Mode        : {}", if apply { "apply" } else { "dry-run" });
-    println!("Transport   : {}", args.transport.label());
-    println!("Library     : Community Memory Library");
-    println!("Config path : {}", describe_detection_path(&detection));
-    if let Some(inspection) = &inspection {
-        println!("Config state: {}", inspection.status);
-    }
-    println!();
-
-    let server_preview =
-        preview_codex_config(None, args.transport, &args.url, args.data_dir.as_deref());
-    if apply {
-        let path = detection.path.as_deref().with_context(|| {
-            detection
-                .note
-                .clone()
-                .unwrap_or_else(|| "could not detect Codex config path".to_string())
-        })?;
-        let outcome =
-            apply_codex_config(path, args.transport, &args.url, args.data_dir.as_deref())?;
-
-        println!("Ensured this `[mcp_servers.solo]` entry:");
-        print_toml_preview(&server_preview);
-        println!();
-        println!("Wrote config: {}", display_path(path));
-        if let Some(backup_path) = outcome.backup_path {
-            println!("Backup      : {}", display_path(&backup_path));
-        }
-        println!("No passphrase was written into the client config.");
-    } else {
-        let existing_toml = inspection
-            .as_ref()
-            .and_then(|i| i.raw.as_deref())
-            .and_then(|raw| raw.parse::<DocumentMut>().ok());
-        let preview = preview_codex_config(
-            existing_toml,
-            args.transport,
-            &args.url,
-            args.data_dir.as_deref(),
-        );
-        println!("Would ensure this `[mcp_servers.solo]` entry:");
-        print_toml_preview(&server_preview);
-        println!();
-        println!("Resulting config preview:");
-        print_toml_preview(&preview);
-        println!();
-        println!("No files were written.");
-    }
-
-    Ok(())
-}
-
-fn inspect_config(path: &Path) -> Result<ConfigInspection> {
-    if !path.exists() {
-        return Ok(ConfigInspection {
-            json: None,
-            status: "missing; parent directories may need to be created later".to_string(),
-        });
-    }
-
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            return Ok(ConfigInspection {
-                json: None,
-                status: format!("unreadable: {err}"),
-            });
-        }
-    };
-
-    match serde_json::from_str::<Value>(&raw) {
-        Ok(json) if json.is_object() => Ok(ConfigInspection {
-            json: Some(json),
-            status: "found; valid JSON object".to_string(),
-        }),
-        Ok(json) => Ok(ConfigInspection {
-            json: Some(json),
-            status: "found; valid JSON but root is not an object".to_string(),
-        }),
-        Err(err) => Ok(ConfigInspection {
-            json: None,
-            status: format!("found; malformed JSON: {err}"),
-        }),
-    }
-}
-
-fn inspect_codex_config(path: &Path) -> Result<TomlInspection> {
-    if !path.exists() {
-        return Ok(TomlInspection {
-            raw: None,
-            status: "missing; parent directories may need to be created later".to_string(),
-        });
-    }
-
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            return Ok(TomlInspection {
-                raw: None,
-                status: format!("unreadable: {err}"),
-            });
-        }
-    };
-
-    match raw.parse::<DocumentMut>() {
-        Ok(_) => Ok(TomlInspection {
-            raw: Some(raw),
-            status: "found; valid TOML".to_string(),
-        }),
-        Err(err) => Ok(TomlInspection {
-            raw: None,
-            status: format!("found; malformed TOML: {err}"),
-        }),
-    }
+        .context("could not detect Codex config path")?;
+    hooks::setup(
+        Client::Codex,
+        &path,
+        args.transport,
+        &args.url,
+        args.data_dir.as_deref(),
+        &args.hooks,
+        args.apply,
+        os,
+        &current_env_var,
+    )
 }
 
 fn verify_client_config<F>(
@@ -931,9 +777,15 @@ fn verify_config_json(json: &Value, style: ConfigStyle) -> (VerifyStatus, String
     // writes the second kind for an HTTP server, and asking it for a command
     // would call a perfectly good config broken.
     let reaches_over_http = solo_server.get("type").and_then(Value::as_str) == Some("http")
-        || (solo_server.contains_key("url") && !solo_server.contains_key("command"));
+        || (solo_server.contains_key("url") && !solo_server.contains_key("command"))
+        || solo_server.contains_key("httpUrl");
     if reaches_over_http {
-        if !matches!(solo_server.get("url"), Some(Value::String(url)) if !url.is_empty()) {
+        let url_key = if style == ConfigStyle::Gemini {
+            "httpUrl"
+        } else {
+            "url"
+        };
+        if !matches!(solo_server.get(url_key), Some(Value::String(url)) if !url.is_empty()) {
             return (
                 VerifyStatus::Invalid,
                 format!("`{root_key}.solo.url` must be a non-empty string"),
@@ -1471,53 +1323,6 @@ fn starts_with_bearer_scheme(text: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"bearer "))
 }
 
-fn apply_config(
-    path: &Path,
-    style: ConfigStyle,
-    transport: Transport,
-    url: &str,
-    data_dir: Option<&Path>,
-) -> Result<ApplyOutcome> {
-    let parent = config_parent(path)?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create config parent {}", display_path(parent)))?;
-
-    let existing = read_existing_config_for_apply(path, style)?;
-    let updated = preview_config(existing, style, transport, url, data_dir);
-    let backup_path = if path.exists() {
-        Some(create_backup(path)?)
-    } else {
-        None
-    };
-
-    write_json_atomic(path, &updated)?;
-
-    Ok(ApplyOutcome { backup_path })
-}
-
-fn apply_codex_config(
-    path: &Path,
-    transport: Transport,
-    url: &str,
-    data_dir: Option<&Path>,
-) -> Result<ApplyOutcome> {
-    let parent = config_parent(path)?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create config parent {}", display_path(parent)))?;
-
-    let existing = read_existing_codex_config_for_apply(path)?;
-    let updated = preview_codex_config(existing, transport, url, data_dir);
-    let backup_path = if path.exists() {
-        Some(create_backup(path)?)
-    } else {
-        None
-    };
-
-    write_toml_atomic(path, &updated)?;
-
-    Ok(ApplyOutcome { backup_path })
-}
-
 fn read_existing_config_for_apply(path: &Path, style: ConfigStyle) -> Result<Option<Value>> {
     if !path.exists() {
         return Ok(None);
@@ -1585,6 +1390,7 @@ fn create_backup(path: &Path) -> Result<PathBuf> {
         .create_new(true)
         .open(&backup_path)
         .with_context(|| format!("create backup {}", display_path(&backup_path)))?;
+    backup.set_permissions(source.metadata()?.permissions())?;
     io::copy(&mut source, &mut backup)
         .with_context(|| format!("copy backup {}", display_path(&backup_path)))?;
     backup
@@ -1618,85 +1424,17 @@ fn unique_backup_path(path: &Path) -> Result<PathBuf> {
     )
 }
 
-fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
-    let mut bytes = serde_json::to_vec_pretty(value).context("serialize setup-client config")?;
-    bytes.push(b'\n');
-    write_bytes_atomic(path, &bytes)
-}
-
-fn write_toml_atomic(path: &Path, doc: &DocumentMut) -> Result<()> {
-    let mut bytes = doc.to_string().into_bytes();
-    if !bytes.ends_with(b"\n") {
-        bytes.push(b'\n');
-    }
-    write_bytes_atomic(path, &bytes)
-}
-
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = config_parent(path)?;
-    let file_name = path.file_name().context("config path has no file name")?;
-    let temp_path = unique_temp_path(parent, file_name)?;
-    let mut temp_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .with_context(|| format!("create temp config {}", display_path(&temp_path)))?;
-    temp_file
-        .write_all(bytes)
-        .with_context(|| format!("write temp config {}", display_path(&temp_path)))?;
-    temp_file
-        .sync_all()
-        .with_context(|| format!("sync temp config {}", display_path(&temp_path)))?;
-    drop(temp_file);
-
-    match fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(first_err) if path.exists() => {
-            fs::remove_file(path)
-                .with_context(|| format!("remove existing config {}", display_path(path)))?;
-            if let Err(second_err) = fs::rename(&temp_path, path) {
-                let _ = fs::remove_file(&temp_path);
-                bail!(
-                    "replace {} via temp file failed after existing file removal: {second_err}; initial rename error: {first_err}",
-                    display_path(path)
-                );
-            }
-            Ok(())
-        }
-        Err(err) => {
-            let _ = fs::remove_file(&temp_path);
-            Err(err).with_context(|| {
-                format!(
-                    "rename temp config {} to {}",
-                    display_path(&temp_path),
-                    display_path(path)
-                )
-            })
-        }
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        temp.as_file().set_permissions(metadata.permissions())?;
     }
-}
-
-fn unique_temp_path(parent: &Path, file_name: &std::ffi::OsStr) -> Result<PathBuf> {
-    let file_name = file_name.to_string_lossy();
-    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
-
-    for suffix in 0..1000 {
-        let temp_name = format!(
-            ".{file_name}.solo-setup-client.{}.{}.{}.tmp",
-            process::id(),
-            timestamp,
-            suffix
-        );
-        let candidate = parent.join(temp_name);
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    bail!(
-        "could not choose a unique temp path in {}",
-        display_path(parent)
-    )
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path)
+        .map_err(|err| anyhow::anyhow!("replace {}: {}", display_path(path), err.error))?;
+    Ok(())
 }
 
 fn config_parent(path: &Path) -> Result<&Path> {
@@ -1776,6 +1514,13 @@ fn server_entry(
     url: &str,
     data_dir: Option<&Path>,
 ) -> Value {
+    if transport == Transport::Http {
+        match style {
+            ConfigStyle::NativeMcp => return json!({ "type": "http", "url": url }),
+            ConfigStyle::Gemini => return json!({ "httpUrl": url }),
+            _ => {}
+        }
+    }
     if style == ConfigStyle::VsCode {
         // VS Code reaches an HTTP server itself, and names its stdio servers
         // by type rather than by inference.
@@ -1847,6 +1592,18 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     match (client, os) {
+        (Client::ClaudeCode, _) => {
+            if let Some(dir) = env_var("CLAUDE_CONFIG_DIR") {
+                found_path(PathBuf::from(dir).join(".claude.json"))
+            } else {
+                home_dir(os, &env_var)
+                    .map(|p| found_path(p.join(".claude.json")))
+                    .unwrap_or_else(|| missing_env("HOME/USERPROFILE"))
+            }
+        }
+        (Client::Gemini, _) => home_dir(os, &env_var)
+            .map(|p| found_path(p.join(".gemini/settings.json")))
+            .unwrap_or_else(|| missing_env("HOME/USERPROFILE")),
         (Client::ClaudeDesktop, OperatingSystem::Windows) => env_var("APPDATA")
             .map(PathBuf::from)
             .map(|p| p.join("Claude").join("claude_desktop_config.json"))
@@ -1899,8 +1656,10 @@ where
             .map(|p| p.join(".config").join("Code").join("User").join("mcp.json"))
             .map(found_path)
             .unwrap_or_else(|| missing_env("HOME")),
-        (Client::Codex, _) => home_dir(os, &env_var)
-            .map(|p| p.join(".codex").join("config.toml"))
+        (Client::Codex, _) => env_var("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home_dir(os, &env_var).map(|p| p.join(".codex")))
+            .map(|p| p.join("config.toml"))
             .map(found_path)
             .unwrap_or_else(|| {
                 if os == OperatingSystem::Windows {
@@ -1981,26 +1740,6 @@ fn path_status(detection: &PathDetection) -> &'static str {
     }
 }
 
-fn describe_detection_path(detection: &PathDetection) -> String {
-    detection
-        .path
-        .as_deref()
-        .map(display_path)
-        .unwrap_or_else(|| {
-            detection
-                .note
-                .clone()
-                .unwrap_or_else(|| "unavailable".to_string())
-        })
-}
-
-fn print_toml_preview(doc: &DocumentMut) {
-    print!("{doc}");
-    if !doc.to_string().ends_with('\n') {
-        println!();
-    }
-}
-
 fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
@@ -2010,15 +1749,6 @@ impl Transport {
         match self {
             Self::Http => "http",
             Self::Stdio => "stdio",
-        }
-    }
-}
-
-impl CodexScope {
-    fn label(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
         }
     }
 }
@@ -2059,6 +1789,35 @@ mod tests {
             .map(|(k, v)| ((*k).to_string(), OsString::from(v)))
             .collect();
         move |key| map.get(key).cloned()
+    }
+
+    // Exercise the production transaction in the legacy preservation tests.
+    fn apply_test_config(
+        path: &Path,
+        client: Client,
+        transport: Transport,
+        url: &str,
+        data_dir: Option<&Path>,
+    ) -> Result<Option<PathBuf>> {
+        hooks::setup(
+            client,
+            path,
+            transport,
+            url,
+            data_dir,
+            &hooks::HookSetupArgs {
+                no_hooks: true,
+                hook_token_env: "SOLO_BEARER_TOKEN".into(),
+            },
+            true,
+            OperatingSystem::Linux,
+            &|_| None,
+        )?;
+        let prefix = format!("{}.bak.", path.file_name().unwrap().to_string_lossy());
+        Ok(fs::read_dir(path.parent().unwrap())?
+            .filter_map(|entry| entry.ok())
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|entry| entry.path()))
     }
 
     #[test]
@@ -2639,15 +2398,15 @@ url = "https://example.test/mcp"
             .join("Claude")
             .join("claude_desktop_config.json");
 
-        let outcome = apply_config(
+        let backup_path = apply_test_config(
             &path,
-            ConfigStyle::McpServers,
+            Client::ClaudeDesktop,
             Transport::Http,
             DEFAULT_MCP_URL,
             None,
         )?;
 
-        assert!(outcome.backup_path.is_none());
+        assert!(backup_path.is_none());
         let written = serde_json::from_str::<Value>(&fs::read_to_string(path)?)?;
         assert_eq!(
             written["mcpServers"]["solo"]["command"],
@@ -2679,15 +2438,15 @@ url = "https://example.test/mcp"
         });
         fs::write(&path, serde_json::to_string_pretty(&existing)?)?;
 
-        let outcome = apply_config(
+        let backup_path = apply_test_config(
             &path,
-            ConfigStyle::McpServers,
+            Client::ClaudeDesktop,
             Transport::Http,
             DEFAULT_MCP_URL,
             None,
         )?;
 
-        let backup_path = outcome.backup_path.expect("backup");
+        let backup_path = backup_path.expect("backup");
         assert!(backup_path.exists());
         let backup = serde_json::from_str::<Value>(&fs::read_to_string(backup_path)?)?;
         assert_eq!(
@@ -2729,9 +2488,10 @@ url = "http://old.example/mcp"
 "#,
         )?;
 
-        let outcome = apply_codex_config(&path, Transport::Http, DEFAULT_MCP_URL, None)?;
+        let backup_path =
+            apply_test_config(&path, Client::Codex, Transport::Http, DEFAULT_MCP_URL, None)?;
 
-        let backup_path = outcome.backup_path.expect("backup");
+        let backup_path = backup_path.expect("backup");
         assert!(backup_path.exists());
         let backup = fs::read_to_string(backup_path)?;
         assert!(backup.contains("http://old.example/mcp"));
@@ -2757,9 +2517,9 @@ url = "http://old.example/mcp"
         let path = temp.path().join("mcp.json");
         fs::write(&path, "[]")?;
 
-        let err = apply_config(
+        let err = apply_test_config(
             &path,
-            ConfigStyle::McpServers,
+            Client::ClaudeDesktop,
             Transport::Http,
             DEFAULT_MCP_URL,
             None,
@@ -2780,7 +2540,7 @@ url = "http://old.example/mcp"
         let path = temp.path().join("config.toml");
         fs::write(&path, "mcp_servers = \"not-a-table\"\n")?;
 
-        let err = apply_codex_config(&path, Transport::Http, DEFAULT_MCP_URL, None)
+        let err = apply_test_config(&path, Client::Codex, Transport::Http, DEFAULT_MCP_URL, None)
             .expect_err("non-table mcp_servers should be refused");
 
         assert!(err.to_string().contains("mcp_servers"), "{err:?}");
