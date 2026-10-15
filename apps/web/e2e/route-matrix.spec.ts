@@ -44,5 +44,39 @@ test('setup explains cross-client recall without claiming verified clients', asy
   await expect(page.getByText('verify in client')).toHaveCount(2);
   await expect(page.getByText(/Active sessions do not identify/)).toBeVisible();
   await expect(page.getByText(/Return to Codex and ask again/)).toBeVisible();
-  await page.screenshot({ path: process.env.SOLO_SETUP_SCREENSHOT || 'test-results/setup-guide.png', fullPage: true });
+  await page.screenshot({
+    path: process.env.SOLO_SETUP_SCREENSHOT || 'test-results/setup-guide.png',
+    fullPage: true,
+  });
+});
+
+test('connections explains managed memory hook coverage', async ({ page }, testInfo) => {
+  await page.goto('/#connections');
+  await expect(
+    page.getByText('Setup installs the Solo connection and supported memory hooks together.', {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Automatic recall at session start and before prompts', { exact: true }),
+  ).toHaveCount(3);
+  await expect(
+    page.getByText('Automatic recall after session start', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Automatic recall at session start in Local agent mode', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Memory tools; automatic hooks unavailable in ordinary chat', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy install', exact: true })).toHaveCount(6);
+  const clientSection = page
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: 'Connected Clients', exact: true }) });
+  await clientSection.scrollIntoViewIfNeeded();
+  const bounds = await clientSection.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+
+  await page.screenshot({ path: testInfo.outputPath('client-memory-hooks.png'), fullPage: true });
 });
