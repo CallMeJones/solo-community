@@ -140,7 +140,7 @@ fn coverage(client: Client, enabled: bool) -> &'static str {
     } else {
         match client {
             Client::Cursor => "session start (asynchronous); use MCP for topic-specific recall",
-            Client::Copilot => "session start in VS Code Local agent sessions",
+            Client::Copilot => "session start in VS Code Copilot and Local agent sessions",
             _ => "session start and before each user prompt",
         }
     }
@@ -161,7 +161,7 @@ fn activation_note(client: Client) -> &'static str {
             "Restart Cursor. Session-start context is asynchronous; it is not guaranteed to precede the first answer."
         }
         Client::Copilot => {
-            "Restart VS Code and use a Local agent session with hooks enabled. Other Copilot runtimes use different hook contracts."
+            "Restart VS Code and use a Copilot or Local agent session with hooks enabled. Review any client trust request."
         }
         Client::ClaudeDesktop => {
             "Restart Claude Desktop and enable Solo. Automatic context hooks are not available in ordinary chat."
@@ -342,9 +342,12 @@ fn merge_hooks(
     if !enabled && doc.get("hooks").is_none() {
         return Ok(());
     }
-    if enabled && client == Client::Cursor {
+    if enabled && matches!(client, Client::Cursor | Client::Copilot) {
         if doc.get("version").is_some_and(|v| v != &json!(1)) {
-            bail!("unsupported Cursor hooks version; no files changed");
+            bail!(
+                "unsupported {} hooks version; no files changed",
+                client.display_name()
+            );
         }
         doc["version"] = json!(1);
     }
@@ -673,6 +676,44 @@ mod tests {
                 assert_eq!(count, 1);
             }
         }
+    }
+
+    #[test]
+    fn copilot_setup_supports_agent_host_and_preserves_local_handlers() {
+        let mut doc = json!({"hooks":{"SessionStart":[{"type":"command","command":"user-hook"}]}});
+        merge_hooks(
+            &mut doc,
+            Client::Copilot,
+            HookClient::Copilot,
+            Path::new("/usr/bin/solo"),
+            DEFAULT_MCP_URL,
+            "TOKEN",
+            OperatingSystem::Linux,
+            true,
+        )
+        .unwrap();
+        assert_eq!(doc["version"], 1);
+        assert_eq!(doc["hooks"]["SessionStart"][0]["command"], "user-hook");
+        let handler = &doc["hooks"]["SessionStart"][1];
+        assert_eq!(handler["type"], "command");
+        assert_eq!(handler["timeout"], 10);
+        assert!(owned_handler(handler, Client::Copilot));
+        doc["version"] = json!(2);
+        let before = doc.clone();
+        assert!(
+            merge_hooks(
+                &mut doc,
+                Client::Copilot,
+                HookClient::Copilot,
+                Path::new("/usr/bin/solo"),
+                DEFAULT_MCP_URL,
+                "TOKEN",
+                OperatingSystem::Linux,
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(doc, before);
     }
 
     #[test]

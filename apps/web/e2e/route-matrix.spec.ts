@@ -64,7 +64,7 @@ test('connections explains managed memory hook coverage', async ({ page }, testI
     page.getByText('Automatic recall after session start', { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText('Automatic recall at session start in Local agent mode', { exact: true }),
+    page.getByText('Automatic recall at session start in Copilot and Local modes', { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText('Memory tools; automatic hooks unavailable in ordinary chat', { exact: true }),

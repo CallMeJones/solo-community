@@ -667,7 +667,7 @@ function ConnectionsView() {
     {
       target: 'copilot',
       label: 'GitHub Copilot (VS Code)',
-      recall: 'Automatic recall at session start in Local agent mode',
+      recall: 'Automatic recall at session start in Copilot and Local modes',
     },
     {
       target: 'claude-desktop',

@@ -23,10 +23,8 @@
 //! releases (`v0.12.0-test.13` vs `v0.12.0-linux-test.12`), so "latest" would
 //! routinely name a release carrying no asset for the running platform.
 //!
-//! Instead this walks the release list (GitHub returns it newest-first) and
-//! takes the first entry that actually carries an asset this platform can
-//! install. Ordering comes from GitHub rather than from parsing versions, which
-//! keeps the two tag schemes from having to agree on a comparison rule.
+//! Instead this filters the release list to packages this platform can install
+//! and orders their tags by numeric version, independent of GitHub's list order.
 //!
 //! ## Editions
 //!
@@ -828,22 +826,27 @@ mod tests {
         // points at one commit, so they share a creation date and GitHub
         // falls back to sorting the tag names as text -- which puts pro.10
         // below pro.2.
-        let releases = vec![
-            release(
-                "v0.13.0-pro.9",
-                &[("SoloSetup-pro-0.13.0-pro.9-x86_64.exe", 1)],
-            ),
-            release(
-                "v0.13.0-pro.2",
-                &[("SoloSetup-pro-0.13.0-pro.2-x86_64.exe", 1)],
-            ),
-            release(
-                "v0.13.0-pro.10",
-                &[("SoloSetup-pro-0.13.0-pro.10-x86_64.exe", 1)],
-            ),
-        ];
+        let releases: Vec<_> = [9, 2, 10]
+            .into_iter()
+            .map(|build| {
+                release(
+                    &format!("v0.13.0-pro.{build}"),
+                    &[
+                        (&format!("SoloSetup-pro-0.13.0-pro.{build}-x86_64.exe"), 1),
+                        (
+                            &format!("solo-pro-0.13.0-pro.{build}-ubuntu24.04-amd64.deb"),
+                            1,
+                        ),
+                    ],
+                )
+            })
+            .collect();
 
         let (available, _, _) = evaluate(&releases, UpdateChannel::Pro);
+        if !cfg!(any(target_os = "windows", target_os = "linux")) {
+            assert!(available.is_none(), "unsupported platforms offer nothing");
+            return;
+        }
         let offered = available.expect("a release should be offered");
         assert_eq!(
             offered.tag, "v0.13.0-pro.10",

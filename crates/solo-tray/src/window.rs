@@ -1893,7 +1893,7 @@ fn client_smoke_instruction(target: SetupTarget, project_root: Option<&Path>) ->
         }
         SetupTarget::ClaudeCode => "Restart Claude Code, run /mcp and inspect /hooks for Solo memory.".to_string(),
         SetupTarget::Gemini => "Restart Gemini CLI, run /mcp and /hooks to check Solo memory.".to_string(),
-        SetupTarget::Copilot => "Restart VS Code and check Solo tools and the GitHub Copilot Chat Hooks output in a Local agent session.".to_string(),
+        SetupTarget::Copilot => "Restart VS Code and check Solo tools and hook logs in a Copilot or Local agent session.".to_string(),
     }
 }
 

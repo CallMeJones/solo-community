@@ -27,12 +27,14 @@ workspace restrictions, organization policy, or settings that disable hooks.
 | Codex | `SessionStart`, `UserPromptSubmit` | MCP in `~/.codex/config.toml`; hooks in `~/.codex/hooks.json` |
 | Gemini CLI | `SessionStart`, `BeforeAgent` | MCP and hooks in `~/.gemini/settings.json` |
 | Cursor | `sessionStart` (asynchronous) | MCP in `~/.cursor/mcp.json`; hooks in `~/.cursor/hooks.json` |
-| GitHub Copilot in VS Code | `SessionStart`, Local agent runtime | MCP in VS Code's user `mcp.json`; hooks in `~/.copilot/hooks/solo-memory.json` |
+| GitHub Copilot in VS Code | `SessionStart`, Copilot (Agent Host) and Local runtimes | MCP in VS Code's user `mcp.json`; hooks in `~/.copilot/hooks/solo-memory.json` |
 | Ordinary Claude Desktop / web chat | No supported automatic context hook | Desktop MCP setup remains available with `claude-desktop`; web chat uses its connector |
 
 This targets client versions supporting the linked hook contracts below. Other
-Copilot runtimes (CLI, cloud agents, other editors) are not covered by the VS Code
-adapter. Cursor's session-start hook is asynchronous and may finish after the
+Copilot runtimes (cloud agents, other editors) are not covered by the VS Code
+setup. Its personal hook file also uses the Copilot CLI/SDK version-1 contract;
+Solo returns both the SDK and Local context fields for compatibility. Cursor's
+session-start hook is asynchronous and may finish after the
 first answer. Neither adapter claims prompt-time context delivery. Their
 assistants can use Solo MCP tools for later, topic-specific recall.
 
@@ -115,3 +117,4 @@ native memory remain under the user's control.
 - [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/)
 - [Cursor hooks](https://cursor.com/docs/hooks)
 - [VS Code agent hooks](https://code.visualstudio.com/docs/agent-customization/hooks)
+- [Copilot SDK/CLI hook contract](https://docs.github.com/en/copilot/reference/hooks-reference)

@@ -378,6 +378,12 @@ fn render_context(bundle: &Value) -> String {
 fn hook_output(client: HookClient, event: HookEvent, context: &str) -> Value {
     if client == HookClient::Cursor {
         json!({"additional_context": context})
+    } else if client == HookClient::Copilot {
+        // Agent Host (Copilot SDK) consumes the top-level field, while VS Code
+        // Local consumes hookSpecificOutput. Both ignore the other's field.
+        json!({"additionalContext": context, "hookSpecificOutput": {
+            "hookEventName": "SessionStart", "additionalContext": context
+        }})
     } else {
         json!({"hookSpecificOutput": {
             "hookEventName": client.event_name(event).unwrap_or("SessionStart"),
@@ -454,6 +460,24 @@ mod tests {
         assert_eq!(
             hook_output(HookClient::Cursor, HookEvent::SessionStart, "hi"),
             json!({"additional_context":"hi"})
+        );
+    }
+
+    #[test]
+    fn copilot_delivers_context_to_both_vscode_harnesses() {
+        let output = hook_output(
+            HookClient::Copilot,
+            HookEvent::SessionStart,
+            "confirmed memory",
+        );
+        assert_eq!(output["additionalContext"], "confirmed memory");
+        assert_eq!(
+            output["hookSpecificOutput"]["additionalContext"],
+            "confirmed memory"
+        );
+        assert_eq!(
+            output["hookSpecificOutput"]["hookEventName"],
+            "SessionStart"
         );
     }
 
