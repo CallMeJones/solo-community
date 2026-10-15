@@ -1739,152 +1739,102 @@ impl ExpectedToolProfileRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SetupTarget {
     ClaudeDesktop,
+    ClaudeCode,
     Cursor,
     CodexUser,
     CodexProject,
+    Copilot,
+    Gemini,
 }
 
 impl SetupTarget {
-    const ALL: [Self; 4] = [
-        Self::ClaudeDesktop,
-        Self::Cursor,
+    const ALL: [Self; 7] = [
+        Self::ClaudeCode,
         Self::CodexUser,
         Self::CodexProject,
+        Self::Cursor,
+        Self::Copilot,
+        Self::Gemini,
+        Self::ClaudeDesktop,
     ];
-
     fn label(self) -> &'static str {
         match self {
             Self::ClaudeDesktop => "Claude Desktop",
+            Self::ClaudeCode => "Claude Code",
             Self::Cursor => "Cursor",
             Self::CodexUser => "Codex (user)",
             Self::CodexProject => "Codex (project)",
+            Self::Copilot => "GitHub Copilot (VS Code)",
+            Self::Gemini => "Gemini CLI",
         }
     }
-
     fn key(self) -> &'static str {
         match self {
             Self::ClaudeDesktop => "claude-desktop",
+            Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
             Self::CodexUser => "codex-user",
             Self::CodexProject => "codex-project",
+            Self::Copilot => "copilot",
+            Self::Gemini => "gemini",
         }
     }
-
+    fn cli_name(self) -> &'static str {
+        match self {
+            Self::CodexUser | Self::CodexProject => "codex",
+            _ => self.key(),
+        }
+    }
     fn supports_automated_client_check(self) -> bool {
         matches!(self, Self::CodexUser | Self::CodexProject)
     }
-
-    fn apply_args(self, mcp_url: &str, project_root: Option<&Path>) -> Vec<std::ffi::OsString> {
-        let mut args = match self {
-            Self::ClaudeDesktop => os_args([
-                "setup-client",
-                "claude-desktop",
-                "--transport",
-                "http",
-                "--url",
-                mcp_url,
-                "--apply",
-            ]),
-            Self::Cursor => os_args([
-                "setup-client",
-                "cursor",
-                "--transport",
-                "http",
-                "--url",
-                mcp_url,
-                "--apply",
-            ]),
-            Self::CodexUser | Self::CodexProject => os_args([
-                "setup-client",
-                "codex",
+    fn append_scope(self, args: &mut Vec<std::ffi::OsString>, project_root: Option<&Path>) {
+        if matches!(self, Self::CodexUser | Self::CodexProject) {
+            args.extend(os_args([
                 "--scope",
                 if self == Self::CodexProject {
                     "project"
                 } else {
                     "user"
                 },
-                "--transport",
-                "http",
-                "--url",
-                mcp_url,
-                "--apply",
-            ]),
-        };
+            ]));
+        }
         if self == Self::CodexProject
             && let Some(root) = project_root
         {
-            args.push("--project-dir".into());
-            args.push(root.into());
+            args.extend(["--project-dir".into(), root.into()]);
+        }
+    }
+    fn apply_args(self, mcp_url: &str, project_root: Option<&Path>) -> Vec<std::ffi::OsString> {
+        let mut args = os_args(["setup-client", self.cli_name()]);
+        self.append_scope(&mut args, None);
+        args.extend(os_args([
+            "--transport",
+            "http",
+            "--url",
+            mcp_url,
+            "--apply",
+        ]));
+        if self == Self::CodexProject
+            && let Some(root) = project_root
+        {
+            args.extend(["--project-dir".into(), root.into()]);
         }
         args
     }
-
     fn verify_args(self, project_root: Option<&Path>) -> Vec<std::ffi::OsString> {
-        let mut args = match self {
-            Self::ClaudeDesktop => os_args(["setup-client", "verify", "claude-desktop"]),
-            Self::Cursor => os_args(["setup-client", "verify", "cursor"]),
-            Self::CodexUser => os_args(["setup-client", "verify", "codex", "--scope", "user"]),
-            Self::CodexProject => {
-                os_args(["setup-client", "verify", "codex", "--scope", "project"])
-            }
-        };
-        if self == Self::CodexProject
-            && let Some(root) = project_root
-        {
-            args.push("--project-dir".into());
-            args.push(root.into());
-        }
+        let mut args = os_args(["setup-client", "verify", self.cli_name()]);
+        self.append_scope(&mut args, project_root);
         args
     }
-
     fn doctor_args(self, mcp_url: &str, project_root: Option<&Path>) -> Vec<std::ffi::OsString> {
-        let mut args = match self {
-            Self::ClaudeDesktop => os_args([
-                "setup-client",
-                "doctor",
-                "claude-desktop",
-                "--url",
-                mcp_url,
-                "--format",
-                "json",
-            ]),
-            Self::Cursor => os_args([
-                "setup-client",
-                "doctor",
-                "cursor",
-                "--url",
-                mcp_url,
-                "--format",
-                "json",
-            ]),
-            Self::CodexUser => os_args([
-                "setup-client",
-                "doctor",
-                "codex",
-                "--scope",
-                "user",
-                "--url",
-                mcp_url,
-                "--format",
-                "json",
-            ]),
-            Self::CodexProject => os_args([
-                "setup-client",
-                "doctor",
-                "codex",
-                "--scope",
-                "project",
-                "--url",
-                mcp_url,
-                "--format",
-                "json",
-            ]),
-        };
+        let mut args = os_args(["setup-client", "doctor", self.cli_name()]);
+        self.append_scope(&mut args, None);
+        args.extend(os_args(["--url", mcp_url, "--format", "json"]));
         if self == Self::CodexProject
             && let Some(root) = project_root
         {
-            args.push("--project-dir".into());
-            args.push(root.into());
+            args.extend(["--project-dir".into(), root.into()]);
         }
         args
     }
@@ -1910,7 +1860,7 @@ fn policy_pack_rows() -> Vec<PolicyPackRow> {
 }
 
 fn memory_library_agents_description() -> &'static str {
-    "Claude, Cursor, and Codex use the Community Memory Library."
+    "Claude, Codex, Cursor, Copilot, and Gemini use the Community Memory Library."
 }
 
 fn daemon_ready_clients_description() -> &'static str {
@@ -1919,7 +1869,8 @@ fn daemon_ready_clients_description() -> &'static str {
 
 fn policy_text_for_setup_target(target: SetupTarget) -> &'static str {
     match target {
-        SetupTarget::ClaudeDesktop => POLICY_CLAUDE_DESKTOP,
+        SetupTarget::ClaudeDesktop | SetupTarget::ClaudeCode => POLICY_CLAUDE_DESKTOP,
+        SetupTarget::Gemini | SetupTarget::Copilot => POLICY_GENERIC_MCP_AGENT,
         SetupTarget::Cursor => POLICY_CURSOR,
         SetupTarget::CodexUser | SetupTarget::CodexProject => POLICY_CODEX,
     }
@@ -1938,8 +1889,11 @@ fn client_smoke_instruction(target: SetupTarget, project_root: Option<&Path>) ->
             "Restart Claude Desktop, open MCP tools, and confirm `solo` is listed.".to_string()
         }
         SetupTarget::Cursor => {
-            "Open Cursor MCP settings/tools and confirm `solo` is listed.".to_string()
+            "Restart Cursor and confirm Solo is listed. Session-start recall is asynchronous.".to_string()
         }
+        SetupTarget::ClaudeCode => "Restart Claude Code, run /mcp and inspect /hooks for Solo memory.".to_string(),
+        SetupTarget::Gemini => "Restart Gemini CLI, run /mcp and /hooks to check Solo memory.".to_string(),
+        SetupTarget::Copilot => "Restart VS Code and check Solo tools and hook logs in a Copilot or Local agent session.".to_string(),
     }
 }
 
@@ -10393,6 +10347,27 @@ where
     E: Fn(&Path) -> bool,
 {
     match target {
+        SetupTarget::ClaudeCode | SetupTarget::Gemini | SetupTarget::Copilot => {
+            let name = match target {
+                SetupTarget::ClaudeCode => "claude",
+                SetupTarget::Gemini => "gemini",
+                _ => "code",
+            };
+            match which_on_path(name, os, env_var, exists) {
+                Some(path) => ToolInstallDetection {
+                    found: true,
+                    detail: format!(
+                        "{} at {}; confirm the agent is enabled in its app",
+                        target.label(),
+                        display_path(&path)
+                    ),
+                },
+                None => ToolInstallDetection {
+                    found: false,
+                    detail: format!("{name} was not found on PATH"),
+                },
+            }
+        }
         // Codex is a CLI, so "installed" means reachable on PATH rather than
         // sitting at a known location.
         SetupTarget::CodexUser | SetupTarget::CodexProject => {
@@ -10525,15 +10500,44 @@ where
 {
     match target {
         SetupTarget::ClaudeDesktop => detect_claude_config_path_for_os(os, env_var),
+        SetupTarget::ClaudeCode => {
+            let base = env_var("CLAUDE_CONFIG_DIR")
+                .map(PathBuf::from)
+                .or_else(|| home_dir_for_os(os, env_var));
+            ToolPathDetection {
+                path: base.map(|p| p.join(".claude.json")),
+                note: None,
+            }
+        }
+        SetupTarget::Gemini => ToolPathDetection {
+            path: home_dir_for_os(os, env_var).map(|p| p.join(".gemini/settings.json")),
+            note: None,
+        },
+        SetupTarget::Copilot => {
+            let base = match os {
+                "windows" => env_var("APPDATA")
+                    .map(PathBuf::from)
+                    .map(|p| p.join("Code/User")),
+                "macos" => home_dir_for_os(os, env_var)
+                    .map(|p| p.join("Library/Application Support/Code/User")),
+                _ => home_dir_for_os(os, env_var).map(|p| p.join(".config/Code/User")),
+            };
+            ToolPathDetection {
+                path: base.map(|p| p.join("mcp.json")),
+                note: None,
+            }
+        }
         SetupTarget::Cursor => home_dir_for_os(os, env_var)
             .map(|home| ToolPathDetection {
                 path: Some(home.join(".cursor").join("mcp.json")),
                 note: None,
             })
             .unwrap_or_else(|| missing_home_detection_for_os(os)),
-        SetupTarget::CodexUser => home_dir_for_os(os, env_var)
+        SetupTarget::CodexUser => env_var("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home_dir_for_os(os, env_var).map(|p| p.join(".codex")))
             .map(|home| ToolPathDetection {
-                path: Some(home.join(".codex").join("config.toml")),
+                path: Some(home.join("config.toml")),
                 note: None,
             })
             .unwrap_or_else(|| missing_home_detection_for_os(os)),
@@ -10663,12 +10667,17 @@ fn inspect_json_tool_value(
             "config root is not a JSON object".to_string(),
         );
     };
-    let Some(mcp_servers) = root.get("mcpServers").and_then(|value| value.as_object()) else {
+    let key = if root.contains_key("servers") {
+        "servers"
+    } else {
+        "mcpServers"
+    };
+    let Some(mcp_servers) = root.get(key).and_then(|value| value.as_object()) else {
         return (
             ToolConfigState::NeedsSetup,
             ToolTransport::None,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo` is not configured".to_string(),
+            format!("`{key}.solo` is not configured"),
         );
     };
     let Some(solo) = mcp_servers.get("solo") else {
@@ -10676,7 +10685,7 @@ fn inspect_json_tool_value(
             ToolConfigState::NeedsSetup,
             ToolTransport::None,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo` is not configured".to_string(),
+            format!("`{key}.solo` is not configured"),
         );
     };
     let Some(server) = solo.as_object() else {
@@ -10684,7 +10693,7 @@ fn inspect_json_tool_value(
             ToolConfigState::NeedsRepair,
             ToolTransport::Unknown,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo` is not a JSON object".to_string(),
+            format!("`{key}.solo` is not a JSON object"),
         );
     };
     if json_contains_passphrase_reference(solo) {
@@ -10692,7 +10701,7 @@ fn inspect_json_tool_value(
             ToolConfigState::NeedsRepair,
             ToolTransport::Unknown,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo` contains SOLO_PASSPHRASE".to_string(),
+            format!("`{key}.solo` contains SOLO_PASSPHRASE"),
         );
     }
     if json_contains_bearer_authorization_reference(solo) {
@@ -10700,8 +10709,31 @@ fn inspect_json_tool_value(
             ToolConfigState::NeedsRepair,
             ToolTransport::Unknown,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo` contains an Authorization bearer token".to_string(),
+            format!("`{key}.solo` contains an Authorization bearer token"),
         );
+    }
+    if let Some(url) = server.get("httpUrl").or_else(|| server.get("url")) {
+        let valid = url
+            .as_str()
+            .and_then(|s| reqwest::Url::parse(s).ok())
+            .is_some_and(|url| {
+                matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+            });
+        return if valid {
+            (
+                ToolConfigState::Verified,
+                ToolTransport::Http,
+                ToolProfileRoute::DaemonDefault,
+                format!("`{key}.solo` is configured"),
+            )
+        } else {
+            (
+                ToolConfigState::NeedsRepair,
+                ToolTransport::Unknown,
+                ToolProfileRoute::Unknown,
+                format!("`{key}.solo` needs a valid HTTP(S) URL"),
+            )
+        };
     }
     let command = server
         .get("command")
@@ -10717,13 +10749,13 @@ fn inspect_json_tool_value(
             ToolConfigState::NeedsRepair,
             ToolTransport::Unknown,
             ToolProfileRoute::Unknown,
-            "`mcpServers.solo.command` and `args` must be configured".to_string(),
+            format!("`{key}.solo.command` and `args` must be configured"),
         );
     }
 
     let transport = classify_json_tool_transport(command, &args);
     let profile_route = json_tool_profile_route(command, &args);
-    let detail = tool_config_detail("`mcpServers.solo` is configured", &profile_route);
+    let detail = tool_config_detail(&format!("`{key}.solo` is configured"), &profile_route);
     (ToolConfigState::Verified, transport, profile_route, detail)
 }
 
@@ -11802,9 +11834,12 @@ fn workspace_access_scope_allows_project(scope: WorkspaceAccessScope) -> bool {
 fn workspace_access_scope_allows_target(scope: WorkspaceAccessScope, target: SetupTarget) -> bool {
     match target {
         SetupTarget::CodexProject => workspace_access_scope_allows_project(scope),
-        SetupTarget::CodexUser | SetupTarget::ClaudeDesktop | SetupTarget::Cursor => {
-            workspace_access_scope_allows_global(scope)
-        }
+        SetupTarget::CodexUser
+        | SetupTarget::ClaudeDesktop
+        | SetupTarget::Cursor
+        | SetupTarget::ClaudeCode
+        | SetupTarget::Gemini
+        | SetupTarget::Copilot => workspace_access_scope_allows_global(scope),
     }
 }
 
@@ -11867,9 +11902,12 @@ fn workspace_scope_target_status(
 ) -> (String, StateTone, String) {
     match target {
         SetupTarget::CodexProject => workspace_scope_project_status(scope, snapshot),
-        SetupTarget::CodexUser | SetupTarget::ClaudeDesktop | SetupTarget::Cursor => {
-            workspace_scope_global_status(scope)
-        }
+        SetupTarget::CodexUser
+        | SetupTarget::ClaudeDesktop
+        | SetupTarget::Cursor
+        | SetupTarget::ClaudeCode
+        | SetupTarget::Gemini
+        | SetupTarget::Copilot => workspace_scope_global_status(scope),
     }
 }
 
@@ -14186,6 +14224,10 @@ fn tool_client_load_status(
             StateTone::Warn,
             "Restart Claude Desktop, then confirm `solo` appears in the client's tool list. Solo cannot prove that from the tray yet.".to_string(),
         ),
+        SetupTarget::ClaudeCode | SetupTarget::Gemini | SetupTarget::Copilot => (
+            "Restart needed".to_string(), StateTone::Warn,
+            "Restart the client, review any hook trust request, and confirm Solo memory appears in the client hook log. Config installation is not proof that a hook ran.".to_string(),
+        ),
         SetupTarget::Cursor => (
             "Manual smoke".to_string(),
             StateTone::Warn,
@@ -15472,9 +15514,11 @@ fn client_check_command(
                 cwd: Some(root),
             })
         }
-        SetupTarget::ClaudeDesktop | SetupTarget::Cursor => {
-            Err("this client check is manual in Solo for now".to_string())
-        }
+        SetupTarget::ClaudeDesktop
+        | SetupTarget::Cursor
+        | SetupTarget::ClaudeCode
+        | SetupTarget::Gemini
+        | SetupTarget::Copilot => Err("this client check is manual in Solo for now".to_string()),
     }
 }
 
@@ -15530,6 +15574,9 @@ fn client_check_instruction_label(target: SetupTarget) -> &'static str {
         SetupTarget::CodexUser | SetupTarget::CodexProject => "codex mcp list",
         SetupTarget::ClaudeDesktop => "Claude Desktop MCP tools",
         SetupTarget::Cursor => "Cursor MCP tools",
+        SetupTarget::ClaudeCode => "Claude Code MCP tools and hooks",
+        SetupTarget::Gemini => "Gemini CLI MCP tools and hooks",
+        SetupTarget::Copilot => "VS Code Copilot MCP tools and hooks",
     }
 }
 
@@ -18342,6 +18389,29 @@ fn pulse_factor(started_at: std::time::Instant, health: DaemonHealth) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_clients_use_their_http_config_and_setup_routes() {
+        for config in [
+            serde_json::json!({"mcpServers":{"solo":{"type":"http","url":"http://localhost:17821/mcp"}}}),
+            serde_json::json!({"mcpServers":{"solo":{"httpUrl":"http://localhost:17821/mcp"}}}),
+            serde_json::json!({"servers":{"solo":{"type":"http","url":"http://localhost:17821/mcp"}}}),
+        ] {
+            let (state, transport, _, _) = inspect_json_tool_value(&config);
+            assert_eq!(state, ToolConfigState::Verified);
+            assert_eq!(transport, ToolTransport::Http);
+        }
+        for (target, name) in [
+            (SetupTarget::ClaudeCode, "claude-code"),
+            (SetupTarget::Gemini, "gemini"),
+            (SetupTarget::Copilot, "copilot"),
+        ] {
+            let args = arg_strings(target.apply_args("http://localhost:17821/mcp", None));
+            assert_eq!(args[1], name);
+            assert!(args.contains(&"--apply".to_string()));
+            assert!(!target.supports_automated_client_check());
+        }
+    }
 
     #[test]
     fn back_retraces_the_click_path() {

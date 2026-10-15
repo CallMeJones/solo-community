@@ -70,7 +70,10 @@ The daemon owns the data dir for as long as it runs. Stop it with
 `Ctrl+C`; the snapshot saves and the lock releases automatically.
 
 Solo can also detect the local config path and manage client config for
-Claude Desktop, Cursor, and Codex. Dry-run is the default. `--apply`
+Claude Code, Codex, Gemini CLI, Cursor, VS Code Copilot, and Claude Desktop.
+Supported recall hooks are installed with the connection; see
+[automatic memory hooks](../../client-memory-hooks.md) for coverage and trust
+requirements. Dry-run is the default. `--apply`
 creates parent directories, preserves existing top-level keys and other
 MCP server entries, makes a timestamped backup when the config file
 already exists, then writes through a temporary file before renaming it
@@ -79,6 +82,9 @@ plaintext bearer-token headers.
 
 ```bash
 solo setup-client list
+solo setup-client claude-code --apply
+solo setup-client gemini --apply
+solo setup-client copilot --apply
 solo setup-client claude-desktop --dry-run
 solo setup-client cursor --dry-run
 solo setup-client codex --scope user --dry-run
@@ -93,14 +99,14 @@ solo setup-client doctor
 Every client addresses Community's one Memory Library. Use separate Solo data
 directories and daemon ports when a workflow requires hard isolation.
 
-`solo setup-client verify [claude-desktop|cursor|codex]` checks the local
+`solo setup-client verify [claude-code|codex|gemini|cursor|copilot|claude-desktop]` checks the local
 JSON or TOML shape and confirms the Solo MCP server entry is present
 without probing the live daemon. It also flags `SOLO_PASSPHRASE` and
 `Authorization: Bearer ...` values in client config as plaintext secret
 leaks. For Codex project scope, use `solo setup-client verify codex
 --scope project`.
 
-`solo setup-client doctor [claude-desktop|cursor|codex]` combines the
+`solo setup-client doctor [claude-code|codex|gemini|cursor|copilot|claude-desktop]` combines the
 local config check with a short `/mcp` reachability probe and a safe
 `tools/list` call when the endpoint is reachable. It reports missing
 config files, malformed JSON/TOML, whether the Solo server entry is
@@ -137,24 +143,16 @@ that separates endpoint checks from app-load checks; pass
 ### Claude Code (native HTTP MCP)
 
 ```bash
-claude mcp add --transport http --scope user \
-  solo http://127.0.0.1:17821/mcp
+solo setup-client claude-code --apply
+solo setup-client verify claude-code
 ```
 
-Put `--transport` and `--scope` before the server name. Use `--scope user`
-for a private cross-project Solo route, or `--scope project` when the MCP
-entry should live in that project's `.mcp.json`.
+Setup creates the user MCP connection and automatic session-start and prompt
+recall hooks. Restart Claude Code after installation and review any trust request.
+Use `--url` for a different daemon endpoint. For authenticated endpoints, see
+[hook authentication and transport](../../client-memory-hooks.md#authentication-and-transport).
+The hook does not inherit the assistant's separate OAuth session.
 
-If you started the daemon with a bearer token (`--bearer-token-file`),
-append the authorization header after the server URL:
-
-```bash
---header "Authorization: Bearer <your-token>"
-```
-
-Use a bearer token any time the daemon is bound to a non-loopback
-interface. This stores the token in the client config; `solo
-setup-client verify` will report that as a plaintext secret leak.
 
 ### Codex CLI / IDE (native HTTP MCP)
 

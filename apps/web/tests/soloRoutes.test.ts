@@ -14,6 +14,15 @@ describe('solo route helpers', () => {
     expect(mcpEndpoint('http://127.0.0.1:17821/desktop/')).toBe('http://127.0.0.1:17821/mcp');
   });
 
+  it.each(['claude-code', 'gemini', 'cursor', 'copilot'] as const)(
+    'installs %s with its managed hooks',
+    (target) => {
+      expect(setupClientHttpApplyCommand(target, 'http://localhost:17821')).toBe(
+        `solo setup-client ${target} --transport http --url http://localhost:17821/mcp --apply`,
+      );
+    },
+  );
+
   it('builds selector-free Community setup strings', () => {
     expect(codexHttpSetupDryRunCommand('http://127.0.0.1:17821')).toBe(
       'solo setup-client codex --scope user --transport http --url http://127.0.0.1:17821/mcp --dry-run',
@@ -34,7 +43,7 @@ describe('solo route helpers', () => {
       'solo setup-client doctor codex --scope user --url http://127.0.0.1:17821/mcp',
     );
     expect(claudeCodeHttpAddCommand('http://127.0.0.1:17821')).toBe(
-      'claude mcp add --transport http --scope user solo http://127.0.0.1:17821/mcp',
+      'solo setup-client claude-code --transport http --url http://127.0.0.1:17821/mcp --apply',
     );
   });
 });

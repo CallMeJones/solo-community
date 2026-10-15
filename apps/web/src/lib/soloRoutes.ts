@@ -6,7 +6,13 @@ export function mcpEndpoint(apiUrl: string): string {
   }
 }
 
-export type SetupClientTarget = 'codex' | 'claude-desktop' | 'cursor' | 'copilot';
+export type SetupClientTarget =
+  | 'codex'
+  | 'claude-code'
+  | 'claude-desktop'
+  | 'cursor'
+  | 'copilot'
+  | 'gemini';
 
 export function setupClientHttpCommand(
   target: SetupClientTarget,
@@ -33,17 +39,7 @@ export function codexHttpSetupDryRunCommand(apiUrl: string): string {
 }
 
 export function claudeCodeHttpAddCommand(apiUrl: string): string {
-  return [
-    'claude',
-    'mcp',
-    'add',
-    '--transport',
-    'http',
-    '--scope',
-    'user',
-    'solo',
-    mcpEndpoint(apiUrl),
-  ].join(' ');
+  return setupClientHttpApplyCommand('claude-code', apiUrl);
 }
 
 export function setupClientDoctorCommand(apiUrl: string, target?: SetupClientTarget): string {

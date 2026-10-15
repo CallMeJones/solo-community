@@ -647,11 +647,33 @@ function ConnectionsView() {
   const mcpProbe = useMutation({
     mutationFn: () => probeMcpTools(),
   });
-  const setupTargets: Array<{ target: SetupClientTarget; label: string }> = [
-    { target: 'codex', label: 'Codex' },
-    { target: 'claude-desktop', label: 'Claude Desktop' },
-    { target: 'cursor', label: 'Cursor' },
-    { target: 'copilot', label: 'GitHub Copilot' },
+  const setupTargets: Array<{ target: SetupClientTarget; label: string; recall: string }> = [
+    {
+      target: 'claude-code',
+      label: 'Claude Code',
+      recall: 'Automatic recall at session start and before prompts',
+    },
+    {
+      target: 'codex',
+      label: 'Codex',
+      recall: 'Automatic recall at session start and before prompts',
+    },
+    {
+      target: 'gemini',
+      label: 'Gemini CLI',
+      recall: 'Automatic recall at session start and before prompts',
+    },
+    { target: 'cursor', label: 'Cursor', recall: 'Automatic recall after session start' },
+    {
+      target: 'copilot',
+      label: 'GitHub Copilot (VS Code)',
+      recall: 'Automatic recall at session start in Copilot and Local modes',
+    },
+    {
+      target: 'claude-desktop',
+      label: 'Claude Desktop',
+      recall: 'Memory tools; automatic hooks unavailable in ordinary chat',
+    },
   ];
 
   return (
@@ -672,7 +694,7 @@ function ConnectionsView() {
         />
       </div>
 
-      <div className="mt-5 grid gap-4 xl:grid-cols-2">
+      <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
           <h2 className="text-sm font-semibold text-slate-100">Solo MCP</h2>
           <dl className="mt-4 space-y-3 text-sm">
@@ -680,7 +702,7 @@ function ConnectionsView() {
             <StatusRow label="Bearer auth" value={bearerToken ? 'stored' : 'empty'} />
             <StatusRow label="Daemon" value={solo.data?.version ?? statusLabel(solo.status)} />
             <StatusRow label="Doctor command" value={doctorCommand} />
-            <StatusRow label="Claude Code add" value={claudeCodeCommand} />
+            <StatusRow label="Claude Code setup" value={claudeCodeCommand} />
             <StatusRow label="Daemon MCP" value={mcpProbeStatus(mcpProbe)} />
             <StatusRow label="Read-only call" value={mcpReadOnlyCallStatus(mcpProbe.data)} />
             {mcpProbe.data && (
@@ -717,8 +739,12 @@ function ConnectionsView() {
 
         <section className="rounded-lg border border-slate-800 bg-slate-900/45 p-4">
           <h2 className="text-sm font-semibold text-slate-100">Connected Clients</h2>
+          <p className="mt-2 text-xs text-slate-400">
+            Setup installs the Solo connection and supported memory hooks together. Restart your
+            assistant afterwards and approve any hook trust request it shows.
+          </p>
           <div className="mt-4 space-y-3">
-            {setupTargets.map(({ target, label }) => {
+            {setupTargets.map(({ target, label, recall }) => {
               const dryRunCommand = setupClientHttpDryRunCommand(target, apiUrl);
               const applyCommand = setupClientHttpApplyCommand(target, apiUrl);
               const targetDoctorCommand = setupClientDoctorCommand(apiUrl, target);
@@ -729,11 +755,7 @@ function ConnectionsView() {
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-slate-100">{label}</div>
-                    <div className="truncate font-mono text-xs text-slate-400">
-                      {target === 'codex' || target === 'copilot'
-                        ? 'native HTTP MCP'
-                        : 'HTTP MCP config'}
-                    </div>
+                    <div className="text-xs text-slate-400">{recall}</div>
                   </div>
                   <div className="flex shrink-0 flex-wrap justify-end gap-2">
                     <CopyButton label="Copy dry-run" value={dryRunCommand} />
@@ -907,9 +929,9 @@ function SettingsView({
 
           <h3 className="mt-6 text-sm font-semibold text-slate-100">Graph quality</h3>
           <p className="mt-1 text-xs text-slate-400">
-            How much work the memory viewport does to draw itself. Optimized is tuned to stay
-            smooth everywhere; Advanced spends more on a machine that has it. Neither changes
-            what your memories are or how you move through them.
+            How much work the memory viewport does to draw itself. Optimized is tuned to stay smooth
+            everywhere; Advanced spends more on a machine that has it. Neither changes what your
+            memories are or how you move through them.
           </p>
           <GraphQualityPicker />
         </section>

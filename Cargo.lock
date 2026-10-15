@@ -6153,6 +6153,7 @@ name = "solo-cli"
 version = "0.12.11"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "dirs 5.0.1",
