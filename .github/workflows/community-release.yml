@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: community-multi-platform-${{ github.ref }}
+  group: community-multi-platform-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -90,12 +90,23 @@ jobs:
             libayatana-appindicator3-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev \
             libxkbcommon-dev libxkbcommon-x11-0 xvfb dbus-x11
+      - name: Build pinned Intel Mac embedding runtime
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: bash scripts/build_intel_macos_runtime.sh
       - name: Cache Cargo outputs
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: community-release-${{ matrix.target }}-rust-1.95.0
       - name: Build native CLI and desktop
         run: cargo build --locked --release --target ${{ matrix.target }} -p solo-cli -p solo-tray
+      - name: Bundle Intel Mac runtime and notices
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -L "$ORT_LIB_LOCATION"/*.dylib "target/$TARGET/release/"
+          cp "$SOLO_ONNX_SOURCE/LICENSE" "target/$TARGET/release/onnxruntime-LICENSE.txt"
+          cp "$SOLO_ONNX_SOURCE/ThirdPartyNotices.txt" "target/$TARGET/release/onnxruntime-NOTICES.txt"
       - name: Fetch pinned offline model (Unix)
         if: runner.os != 'Windows'
         run: bash scripts/fetch_embedding_model.sh "target/$TARGET/release/models/all-MiniLM-L6-v2"
