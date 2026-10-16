@@ -108,6 +108,14 @@ ollama pull qwen3:8b
 solo daemon --http-port 17821 --consolidate-interval-secs 3600 --ollama-model qwen3:8b
 ```
 
+### Windows, Linux and Mac preview
+
+The [0.12.12 cross-platform preview](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.12-community.1)
+provides Windows Setup, Ubuntu 24.04 DEB, and separate Apple Silicon and Intel
+Mac app downloads, plus the Codex/Claude Code plugin ZIP. These are prerelease
+builds; [installation instructions and known limitations](docs/releases/v0.12.12.md)
+include the current contradiction-detection gap and signing status.
+
 ### Ubuntu 24.04 installer (recommended for Linux Desktop)
 
 The latest published Ubuntu package is **0.12.3**. Download
