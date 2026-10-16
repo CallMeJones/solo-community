@@ -4,6 +4,7 @@
 
 # User Guide
 
+- [Downloads and Supported Platforms](./downloads.md)
 - [Getting Started](./getting-started.md)
 - [Automatic Memory Recall](./automatic-memory-recall.md)
 - [Assistant Plugins](./agent-plugins.md)

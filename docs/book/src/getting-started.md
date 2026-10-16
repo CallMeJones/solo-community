@@ -1,7 +1,11 @@
 # Getting Started
 
-This path gets a new Windows or Ubuntu user from installation to verified
-semantic recall without requiring Ollama or an API key.
+This path gets a new Windows, Ubuntu or Mac user from installation to verified
+semantic recall without requiring Ollama or an API key. The
+[0.12.12 Community preview](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.12-community.1)
+includes all four native builds. Start with
+[Downloads and Supported Platforms](./downloads.md) to match your OS and
+processor, including Intel versus Apple Silicon Macs.
 
 **Already using Solo?** Follow the
 [upgrade and client setup checklist](./automatic-memory-recall.md#upgrade-an-existing-connection).
@@ -12,8 +16,9 @@ recall hooks to an existing connection.
 
 ### Windows
 
-Download the latest Windows installer from the
-[Solo Community releases](https://github.com/CallMeJones/solo-community/releases/latest).
+Download [Windows Setup for the 0.12.12 preview](https://github.com/CallMeJones/solo-community/releases/download/v0.12.12-community.1/SoloSetup-0.12.12-x86_64.exe),
+or select the [latest stable release](https://github.com/CallMeJones/solo-community/releases/latest).
+The preview is unsigned and may show an unknown-publisher prompt.
 The per-user installer includes `solo.exe`, Solo Controls/Desktop, the bundled
 MiniLM model, and the required runtime DLLs. It does not require Rust, Visual
 Studio, or administrator privileges.
@@ -28,12 +33,10 @@ solo doctor --round-trip
 
 ### Ubuntu 24.04
 
-The latest published Ubuntu package is 0.12.3. Download
-`solo-0.12.3-ubuntu24.04-amd64.deb` from the
-[0.12.3 release](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.3-community.1):
+Download [the Ubuntu DEB for the 0.12.12 preview](https://github.com/CallMeJones/solo-community/releases/download/v0.12.12-community.1/solo-0.12.12-ubuntu24.04-amd64.deb):
 
 ```bash
-sudo apt install ./solo-0.12.3-ubuntu24.04-amd64.deb
+sudo apt install ./solo-0.12.12-ubuntu24.04-amd64.deb
 solo --version
 solo init
 solo doctor --round-trip
@@ -42,8 +45,24 @@ solo doctor --round-trip
 The package includes the command-line tools, Solo Controls/Desktop, bundled
 MiniLM assets, desktop integration, autostart support, and Secret Service
 keyring integration. Ubuntu 24.04 x86-64 is the certified Linux target.
-The 0.12.11 recall hooks require a current source build on Linux; the 0.12.11
-packaged release is Windows-only.
+The 0.12.12 package includes automatic recall setup.
+
+### Mac (macOS 15 or newer)
+
+Choose the Apple Silicon or Intel DMG for your Mac using the
+[download guide](./downloads.md#choose-the-right-build). Open the DMG, copy
+**Solo.app** into **Applications**, and launch Solo. The preview is ad-hoc
+signed and not notarized; review the signing notice and approval steps in the
+[Mac installation guide](./downloads.md#mac).
+
+For terminal commands and assistant hooks, run the included `install-cli.sh`
+after copying the app and add `$HOME/.local/bin` to PATH. Follow the full Mac
+steps in the download guide, then restart your terminal and assistant:
+
+```bash
+solo --version
+solo doctor --round-trip
+```
 
 ### From source
 
@@ -61,7 +80,7 @@ pinned offline model assets in the expected layout.
 ## Initialize the Community library
 
 Solo Community owns one encrypted Memory Library per data directory. The
-default is `~/.solo` on Linux and `%USERPROFILE%\.solo` on Windows.
+default is `~/.solo` on Linux/macOS and `%USERPROFILE%\.solo` on Windows.
 
 ```bash
 solo init

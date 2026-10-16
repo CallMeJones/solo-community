@@ -30,8 +30,9 @@ setup.
   - **Encryption at rest, by default.** SQLCipher with an
     Argon2id-derived key from your passphrase. The database
     file is unintelligible without it.
-  - **Packaged local runtime.** No Docker or cloud account is required. Windows
-    and Ubuntu packages include the bundled semantic model and Desktop app.
+  - **Packaged local runtime.** No Docker or cloud account is required. Windows,
+    Ubuntu and Mac preview packages include the bundled semantic model and Desktop app.
+    See [Downloads and Supported Platforms](./downloads.md) to choose your build.
 
 ## What Solo isn't
 

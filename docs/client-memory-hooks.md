@@ -80,7 +80,8 @@ On Windows:
 1. Choose **Quit Solo** from the system-tray menu. Closing its window can leave
    Solo running in the background.
 2. Run the installer from the
-   [latest Solo Community release](https://github.com/CallMeJones/solo-community/releases/latest).
+   [latest stable release](https://github.com/CallMeJones/solo-community/releases/latest)
+   or use the [0.12.12 cross-platform preview](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.12-community.1).
    It updates the program in place and preserves your existing library.
 3. Open Solo again, unlock that library, and rerun client setup.
 4. Restart the assistants and review any new or changed hooks. In Codex, check
@@ -92,9 +93,12 @@ Check the active executable with `solo --version` and
 Some early development builds also reported 0.12.11 without these commands;
 install the released build if they are missing.
 
-Solo 0.12.11 packages are Windows-only. The published Ubuntu package remains
-0.12.3 and does not include this automatic setup. Linux/macOS users need a
-current source build for the new hooks.
+The **0.12.12 cross-platform preview** includes this setup in its Windows x64,
+Ubuntu 24.04 x64, and macOS 15+ packages for both Apple Silicon and Intel Macs.
+See the [download and installation guide](https://github.com/CallMeJones/solo-community/blob/main/docs/downloads.md)
+to choose the right build. Mac users must install the included CLI links and
+add `$HOME/.local/bin` to PATH before setting up assistant hooks. Restart the
+assistant afterward so it inherits the new PATH.
 
 ## Verify recall
 

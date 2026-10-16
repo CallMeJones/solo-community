@@ -60,6 +60,14 @@ CI rebuilds both and rejects any digest or source-commit mismatch.
 
 ## Install
 
+The [0.12.12 Community preview](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.12-community.1)
+has Windows x64, Ubuntu 24.04 x64, and macOS 15+ downloads for both Apple Silicon
+and Intel Macs. **[Choose your build and follow the installation guide](docs/downloads.md).**
+Intel and Apple Silicon identify Mac processor types; Windows/Linux x64 builds
+support both Intel and AMD processors. Choose the download for your OS and
+processor. These are prerelease builds; GitHub's **Latest** link still points
+to the stable release.
+
 ### Windows installer (recommended for Windows)
 
 Download `SoloSetup-<version>-x86_64.exe` from the
@@ -108,31 +116,28 @@ ollama pull qwen3:8b
 solo daemon --http-port 17821 --consolidate-interval-secs 3600 --ollama-model qwen3:8b
 ```
 
-### Windows, Linux and Mac preview
-
-The [0.12.12 cross-platform preview](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.12-community.1)
-provides Windows Setup, Ubuntu 24.04 DEB, and separate Apple Silicon and Intel
-Mac app downloads, plus the Codex/Claude Code plugin ZIP. These are prerelease
-builds; [installation instructions and known limitations](docs/releases/v0.12.12.md)
-include the current contradiction-detection gap and signing status.
-
 ### Ubuntu 24.04 installer (recommended for Linux Desktop)
 
-The latest published Ubuntu package is **0.12.3**. Download
-`solo-0.12.3-ubuntu24.04-amd64.deb` from the
-[0.12.3 release](https://github.com/CallMeJones/solo-community/releases/tag/v0.12.3-community.1),
+The **0.12.12 cross-platform preview** includes automatic recall setup.
+Download [the Ubuntu DEB](https://github.com/CallMeJones/solo-community/releases/download/v0.12.12-community.1/solo-0.12.12-ubuntu24.04-amd64.deb),
 then install it with:
 
 ```bash
-sudo apt install ./solo-0.12.3-ubuntu24.04-amd64.deb
+sudo apt install ./solo-0.12.12-ubuntu24.04-amd64.deb
 ```
 
 The package includes `solo`, `solo-tray`, the pinned offline semantic model,
 an application-menu entry, the embedded Solo Desktop, XDG login autostart
 support, and Secret Service keyring integration. It targets Ubuntu 24.04 on
 x86-64 and is the certified Linux installation path.
-The 0.12.11 automatic recall setup requires a current source build on Linux;
-the 0.12.11 packaged release is Windows-only.
+
+### Mac installer
+
+The preview includes separate [Apple Silicon and Intel Mac downloads](docs/downloads.md#choose-the-right-build),
+both requiring macOS 15 or newer. Open the matching DMG and drag **Solo.app**
+into **Applications**. For terminal commands and assistant hooks, also install
+the included CLI links and add them to PATH as described in the
+[Mac installation steps](docs/downloads.md#mac).
 
 ### Pre-built binary via Cargo
 
@@ -140,22 +145,25 @@ the 0.12.11 packaged release is Windows-only.
 cargo binstall solo-cli
 ```
 
-Binary availability varies by release. Version 0.12.11 provides a Windows
-installer and CLI ZIP; earlier releases also provide Linux archives for
-terminal-first users and `cargo binstall`. Check the selected release's assets
-for the target you need:
+Binary availability varies by release. For the **0.12.12 preview**, use the
+direct [archive downloads](docs/downloads.md#choose-the-right-build). Its native
+targets are:
 
-  - `x86_64-unknown-linux-gnu`
-  - `aarch64-unknown-linux-gnu`
-  - `x86_64-pc-windows-msvc`
+- `x86_64-pc-windows-msvc` (Windows x64)
+- `x86_64-unknown-linux-gnu` (Ubuntu 24.04 x64)
+- `aarch64-apple-darwin` (Apple Silicon, macOS 15+)
+- `x86_64-apple-darwin` (Intel Mac, macOS 15+)
 
-The release ZIP/TGZ archives include `models/all-MiniLM-L6-v2`; keep that
-directory beside `solo` when extracting an archive to preserve fully offline
-semantic memory. `cargo binstall` installs only the executable, so its first
+Windows ARM and Linux ARM packages are not included in this preview.
+
+The Windows/Linux ZIP/TGZ archives include `models/all-MiniLM-L6-v2`; keep
+that directory beside `solo` when extracting an archive to preserve fully
+offline semantic memory. Mac archives keep the model inside `Solo.app`;
+keep that app bundle intact. `cargo binstall` installs only the executable, so its first
 semantic operation may populate fastembed's model cache from the network.
-Use the Windows setup EXE or Ubuntu DEB when offline-first installation is
-required. Alpine/musl is not an official binary target because ONNX Runtime
-does not provide a supported musl build; source builds can opt out of the
+Use the Windows setup EXE, Ubuntu DEB or Mac app when offline-first
+installation is required. Alpine/musl is not an official binary target because
+ONNX Runtime does not provide a supported musl build; source builds can opt out of the
 bundled embedder and configure Ollama explicitly.
 
 `cargo binstall` is a separate tool, NOT bundled with cargo.
