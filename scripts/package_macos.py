@@ -65,6 +65,8 @@ def package(version: str, target: str, release: Path, output: Path):
         with (app / "Contents/Info.plist").open("wb") as file:
             plistlib.dump(info, file)
         shutil.copy2(ROOT / "LICENSE", resources / "LICENSE")
+        for notice in release.glob("onnxruntime-*.txt"):
+            shutil.copy2(notice, resources / notice.name)
         (stage / "README.txt").write_text(
             "Solo Community macOS preview\n\n"
             "Drag Solo.app into Applications, then open Solo.\n"
