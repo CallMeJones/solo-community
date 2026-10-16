@@ -26,9 +26,9 @@ if (-not $ProcDumpPath) {
     New-Item -ItemType Directory -Force -Path $toolRoot | Out-Null
     $archive = Join-Path $toolRoot 'Procdump.zip'
     Invoke-WebRequest 'https://download.sysinternals.com/files/Procdump.zip' -OutFile $archive
-    # Microsoft ProcDump 12.01, verified 2026-09-08. A changed download fails
+    # Microsoft ProcDump 12.02 (released 2026-10-12), verified 2026-10-16. A changed download fails
     # closed until its release and hash have been reviewed.
-    $expected = '68e057587b0fd654efa095f76d80d633c0e5c60ea26fd3e7c0011c076bb2d00c'
+    $expected = '5fe68e81632f13188930affff20a9a9910170bae654360850d3108cead708a2d'
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
         throw 'ProcDump archive digest changed; review the upstream release before updating the pin.'
     }
