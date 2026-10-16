@@ -12,13 +12,24 @@ MANIFEST="$ROOT/installer/models/embedding-model.json"
 DESTINATION="$1"
 mkdir -p "$DESTINATION"
 
+# Python is already required for the manifest. Its hash implementation avoids
+# incompatible GNU/BSD sha256sum command-line options on macOS.
+file_sha256() {
+  python3 -c 'import hashlib,sys
+with open(sys.argv[1], "rb") as source:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())' "$1"
+}
+
 REPOSITORY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["source_repository"])' "$MANIFEST")"
 REVISION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["revision"])' "$MANIFEST")"
 BASE_URL="https://huggingface.co/$REPOSITORY/resolve/$REVISION"
 
 while IFS=$'\t' read -r source target expected; do
   destination="$DESTINATION/$target"
-  if [[ -f "$destination" ]] && [[ "$(sha256sum "$destination" | cut -d' ' -f1)" == "$expected" ]]; then
+  if [[ -f "$destination" ]] && [[ "$(file_sha256 "$destination")" == "$expected" ]]; then
     echo "embedding asset already verified: $target"
     continue
   fi
@@ -42,7 +53,10 @@ while IFS=$'\t' read -r source target expected; do
     rm -f -- "$partial"
     exit "$status"
   fi
-  echo "$expected  $partial" | sha256sum --check --status
+  if [[ "$(file_sha256 "$partial")" != "$expected" ]]; then
+    echo "embedding asset checksum mismatch: $target" >&2
+    exit 1
+  fi
   mv -f -- "$partial" "$destination"
 done < <(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); [print("{}\t{}\t{}".format(item["source"], item["target"], item["sha256"])) for item in data["files"]]' "$MANIFEST")
 
