@@ -71,7 +71,9 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - name: Verify embedded Community Web
         working-directory: apps/web
+        shell: bash
         run: |
+          set -euo pipefail
           npm ci --no-audit --no-fund
           npm run build:pilot
           npm run verify:embedded
